@@ -100,3 +100,56 @@ func (c *Client) DeleteTopic(ctx context.Context, name TopicPath) error {
 	}
 	return nil
 }
+
+// CreateSubscription creates a new subscription from the given config.
+func (c *Client) CreateSubscription(ctx context.Context, config *SubscriptionConfig) (*SubscriptionConfig, error) {
+	if err := c.validateRegion("subscription", config.Name.Zone.Region()); err != nil {
+		return nil, err
+	}
+	req := &pb.CreateSubscriptionRequest{
+		Parent:         config.Name.Location().String(),
+		Subscription:   config.toProto(),
+		SubscriptionId: config.Name.ID.String(),
+	}
+	subspb, err := c.admin.CreateSubscription(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("pubsublite: failed to create subscription: %v", err)
+	}
+	return protoToSubscriptionConfig(subspb)
+}
+
+// UpdateSubscription updates an existing subscription from the given config and
+// returns the new subscription config.
+func (c *Client) UpdateSubscription(ctx context.Context, config *SubscriptionConfigToUpdate) (*SubscriptionConfig, error) {
+	if err := c.validateRegion("subscription", config.Name.Zone.Region()); err != nil {
+		return nil, err
+	}
+	subspb, err := c.admin.UpdateSubscription(ctx, config.toUpdateRequest())
+	if err != nil {
+		return nil, fmt.Errorf("pubsublite: failed to update subscription: %v", err)
+	}
+	return protoToSubscriptionConfig(subspb)
+}
+
+// Subscription retrieves the configuration of a subscription.
+func (c *Client) Subscription(ctx context.Context, name SubscriptionPath) (*SubscriptionConfig, error) {
+	if err := c.validateRegion("subscription", name.Zone.Region()); err != nil {
+		return nil, err
+	}
+	subspb, err := c.admin.GetSubscription(ctx, &pb.GetSubscriptionRequest{Name: name.String()})
+	if err != nil {
+		return nil, fmt.Errorf("pubsublite: failed to retrieve subscription config: %v", err)
+	}
+	return protoToSubscriptionConfig(subspb)
+}
+
+// DeleteSubscription deletes a subscription.
+func (c *Client) DeleteSubscription(ctx context.Context, name SubscriptionPath) error {
+	if err := c.validateRegion("subscription", name.Zone.Region()); err != nil {
+		return err
+	}
+	if err := c.admin.DeleteSubscription(ctx, &pb.DeleteSubscriptionRequest{Name: name.String()}); err != nil {
+		return fmt.Errorf("pubsublite: failed to delete subscription: %v", err)
+	}
+	return nil
+}

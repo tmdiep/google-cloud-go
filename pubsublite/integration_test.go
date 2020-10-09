@@ -40,6 +40,12 @@ func cleanUpTopic(ctx context.Context, t *testing.T, client *Client, name TopicP
 	}
 }
 
+func cleanUpSubscription(ctx context.Context, t *testing.T, client *Client, name SubscriptionPath) {
+	if err := client.DeleteSubscription(ctx, name); err != nil {
+		t.Errorf("Failed to delete subscription %s: %v", name, err)
+	}
+}
+
 func TestResourceAdminOperations(t *testing.T) {
 	checkRunPreconditions(t)
 
@@ -113,5 +119,42 @@ func TestResourceAdminOperations(t *testing.T) {
 		t.Errorf("Failed to update topic: %v", err)
 	} else if !testutil.Equal(gotTopicConfig, wantUpdatedTopicConfig2) {
 		t.Errorf("UpdateTopic() got: %v, want: %v", gotTopicConfig, wantUpdatedTopicConfig2)
+	}
+
+	subsPath := SubscriptionPath{Project: proj, Zone: zone, ID: SubscriptionID(resourceID)}
+	newSubsConfig := &SubscriptionConfig{
+		Name:                subsPath,
+		Topic:               topicPath,
+		DeliveryRequirement: DeliverImmediately,
+	}
+
+	gotSubsConfig, err := client.CreateSubscription(ctx, newSubsConfig)
+	if err != nil {
+		t.Fatalf("Failed to create subscription: %v", err)
+	}
+	defer cleanUpSubscription(ctx, t, client, subsPath)
+	if !testutil.Equal(gotSubsConfig, newSubsConfig) {
+		t.Errorf("CreateSubscription() got: %v, want: %v", gotSubsConfig, newSubsConfig)
+	}
+
+	if gotSubsConfig, err := client.Subscription(ctx, subsPath); err != nil {
+		t.Errorf("Failed to get subscription: %v", err)
+	} else if !testutil.Equal(gotSubsConfig, newSubsConfig) {
+		t.Errorf("Subscription() got: %v, want: %v", gotSubsConfig, newSubsConfig)
+	}
+
+	subsUpdate := &SubscriptionConfigToUpdate{
+		Name:                subsPath,
+		DeliveryRequirement: DeliverAfterStored,
+	}
+	wantUpdatedSubsConfig := &SubscriptionConfig{
+		Name:                subsPath,
+		Topic:               topicPath,
+		DeliveryRequirement: DeliverAfterStored,
+	}
+	if gotSubsConfig, err := client.UpdateSubscription(ctx, subsUpdate); err != nil {
+		t.Errorf("Failed to update subscription: %v", err)
+	} else if !testutil.Equal(gotSubsConfig, wantUpdatedSubsConfig) {
+		t.Errorf("UpdateSubscription() got: %v, want: %v", gotSubsConfig, wantUpdatedSubsConfig)
 	}
 }
