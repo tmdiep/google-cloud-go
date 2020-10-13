@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/internal/testutil"
+	"google.golang.org/api/iterator"
 )
 
 const (
@@ -52,14 +53,17 @@ func TestResourceAdminOperations(t *testing.T) {
 	ctx := context.Background()
 	proj := Project(testutil.ProjID())
 	zone := CloudZone("us-central1-b")
-	resourceID := "integration-test-go-1"
+	resourceID := "go-test-admin-1"
+	locationPath := LocationPath{Project: proj, Zone: zone}
+	topicPath := TopicPath{Project: proj, Zone: zone, ID: TopicID(resourceID)}
+	subscriptionPath := SubscriptionPath{Project: proj, Zone: zone, ID: SubscriptionID(resourceID)}
 
 	client, err := NewClient(ctx, zone.Region())
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
 
-	topicPath := TopicPath{Project: proj, Zone: zone, ID: TopicID(resourceID)}
+	// Topic admin operations.
 	newTopicConfig := &TopicConfig{
 		Name:                       topicPath,
 		PartitionCount:             2,
@@ -88,6 +92,27 @@ func TestResourceAdminOperations(t *testing.T) {
 		t.Errorf("Failed to get topic partitions: %v", err)
 	} else if gotTopicPartitions != newTopicConfig.PartitionCount {
 		t.Errorf("TopicPartitions() got: %v, want: %v", gotTopicPartitions, newTopicConfig.PartitionCount)
+	}
+
+	if topicIt, err := client.Topics(ctx, locationPath); err != nil {
+		t.Errorf("Failed to list topics: %v", err)
+	} else {
+		var foundTopic *TopicConfig
+		for {
+			topic, err := topicIt.Next()
+			if err == iterator.Done {
+				break
+			}
+			if testutil.Equal(topic.Name, topicPath) {
+				foundTopic = topic
+				break
+			}
+		}
+		if foundTopic == nil {
+			t.Error("Topics() did not return topic config")
+		} else if !testutil.Equal(foundTopic, newTopicConfig) {
+			t.Errorf("Topics() found config: %v, want: %v", foundTopic, newTopicConfig)
+		}
 	}
 
 	topicUpdate1 := &TopicConfigToUpdate{
@@ -127,9 +152,9 @@ func TestResourceAdminOperations(t *testing.T) {
 		t.Errorf("UpdateTopic() got: %v, want: %v", gotTopicConfig, wantUpdatedTopicConfig2)
 	}
 
-	subsPath := SubscriptionPath{Project: proj, Zone: zone, ID: SubscriptionID(resourceID)}
+	// Subscription admin operations.
 	newSubsConfig := &SubscriptionConfig{
-		Name:                subsPath,
+		Name:                subscriptionPath,
 		Topic:               topicPath,
 		DeliveryRequirement: DeliverImmediately,
 	}
@@ -138,23 +163,63 @@ func TestResourceAdminOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create subscription: %v", err)
 	}
-	defer cleanUpSubscription(ctx, t, client, subsPath)
+	defer cleanUpSubscription(ctx, t, client, subscriptionPath)
 	if !testutil.Equal(gotSubsConfig, newSubsConfig) {
 		t.Errorf("CreateSubscription() got: %v, want: %v", gotSubsConfig, newSubsConfig)
 	}
 
-	if gotSubsConfig, err := client.Subscription(ctx, subsPath); err != nil {
+	if gotSubsConfig, err := client.Subscription(ctx, subscriptionPath); err != nil {
 		t.Errorf("Failed to get subscription: %v", err)
 	} else if !testutil.Equal(gotSubsConfig, newSubsConfig) {
 		t.Errorf("Subscription() got: %v, want: %v", gotSubsConfig, newSubsConfig)
 	}
 
+	if subsIt, err := client.Subscriptions(ctx, locationPath); err != nil {
+		t.Errorf("Failed to list subscriptions: %v", err)
+	} else {
+		var foundSubs *SubscriptionConfig
+		for {
+			subs, err := subsIt.Next()
+			if err == iterator.Done {
+				break
+			}
+			if testutil.Equal(subs.Name, subscriptionPath) {
+				foundSubs = subs
+				break
+			}
+		}
+		if foundSubs == nil {
+			t.Error("Subscriptions() did not return subscription config")
+		} else if !testutil.Equal(foundSubs, gotSubsConfig) {
+			t.Errorf("Subscriptions() found config: %v, want: %v", foundSubs, gotSubsConfig)
+		}
+	}
+
+	if subsPathIt, err := client.TopicSubscriptions(ctx, topicPath); err != nil {
+		t.Errorf("Failed to list topic subscriptions: %v", err)
+	} else {
+		foundSubsPath := false
+		for {
+			subsPath, err := subsPathIt.Next()
+			if err == iterator.Done {
+				break
+			}
+			if testutil.Equal(subsPath, subscriptionPath) {
+				foundSubsPath = true
+				break
+			}
+		}
+		if !foundSubsPath {
+			t.Error("TopicSubscriptions() did not return subscription path")
+		}
+	}
+
 	subsUpdate := &SubscriptionConfigToUpdate{
-		Name:                subsPath,
+		Name:                subscriptionPath,
 		DeliveryRequirement: DeliverAfterStored,
 	}
 	wantUpdatedSubsConfig := &SubscriptionConfig{
-		Name:                subsPath,
+		Name:                subscriptionPath,
 		Topic:               topicPath,
 		DeliveryRequirement: DeliverAfterStored,
 	}

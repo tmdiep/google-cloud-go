@@ -17,17 +17,17 @@ import (
 	"context"
 	"fmt"
 
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
-// Client provides an interface for Google Pub/Sub Lite admin operations for
-// resources within a Google Cloud region. A Client may be shared by multiple
-// goroutines.
+// Client provides admin operations for Google Pub/Sub Lite resources within a
+// Google Cloud region. A Client may be shared by multiple goroutines.
 type Client struct {
-	Region CloudRegion
+	region CloudRegion
 	admin  *vkit.AdminClient
 }
 
@@ -38,14 +38,13 @@ func NewClient(ctx context.Context, region CloudRegion, opts ...option.ClientOpt
 	if err != nil {
 		return nil, fmt.Errorf("pubsublite: %v", err)
 	}
-	return &Client{Region: region, admin: admin}, nil
+	return &Client{region: region, admin: admin}, nil
 }
 
-func (c *Client) validateRegion(resourceType string, region CloudRegion) error {
-	if region != c.Region {
-		return fmt.Errorf("pubsublite: %s region (%s) differs from Client region (%s)", resourceType, region, c.Region)
-	}
-	return nil
+// Region returns the Google Cloud region that this Pub/Sub Lite Client operates
+// on.
+func (c *Client) Region() CloudRegion {
+	return c.region
 }
 
 // CreateTopic creates a new topic from the given config.
@@ -78,12 +77,23 @@ func (c *Client) UpdateTopic(ctx context.Context, config *TopicConfigToUpdate) (
 	return protoToTopicConfig(topicpb)
 }
 
+// DeleteTopic deletes a topic.
+func (c *Client) DeleteTopic(ctx context.Context, topic TopicPath) error {
+	if err := c.validateRegion("topic", topic.Zone.Region()); err != nil {
+		return err
+	}
+	if err := c.admin.DeleteTopic(ctx, &pb.DeleteTopicRequest{Name: topic.String()}); err != nil {
+		return fmt.Errorf("pubsublite: failed to delete topic: %v", err)
+	}
+	return nil
+}
+
 // Topic retrieves the configuration of a topic.
-func (c *Client) Topic(ctx context.Context, name TopicPath) (*TopicConfig, error) {
-	if err := c.validateRegion("topic", name.Zone.Region()); err != nil {
+func (c *Client) Topic(ctx context.Context, topic TopicPath) (*TopicConfig, error) {
+	if err := c.validateRegion("topic", topic.Zone.Region()); err != nil {
 		return nil, err
 	}
-	topicpb, err := c.admin.GetTopic(ctx, &pb.GetTopicRequest{Name: name.String()})
+	topicpb, err := c.admin.GetTopic(ctx, &pb.GetTopicRequest{Name: topic.String()})
 	if err != nil {
 		return nil, fmt.Errorf("pubsublite: failed to retrieve topic config: %v", err)
 	}
@@ -91,26 +101,33 @@ func (c *Client) Topic(ctx context.Context, name TopicPath) (*TopicConfig, error
 }
 
 // TopicPartitions returns the number of partitions for a topic.
-func (c *Client) TopicPartitions(ctx context.Context, name TopicPath) (int64, error) {
-	if err := c.validateRegion("topic", name.Zone.Region()); err != nil {
+func (c *Client) TopicPartitions(ctx context.Context, topic TopicPath) (int64, error) {
+	if err := c.validateRegion("topic", topic.Zone.Region()); err != nil {
 		return 0, err
 	}
-	partitions, err := c.admin.GetTopicPartitions(ctx, &pb.GetTopicPartitionsRequest{Name: name.String()})
+	partitions, err := c.admin.GetTopicPartitions(ctx, &pb.GetTopicPartitionsRequest{Name: topic.String()})
 	if err != nil {
 		return 0, fmt.Errorf("pubsublite: failed to retrieve topic partitions: %v", err)
 	}
 	return partitions.GetPartitionCount(), nil
 }
 
-// DeleteTopic deletes a topic.
-func (c *Client) DeleteTopic(ctx context.Context, name TopicPath) error {
-	if err := c.validateRegion("topic", name.Zone.Region()); err != nil {
-		return err
+// TopicSubscriptions retrieves the list of subscription paths for a topic.
+func (c *Client) TopicSubscriptions(ctx context.Context, topic TopicPath) (*SubscriptionPathIterator, error) {
+	if err := c.validateRegion("topic", topic.Zone.Region()); err != nil {
+		return nil, err
 	}
-	if err := c.admin.DeleteTopic(ctx, &pb.DeleteTopicRequest{Name: name.String()}); err != nil {
-		return fmt.Errorf("pubsublite: failed to delete topic: %v", err)
+	subsPathIt := c.admin.ListTopicSubscriptions(ctx, &pb.ListTopicSubscriptionsRequest{Name: topic.String()})
+	return &SubscriptionPathIterator{it: subsPathIt}, nil
+}
+
+// Topics retrieves the list of topic configs for a given project and zone.
+func (c *Client) Topics(ctx context.Context, location LocationPath) (*TopicIterator, error) {
+	if err := c.validateRegion("location", location.Zone.Region()); err != nil {
+		return nil, err
 	}
-	return nil
+	topicIt := c.admin.ListTopics(ctx, &pb.ListTopicsRequest{Parent: location.String()})
+	return &TopicIterator{it: topicIt}, nil
 }
 
 // CreateSubscription creates a new subscription from the given config.
@@ -143,25 +160,98 @@ func (c *Client) UpdateSubscription(ctx context.Context, config *SubscriptionCon
 	return protoToSubscriptionConfig(subspb)
 }
 
+// DeleteSubscription deletes a subscription.
+func (c *Client) DeleteSubscription(ctx context.Context, subscription SubscriptionPath) error {
+	if err := c.validateRegion("subscription", subscription.Zone.Region()); err != nil {
+		return err
+	}
+	if err := c.admin.DeleteSubscription(ctx, &pb.DeleteSubscriptionRequest{Name: subscription.String()}); err != nil {
+		return fmt.Errorf("pubsublite: failed to delete subscription: %v", err)
+	}
+	return nil
+}
+
 // Subscription retrieves the configuration of a subscription.
-func (c *Client) Subscription(ctx context.Context, name SubscriptionPath) (*SubscriptionConfig, error) {
-	if err := c.validateRegion("subscription", name.Zone.Region()); err != nil {
+func (c *Client) Subscription(ctx context.Context, subscription SubscriptionPath) (*SubscriptionConfig, error) {
+	if err := c.validateRegion("subscription", subscription.Zone.Region()); err != nil {
 		return nil, err
 	}
-	subspb, err := c.admin.GetSubscription(ctx, &pb.GetSubscriptionRequest{Name: name.String()})
+	subspb, err := c.admin.GetSubscription(ctx, &pb.GetSubscriptionRequest{Name: subscription.String()})
 	if err != nil {
 		return nil, fmt.Errorf("pubsublite: failed to retrieve subscription config: %v", err)
 	}
 	return protoToSubscriptionConfig(subspb)
 }
 
-// DeleteSubscription deletes a subscription.
-func (c *Client) DeleteSubscription(ctx context.Context, name SubscriptionPath) error {
-	if err := c.validateRegion("subscription", name.Zone.Region()); err != nil {
-		return err
+// Subscriptions retrieves the list of subscription configs for a given project
+// and zone.
+func (c *Client) Subscriptions(ctx context.Context, location LocationPath) (*SubscriptionIterator, error) {
+	if err := c.validateRegion("location", location.Zone.Region()); err != nil {
+		return nil, err
 	}
-	if err := c.admin.DeleteSubscription(ctx, &pb.DeleteSubscriptionRequest{Name: name.String()}); err != nil {
-		return fmt.Errorf("pubsublite: failed to delete subscription: %v", err)
+	subsIt := c.admin.ListSubscriptions(ctx, &pb.ListSubscriptionsRequest{Parent: location.String()})
+	return &SubscriptionIterator{it: subsIt}, nil
+}
+
+func (c *Client) validateRegion(resourceType string, region CloudRegion) error {
+	if region != c.region {
+		return fmt.Errorf("pubsublite: %s region (%s) differs from Client region (%s)", resourceType, region, c.region)
 	}
 	return nil
+}
+
+// TopicIterator is an iterator that returns a list of topic configs.
+type TopicIterator struct {
+	it *vkit.TopicIterator
+}
+
+// Next returns the next topic config. The second return value will be
+// iterator.Done if there are no more topic configs.
+func (t *TopicIterator) Next() (*TopicConfig, error) {
+	topicpb, err := t.it.Next()
+	if err != nil {
+		if err != iterator.Done {
+			err = fmt.Errorf("pubsublite: failed to list topics: %v", err)
+		}
+		return nil, err
+	}
+	return protoToTopicConfig(topicpb)
+}
+
+// SubscriptionIterator is an iterator that returns a list of subscription
+// configs.
+type SubscriptionIterator struct {
+	it *vkit.SubscriptionIterator
+}
+
+// Next returns the next subscription config. The second return value will be
+// iterator.Done if there are no more subscription configs.
+func (s *SubscriptionIterator) Next() (*SubscriptionConfig, error) {
+	subspb, err := s.it.Next()
+	if err != nil {
+		if err != iterator.Done {
+			err = fmt.Errorf("pubsublite: failed to list subscriptions: %v", err)
+		}
+		return nil, err
+	}
+	return protoToSubscriptionConfig(subspb)
+}
+
+// SubscriptionPathIterator is an iterator that returns a list of subscription
+// paths.
+type SubscriptionPathIterator struct {
+	it *vkit.StringIterator
+}
+
+// Next returns the next subscription path. The second return value will be
+// iterator.Done if there are no more subscription paths.
+func (sp *SubscriptionPathIterator) Next() (SubscriptionPath, error) {
+	subsPath, err := sp.it.Next()
+	if err != nil {
+		if err != iterator.Done {
+			err = fmt.Errorf("pubsublite: failed to list topic subscriptions: %v", err)
+		}
+		return SubscriptionPath{}, err
+	}
+	return ParseSubscriptionPath(subsPath)
 }
