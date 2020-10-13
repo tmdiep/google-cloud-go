@@ -84,6 +84,12 @@ func TestResourceAdminOperations(t *testing.T) {
 		t.Errorf("Topic() got: %v, want: %v", gotTopicConfig, newTopicConfig)
 	}
 
+	if gotTopicPartitions, err := client.TopicPartitions(ctx, topicPath); err != nil {
+		t.Errorf("Failed to get topic partitions: %v", err)
+	} else if gotTopicPartitions != newTopicConfig.PartitionCount {
+		t.Errorf("TopicPartitions() got: %v, want: %v", gotTopicPartitions, newTopicConfig.PartitionCount)
+	}
+
 	topicUpdate1 := &TopicConfigToUpdate{
 		Name:                       topicPath,
 		PublishCapacityMiBPerSec:   6,

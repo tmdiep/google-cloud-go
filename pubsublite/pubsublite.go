@@ -90,6 +90,18 @@ func (c *Client) Topic(ctx context.Context, name TopicPath) (*TopicConfig, error
 	return protoToTopicConfig(topicpb)
 }
 
+// TopicPartitions returns the number of partitions for a topic.
+func (c *Client) TopicPartitions(ctx context.Context, name TopicPath) (int64, error) {
+	if err := c.validateRegion("topic", name.Zone.Region()); err != nil {
+		return 0, err
+	}
+	partitions, err := c.admin.GetTopicPartitions(ctx, &pb.GetTopicPartitionsRequest{Name: name.String()})
+	if err != nil {
+		return 0, fmt.Errorf("pubsublite: failed to retrieve topic partitions: %v", err)
+	}
+	return partitions.GetPartitionCount(), nil
+}
+
 // DeleteTopic deletes a topic.
 func (c *Client) DeleteTopic(ctx context.Context, name TopicPath) error {
 	if err := c.validateRegion("topic", name.Zone.Region()); err != nil {

@@ -177,6 +177,7 @@ func (tc *TopicConfigToUpdate) toUpdateRequest() *pb.UpdateTopicRequest {
 type DeliveryRequirement int32
 
 const (
+	// Unset delivery requirement.
 	UnspecifiedDeliveryRequirement DeliveryRequirement = 0
 
 	// The server does not wait for a published message to be successfully
