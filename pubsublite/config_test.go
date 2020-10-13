@@ -33,7 +33,7 @@ func TestTopicConfigToProtoConversion(t *testing.T) {
 		wantErr    bool
 	}{
 		{
-			name: "valid",
+			name: "valid: retention duration set",
 			topicpb: &pb.Topic{
 				Name: "projects/my-proj/locations/us-central1-c/topics/my-topic",
 				PartitionConfig: &pb.Topic_PartitionConfig{
@@ -60,6 +60,31 @@ func TestTopicConfigToProtoConversion(t *testing.T) {
 				SubscribeCapacityMiBPerSec: 16,
 				PerPartitionBytes:          1073741824,
 				RetentionDuration:          time.Duration(86400*1e9 + 600),
+			},
+		},
+		{
+			name: "valid: retention duration unset",
+			topicpb: &pb.Topic{
+				Name: "projects/my-proj/locations/europe-west1-b/topics/my-topic",
+				PartitionConfig: &pb.Topic_PartitionConfig{
+					Count: 3,
+					Dimension: &pb.Topic_PartitionConfig_Capacity_{
+						Capacity: &pb.Topic_PartitionConfig_Capacity{
+							PublishMibPerSec:   4,
+							SubscribeMibPerSec: 8,
+						},
+					},
+				},
+				RetentionConfig: &pb.Topic_RetentionConfig{
+					PerPartitionBytes: 4294967296,
+				},
+			},
+			wantConfig: &TopicConfig{
+				Name:                       TopicPath{Project("my-proj"), CloudZone("europe-west1-b"), TopicID("my-topic")},
+				PartitionCount:             3,
+				PublishCapacityMiBPerSec:   4,
+				SubscribeCapacityMiBPerSec: 8,
+				PerPartitionBytes:          4294967296,
 			},
 		},
 		{
@@ -93,7 +118,7 @@ func TestTopicUpdateRequest(t *testing.T) {
 		want   *pb.UpdateTopicRequest
 	}{
 		{
-			name: "valid: all fields set",
+			name: "all fields set",
 			config: &TopicConfigToUpdate{
 				Name:                       TopicPath{Project("my-proj"), CloudZone("us-central1-c"), TopicID("my-topic")},
 				PublishCapacityMiBPerSec:   4,
@@ -128,7 +153,30 @@ func TestTopicUpdateRequest(t *testing.T) {
 			},
 		},
 		{
-			name: "valid: no fields set",
+			name: "clear retention duration",
+			config: &TopicConfigToUpdate{
+				Name:              TopicPath{Project("my-proj"), CloudZone("us-central1-c"), TopicID("my-topic")},
+				RetentionDuration: InfiniteRetention,
+			},
+			want: &pb.UpdateTopicRequest{
+				Topic: &pb.Topic{
+					Name: "projects/my-proj/locations/us-central1-c/topics/my-topic",
+					PartitionConfig: &pb.Topic_PartitionConfig{
+						Dimension: &pb.Topic_PartitionConfig_Capacity_{
+							Capacity: &pb.Topic_PartitionConfig_Capacity{},
+						},
+					},
+					RetentionConfig: &pb.Topic_RetentionConfig{},
+				},
+				UpdateMask: &fmpb.FieldMask{
+					Paths: []string{
+						"retention_config.period",
+					},
+				},
+			},
+		},
+		{
+			name: "no fields set",
 			config: &TopicConfigToUpdate{
 				Name: TopicPath{Project("my-proj"), CloudZone("us-central1-c"), TopicID("my-topic")},
 			},
@@ -216,7 +264,7 @@ func TestSubscriptionUpdateRequest(t *testing.T) {
 		want   *pb.UpdateSubscriptionRequest
 	}{
 		{
-			name: "valid: all fields set",
+			name: "all fields set",
 			config: &SubscriptionConfigToUpdate{
 				Name:                SubscriptionPath{Project("my-proj"), CloudZone("us-central1-c"), SubscriptionID("my-subs")},
 				DeliveryRequirement: DeliverImmediately,
@@ -236,7 +284,7 @@ func TestSubscriptionUpdateRequest(t *testing.T) {
 			},
 		},
 		{
-			name: "valid: no fields set",
+			name: "no fields set",
 			config: &SubscriptionConfigToUpdate{
 				Name: SubscriptionPath{Project("my-proj"), CloudZone("us-central1-c"), SubscriptionID("my-subs")},
 			},

@@ -106,7 +106,7 @@ func TestResourceAdminOperations(t *testing.T) {
 	topicUpdate2 := &TopicConfigToUpdate{
 		Name:              topicPath,
 		PerPartitionBytes: 35 * gibi,
-		RetentionDuration: time.Duration(0),
+		RetentionDuration: InfiniteRetention,
 	}
 	wantUpdatedTopicConfig2 := &TopicConfig{
 		Name:                       topicPath,

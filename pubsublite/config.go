@@ -24,6 +24,11 @@ import (
 	fmpb "google.golang.org/genproto/protobuf/field_mask"
 )
 
+// InfiniteRetention is sentinel used when updating topic configs to clear a
+// retention duration (i.e. retain messages as long as there is available
+// storage).
+const InfiniteRetention = time.Duration(-1)
+
 // TopicConfig describes the properties of a Google Pub/Sub Lite topic.
 // See https://cloud.google.com/pubsub/lite/docs/topics for more information
 // about how topics are configured.
@@ -52,7 +57,7 @@ type TopicConfig struct {
 	// How long a published message is retained. If unset, messages will be
 	// retained as long as the bytes retained for each partition is below
 	// `PerPartitionBytes`.
-	RetentionDuration time.Duration
+	RetentionDuration optional.Duration
 }
 
 func protoToTopicConfig(t *pb.Topic) (*TopicConfig, error) {
@@ -60,23 +65,29 @@ func protoToTopicConfig(t *pb.Topic) (*TopicConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pubsublite: invalid topic name %q in topic config", t.GetName())
 	}
-	period, err := ptypes.Duration(t.GetRetentionConfig().GetPeriod())
-	if err != nil {
-		return nil, fmt.Errorf("pubsublite: invalid retention period in topic config: %v", err)
-	}
+
 	partitionCfg := t.GetPartitionConfig()
-	return &TopicConfig{
+	retentionCfg := t.GetRetentionConfig()
+	topic := &TopicConfig{
 		Name:                       name,
 		PartitionCount:             partitionCfg.GetCount(),
 		PublishCapacityMiBPerSec:   partitionCfg.GetCapacity().GetPublishMibPerSec(),
 		SubscribeCapacityMiBPerSec: partitionCfg.GetCapacity().GetSubscribeMibPerSec(),
-		PerPartitionBytes:          t.GetRetentionConfig().GetPerPartitionBytes(),
-		RetentionDuration:          period,
-	}, nil
+		PerPartitionBytes:          retentionCfg.GetPerPartitionBytes(),
+	}
+	// An unset retention period proto denotes "infinite retention".
+	if retentionCfg.Period != nil {
+		period, err := ptypes.Duration(retentionCfg.Period)
+		if err != nil {
+			return nil, fmt.Errorf("pubsublite: invalid retention period in topic config: %v", err)
+		}
+		topic.RetentionDuration = period
+	}
+	return topic, nil
 }
 
 func (tc *TopicConfig) toProto() *pb.Topic {
-	return &pb.Topic{
+	topicpb := &pb.Topic{
 		Name: tc.Name.String(),
 		PartitionConfig: &pb.Topic_PartitionConfig{
 			Count: tc.PartitionCount,
@@ -89,9 +100,15 @@ func (tc *TopicConfig) toProto() *pb.Topic {
 		},
 		RetentionConfig: &pb.Topic_RetentionConfig{
 			PerPartitionBytes: tc.PerPartitionBytes,
-			Period:            ptypes.DurationProto(tc.RetentionDuration),
 		},
 	}
+	if tc.RetentionDuration != nil {
+		duration := optional.ToDuration(tc.RetentionDuration)
+		if duration >= 0 {
+			topicpb.RetentionConfig.Period = ptypes.DurationProto(duration)
+		}
+	}
+	return topicpb
 }
 
 // TopicConfigToUpdate specifies the properties to update for a topic.
@@ -109,8 +126,8 @@ type TopicConfigToUpdate struct {
 	PerPartitionBytes int64
 
 	// If specified, will update how long a published message is retained. To
-	// unset a retention duration (i.e. retain messages as long as there is
-	// available storage), set this to `time.Duration(0)`.
+	// clear a retention duration (i.e. retain messages as long as there is
+	// available storage), set this to `pubsublite.InfiniteRetention`.
 	RetentionDuration optional.Duration
 }
 
@@ -142,7 +159,11 @@ func (tc *TopicConfigToUpdate) toUpdateRequest() *pb.UpdateTopicRequest {
 	}
 	if tc.RetentionDuration != nil {
 		fields = append(fields, "retention_config.period")
-		updatedTopic.RetentionConfig.Period = ptypes.DurationProto(optional.ToDuration(tc.RetentionDuration))
+		duration := optional.ToDuration(tc.RetentionDuration)
+		// An unset retention period proto denotes "infinite retention".
+		if duration >= 0 {
+			updatedTopic.RetentionConfig.Period = ptypes.DurationProto(duration)
+		}
 	}
 
 	return &pb.UpdateTopicRequest{
