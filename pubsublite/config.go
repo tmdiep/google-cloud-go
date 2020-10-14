@@ -60,6 +60,31 @@ type TopicConfig struct {
 	RetentionDuration optional.Duration
 }
 
+func (tc *TopicConfig) toProto() *pb.Topic {
+	topicpb := &pb.Topic{
+		Name: tc.Name.String(),
+		PartitionConfig: &pb.Topic_PartitionConfig{
+			Count: tc.PartitionCount,
+			Dimension: &pb.Topic_PartitionConfig_Capacity_{
+				Capacity: &pb.Topic_PartitionConfig_Capacity{
+					PublishMibPerSec:   tc.PublishCapacityMiBPerSec,
+					SubscribeMibPerSec: tc.SubscribeCapacityMiBPerSec,
+				},
+			},
+		},
+		RetentionConfig: &pb.Topic_RetentionConfig{
+			PerPartitionBytes: tc.PerPartitionBytes,
+		},
+	}
+	if tc.RetentionDuration != nil {
+		duration := optional.ToDuration(tc.RetentionDuration)
+		if duration >= 0 {
+			topicpb.RetentionConfig.Period = ptypes.DurationProto(duration)
+		}
+	}
+	return topicpb
+}
+
 func protoToTopicConfig(t *pb.Topic) (*TopicConfig, error) {
 	name, err := ParseTopicPath(t.GetName())
 	if err != nil {
@@ -84,31 +109,6 @@ func protoToTopicConfig(t *pb.Topic) (*TopicConfig, error) {
 		topic.RetentionDuration = period
 	}
 	return topic, nil
-}
-
-func (tc *TopicConfig) toProto() *pb.Topic {
-	topicpb := &pb.Topic{
-		Name: tc.Name.String(),
-		PartitionConfig: &pb.Topic_PartitionConfig{
-			Count: tc.PartitionCount,
-			Dimension: &pb.Topic_PartitionConfig_Capacity_{
-				Capacity: &pb.Topic_PartitionConfig_Capacity{
-					PublishMibPerSec:   tc.PublishCapacityMiBPerSec,
-					SubscribeMibPerSec: tc.SubscribeCapacityMiBPerSec,
-				},
-			},
-		},
-		RetentionConfig: &pb.Topic_RetentionConfig{
-			PerPartitionBytes: tc.PerPartitionBytes,
-		},
-	}
-	if tc.RetentionDuration != nil {
-		duration := optional.ToDuration(tc.RetentionDuration)
-		if duration >= 0 {
-			topicpb.RetentionConfig.Period = ptypes.DurationProto(duration)
-		}
-	}
-	return topicpb
 }
 
 // TopicConfigToUpdate specifies the properties to update for a topic.
@@ -178,16 +178,16 @@ type DeliveryRequirement int32
 
 const (
 	// Unset delivery requirement.
-	UnspecifiedDeliveryRequirement DeliveryRequirement = 0
+	UnspecifiedDeliveryRequirement = DeliveryRequirement(pb.Subscription_DeliveryConfig_DELIVERY_REQUIREMENT_UNSPECIFIED)
 
 	// The server does not wait for a published message to be successfully
 	// written to storage before delivering it to subscribers.
-	DeliverImmediately DeliveryRequirement = 1
+	DeliverImmediately = DeliveryRequirement(pb.Subscription_DeliveryConfig_DELIVER_IMMEDIATELY)
 
 	// The server will not deliver a published message to subscribers until
 	// the message has been successfully written to storage. This will result
 	// in higher end-to-end latency, but consistent delivery.
-	DeliverAfterStored DeliveryRequirement = 2
+	DeliverAfterStored = DeliveryRequirement(pb.Subscription_DeliveryConfig_DELIVER_AFTER_STORED)
 )
 
 // SubscriptionConfig describes the properties of a Google Pub/Sub Lite
@@ -204,6 +204,16 @@ type SubscriptionConfig struct {
 
 	// Whether a message should be delivered to subscribers immediately after it
 	// has been published or after it has been successfully written to storage.
+	DeliveryRequirement DeliveryRequirement
+}
+
+// SubscriptionConfigToUpdate specifies the properties to update for a
+// subscription.
+type SubscriptionConfigToUpdate struct {
+	// The full path of the subscription to update. Required.
+	Name SubscriptionPath
+
+	// If non-zero, updates the message delivery requirement.
 	DeliveryRequirement DeliveryRequirement
 }
 
@@ -231,16 +241,6 @@ func (sc *SubscriptionConfig) toProto() *pb.Subscription {
 			DeliveryRequirement: pb.Subscription_DeliveryConfig_DeliveryRequirement(sc.DeliveryRequirement),
 		},
 	}
-}
-
-// SubscriptionConfigToUpdate specifies the properties to update for a
-// subscription.
-type SubscriptionConfigToUpdate struct {
-	// The full path of the subscription to update. Required.
-	Name SubscriptionPath
-
-	// If non-zero, updates the message delivery requirement.
-	DeliveryRequirement DeliveryRequirement
 }
 
 func (sc *SubscriptionConfigToUpdate) toUpdateRequest() *pb.UpdateSubscriptionRequest {
