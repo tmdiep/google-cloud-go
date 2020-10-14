@@ -62,6 +62,7 @@ func TestResourceAdminOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
+	defer client.Close()
 
 	// Topic admin operations.
 	newTopicConfig := &TopicConfig{

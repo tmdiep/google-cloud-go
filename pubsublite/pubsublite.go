@@ -193,6 +193,13 @@ func (c *Client) Subscriptions(ctx context.Context, location LocationPath) (*Sub
 	return &SubscriptionIterator{it: subsIt}, nil
 }
 
+// Close releases any resources held by the client when it is no longer
+// required. If the client is available for the lifetime of the program, then
+// Close need not be called at exit.
+func (c *Client) Close() error {
+	return c.admin.Close()
+}
+
 func (c *Client) validateRegion(resourceType string, region CloudRegion) error {
 	if region != c.region {
 		return fmt.Errorf("pubsublite: %s region (%s) differs from Client region (%s)", resourceType, region, c.region)
