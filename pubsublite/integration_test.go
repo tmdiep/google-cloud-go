@@ -15,6 +15,8 @@ package pubsublite
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -26,13 +28,18 @@ const (
 	gibi = 1 << 30
 )
 
-func checkRunPreconditions(t *testing.T) {
+var (
+	rng *rand.Rand
+)
+
+func initIntegrationTest(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Integration tests skipped in short mode")
 	}
 	if testutil.ProjID() == "" {
 		t.Skip("Integration tests skipped. See CONTRIBUTING.md for details")
 	}
+	rng = testutil.NewRand(time.Now())
 }
 
 func cleanUpTopic(ctx context.Context, t *testing.T, client *Client, name TopicPath) {
@@ -48,15 +55,16 @@ func cleanUpSubscription(ctx context.Context, t *testing.T, client *Client, name
 }
 
 func TestResourceAdminOperations(t *testing.T) {
-	checkRunPreconditions(t)
+	initIntegrationTest(t)
 
 	ctx := context.Background()
 	proj := Project(testutil.ProjID())
 	zone := CloudZone("us-central1-b")
-	resourceID := "go-test-admin-1"
+	resourceID := fmt.Sprintf("go-test-admin-%d", rng.Int63())
 	locationPath := LocationPath{Project: proj, Zone: zone}
 	topicPath := TopicPath{Project: proj, Zone: zone, ID: TopicID(resourceID)}
 	subscriptionPath := SubscriptionPath{Project: proj, Zone: zone, ID: SubscriptionID(resourceID)}
+	t.Logf("Topic path: %s", topicPath)
 
 	client, err := NewClient(ctx, zone.Region())
 	if err != nil {
