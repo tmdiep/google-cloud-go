@@ -207,14 +207,14 @@ type SubscriptionConfig struct {
 	DeliveryRequirement DeliveryRequirement
 }
 
-// SubscriptionConfigToUpdate specifies the properties to update for a
-// subscription.
-type SubscriptionConfigToUpdate struct {
-	// The full path of the subscription to update. Required.
-	Name SubscriptionPath
-
-	// If non-zero, updates the message delivery requirement.
-	DeliveryRequirement DeliveryRequirement
+func (sc *SubscriptionConfig) toProto() *pb.Subscription {
+	return &pb.Subscription{
+		Name:  sc.Name.String(),
+		Topic: sc.Topic.String(),
+		DeliveryConfig: &pb.Subscription_DeliveryConfig{
+			DeliveryRequirement: pb.Subscription_DeliveryConfig_DeliveryRequirement(sc.DeliveryRequirement),
+		},
+	}
 }
 
 func protoToSubscriptionConfig(s *pb.Subscription) (*SubscriptionConfig, error) {
@@ -233,14 +233,14 @@ func protoToSubscriptionConfig(s *pb.Subscription) (*SubscriptionConfig, error) 
 	}, nil
 }
 
-func (sc *SubscriptionConfig) toProto() *pb.Subscription {
-	return &pb.Subscription{
-		Name:  sc.Name.String(),
-		Topic: sc.Topic.String(),
-		DeliveryConfig: &pb.Subscription_DeliveryConfig{
-			DeliveryRequirement: pb.Subscription_DeliveryConfig_DeliveryRequirement(sc.DeliveryRequirement),
-		},
-	}
+// SubscriptionConfigToUpdate specifies the properties to update for a
+// subscription.
+type SubscriptionConfigToUpdate struct {
+	// The full path of the subscription to update. Required.
+	Name SubscriptionPath
+
+	// If non-zero, updates the message delivery requirement.
+	DeliveryRequirement DeliveryRequirement
 }
 
 func (sc *SubscriptionConfigToUpdate) toUpdateRequest() *pb.UpdateSubscriptionRequest {
