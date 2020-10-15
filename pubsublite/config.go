@@ -24,11 +24,6 @@ import (
 	fmpb "google.golang.org/genproto/protobuf/field_mask"
 )
 
-// InfiniteRetention is sentinel used when updating topic configs to clear a
-// retention duration (i.e. retain messages as long as there is available
-// storage).
-const InfiniteRetention = time.Duration(-1)
-
 // TopicConfig describes the properties of a Google Pub/Sub Lite topic.
 // See https://cloud.google.com/pubsub/lite/docs/topics for more information
 // about how topics are configured.
@@ -110,6 +105,11 @@ func protoToTopicConfig(t *pb.Topic) (*TopicConfig, error) {
 	}
 	return topic, nil
 }
+
+// InfiniteRetention is sentinel used when updating topic configs to clear a
+// retention duration (i.e. retain messages as long as there is available
+// storage).
+const InfiniteRetention = time.Duration(-1)
 
 // TopicConfigToUpdate specifies the properties to update for a topic.
 type TopicConfigToUpdate struct {

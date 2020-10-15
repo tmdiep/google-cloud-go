@@ -15,96 +15,55 @@ package pubsublite
 
 import "testing"
 
-func TestZoneToRegion(t *testing.T) {
-	zone := CloudZone("europe-west1-d")
-	got := zone.Region()
-	want := CloudRegion("europe-west1")
-	if got != want {
-		t.Errorf("CloudZone(%q).Region() = %v, want %v", zone, got, want)
-	}
-}
-
-func TestParseZone(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		input    string
-		wantZone CloudZone
-		wantErr  bool
-	}{
-		{
-			name:     "valid",
-			input:    "us-central1-a",
-			wantZone: CloudZone("us-central1-a"),
-		},
-		{
-			name:    "invalid: insufficient dashes",
-			input:   "us-central1",
-			wantErr: true,
-		},
-		{
-			name:    "invalid: excess dashes",
-			input:   "us-central1-a-b",
-			wantErr: true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			gotZone, gotErr := ParseZone(tc.input)
-			if gotZone != tc.wantZone || (gotErr != nil) != tc.wantErr {
-				t.Errorf("ParseZone(%q) = (%v, %v), want (%v, err=%v)", tc.input, gotZone, gotErr, tc.wantZone, tc.wantErr)
-			}
-		})
-	}
-}
-
 func TestParseTopicPath(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
+		desc     string
 		input    string
 		wantPath TopicPath
 		wantErr  bool
 	}{
 		{
-			name:     "valid: topic path",
+			desc:     "valid: topic path",
 			input:    "projects/987654321/locations/europe-west1-d/topics/my-topic",
-			wantPath: TopicPath{Project("987654321"), CloudZone("europe-west1-d"), TopicID("my-topic")},
+			wantPath: TopicPath{Project: "987654321", Zone: "europe-west1-d", TopicID: "my-topic"},
 		},
 		{
-			name:     "valid: sub-resource path",
-			input:    "projects/my-project/locations/us-west1-b/topics/my-topic/subresource/name",
-			wantPath: TopicPath{Project("my-project"), CloudZone("us-west1-b"), TopicID("my-topic")},
-		},
-		{
-			name:    "invalid: zone",
+			desc:    "invalid: zone",
 			input:   "europe-west1-d",
 			wantErr: true,
 		},
 		{
-			name:    "invalid: subscription path",
+			desc:    "invalid: subscription path",
 			input:   "projects/987654321/locations/europe-west1-d/subscriptions/my-subs",
 			wantErr: true,
 		},
 		{
-			name:    "invalid: invalid zone component",
-			input:   "projects/987654321/locations/not_a_zone/topics/my-topic",
-			wantErr: true,
-		},
-		{
-			name:    "invalid: missing topic id",
-			input:   "projects/987654321/locations/europe-west1-d/topics/",
-			wantErr: true,
-		},
-		{
-			name:    "invalid: missing project",
+			desc:    "invalid: missing project",
 			input:   "projects//locations/europe-west1-d/topics/my-topic",
 			wantErr: true,
 		},
 		{
-			name:    "invalid: prefix",
+			desc:    "invalid: missing zone",
+			input:   "projects/987654321/locations//topics/my-topic",
+			wantErr: true,
+		},
+		{
+			desc:    "invalid: missing topic id",
+			input:   "projects/987654321/locations/europe-west1-d/topics/",
+			wantErr: true,
+		},
+		{
+			desc:    "invalid: has prefix",
 			input:   "prefix/projects/987654321/locations/europe-west1-d/topics/my-topic",
 			wantErr: true,
 		},
+		{
+			desc:    "invalid: has suffix",
+			input:   "projects/my-project/locations/us-west1-b/topics/my-topic/subresource/desc",
+			wantErr: true,
+		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.desc, func(t *testing.T) {
 			gotPath, gotErr := ParseTopicPath(tc.input)
 			if gotPath != tc.wantPath || (gotErr != nil) != tc.wantErr {
 				t.Errorf("ParseTopicPath(%q) = (%v, %v), want (%v, err=%v)", tc.input, gotPath, gotErr, tc.wantPath, tc.wantErr)
@@ -115,57 +74,126 @@ func TestParseTopicPath(t *testing.T) {
 
 func TestParseSubscriptionPath(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
+		desc     string
 		input    string
 		wantPath SubscriptionPath
 		wantErr  bool
 	}{
 		{
-			name:     "valid: subscription path",
+			desc:     "valid: subscription path",
 			input:    "projects/987654321/locations/europe-west1-d/subscriptions/my-subs",
-			wantPath: SubscriptionPath{Project("987654321"), CloudZone("europe-west1-d"), SubscriptionID("my-subs")},
+			wantPath: SubscriptionPath{Project: "987654321", Zone: "europe-west1-d", SubscriptionID: "my-subs"},
 		},
 		{
-			name:     "valid: sub-resource path",
-			input:    "projects/my-project/locations/us-west1-b/subscriptions/my-subs/subresource/name",
-			wantPath: SubscriptionPath{Project("my-project"), CloudZone("us-west1-b"), SubscriptionID("my-subs")},
-		},
-		{
-			name:    "invalid: zone",
+			desc:    "invalid: zone",
 			input:   "europe-west1-d",
 			wantErr: true,
 		},
 		{
-			name:    "invalid: topic path",
+			desc:    "invalid: topic path",
 			input:   "projects/987654321/locations/europe-west1-d/topics/my-topic",
 			wantErr: true,
 		},
 		{
-			name:    "invalid: invalid zone component",
-			input:   "projects/987654321/locations/not_a_zone/subscriptions/my-subs",
-			wantErr: true,
-		},
-		{
-			name:    "invalid: missing subscription id",
-			input:   "projects/987654321/locations/europe-west1-d/subscriptions/",
-			wantErr: true,
-		},
-		{
-			name:    "invalid: missing project",
+			desc:    "invalid: missing project",
 			input:   "projects//locations/europe-west1-d/subscriptions/my-subs",
 			wantErr: true,
 		},
 		{
-			name:    "invalid: prefix",
+			desc:    "invalid: missing zone",
+			input:   "projects/987654321/locations//subscriptions/my-subs",
+			wantErr: true,
+		},
+		{
+			desc:    "invalid: missing subscription id",
+			input:   "projects/987654321/locations/europe-west1-d/subscriptions/",
+			wantErr: true,
+		},
+		{
+			desc:    "invalid: has prefix",
 			input:   "prefix/projects/987654321/locations/europe-west1-d/subscriptions/my-subs",
 			wantErr: true,
 		},
+		{
+			desc:    "invalid: has suffix",
+			input:   "projects/my-project/locations/us-west1-b/subscriptions/my-subs/subresource/desc",
+			wantErr: true,
+		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.desc, func(t *testing.T) {
 			gotPath, gotErr := ParseSubscriptionPath(tc.input)
 			if gotPath != tc.wantPath || (gotErr != nil) != tc.wantErr {
 				t.Errorf("ParseSubscriptionPath(%q) = (%v, %v), want (%v, err=%v)", tc.input, gotPath, gotErr, tc.wantPath, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateZone(t *testing.T) {
+	for _, tc := range []struct {
+		desc    string
+		input   string
+		wantErr bool
+	}{
+		{
+			desc:    "valid",
+			input:   "us-central1-a",
+			wantErr: false,
+		},
+		{
+			desc:    "invalid: insufficient dashes",
+			input:   "us-central1",
+			wantErr: true,
+		},
+		{
+			desc:    "invalid: excess dashes",
+			input:   "us-central1-a-b",
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			err := ValidateZone(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("ValidateZone(%q) = %v, want err=%v", tc.input, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateRegion(t *testing.T) {
+	for _, tc := range []struct {
+		desc    string
+		input   string
+		wantErr bool
+	}{
+		{
+			desc:    "valid",
+			input:   "europe-west1",
+			wantErr: false,
+		},
+		{
+			desc:    "invalid: insufficient dashes",
+			input:   "europewest1",
+			wantErr: true,
+		},
+		{
+			desc:    "invalid: excess dashes",
+			input:   "europe-west1-b",
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			err := ValidateRegion(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("ValidateRegion(%q) = %v, want err=%v", tc.input, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestZoneToRegion(t *testing.T) {
+	zone := "europe-west1-d"
+	if got, want := ZoneToRegion(zone), "europe-west1"; got != want {
+		t.Errorf("ZoneToRegion(%q) = %v, want %v", zone, got, want)
 	}
 }

@@ -58,15 +58,15 @@ func TestResourceAdminOperations(t *testing.T) {
 	initIntegrationTest(t)
 
 	ctx := context.Background()
-	proj := Project(testutil.ProjID())
-	zone := CloudZone("us-central1-b")
+	proj := testutil.ProjID()
+	zone := "us-central1-a"
 	resourceID := fmt.Sprintf("go-test-admin-%d", rng.Int63())
 	locationPath := LocationPath{Project: proj, Zone: zone}
-	topicPath := TopicPath{Project: proj, Zone: zone, ID: TopicID(resourceID)}
-	subscriptionPath := SubscriptionPath{Project: proj, Zone: zone, ID: SubscriptionID(resourceID)}
+	topicPath := TopicPath{Project: proj, Zone: zone, TopicID: resourceID}
+	subscriptionPath := SubscriptionPath{Project: proj, Zone: zone, SubscriptionID: resourceID}
 	t.Logf("Topic path: %s", topicPath)
 
-	client, err := NewClient(ctx, zone.Region())
+	client, err := NewAdminClient(ctx, ZoneToRegion(zone))
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -103,25 +103,22 @@ func TestResourceAdminOperations(t *testing.T) {
 		t.Errorf("TopicPartitions() got: %v, want: %v", gotTopicPartitions, newTopicConfig.PartitionCount)
 	}
 
-	if topicIt, err := client.Topics(ctx, locationPath); err != nil {
-		t.Errorf("Failed to list topics: %v", err)
-	} else {
-		var foundTopic *TopicConfig
-		for {
-			topic, err := topicIt.Next()
-			if err == iterator.Done {
-				break
-			}
-			if testutil.Equal(topic.Name, topicPath) {
-				foundTopic = topic
-				break
-			}
+	topicIt := client.Topics(ctx, locationPath)
+	var foundTopic *TopicConfig
+	for {
+		topic, err := topicIt.Next()
+		if err == iterator.Done {
+			break
 		}
-		if foundTopic == nil {
-			t.Error("Topics() did not return topic config")
-		} else if !testutil.Equal(foundTopic, newTopicConfig) {
-			t.Errorf("Topics() found config: %v, want: %v", foundTopic, newTopicConfig)
+		if testutil.Equal(topic.Name, topicPath) {
+			foundTopic = topic
+			break
 		}
+	}
+	if foundTopic == nil {
+		t.Error("Topics() did not return topic config")
+	} else if !testutil.Equal(foundTopic, newTopicConfig) {
+		t.Errorf("Topics() found config: %v, want: %v", foundTopic, newTopicConfig)
 	}
 
 	topicUpdate1 := &TopicConfigToUpdate{
@@ -183,25 +180,22 @@ func TestResourceAdminOperations(t *testing.T) {
 		t.Errorf("Subscription() got: %v, want: %v", gotSubsConfig, newSubsConfig)
 	}
 
-	if subsIt, err := client.Subscriptions(ctx, locationPath); err != nil {
-		t.Errorf("Failed to list subscriptions: %v", err)
-	} else {
-		var foundSubs *SubscriptionConfig
-		for {
-			subs, err := subsIt.Next()
-			if err == iterator.Done {
-				break
-			}
-			if testutil.Equal(subs.Name, subscriptionPath) {
-				foundSubs = subs
-				break
-			}
+	subsIt := client.Subscriptions(ctx, locationPath)
+	var foundSubs *SubscriptionConfig
+	for {
+		subs, err := subsIt.Next()
+		if err == iterator.Done {
+			break
 		}
-		if foundSubs == nil {
-			t.Error("Subscriptions() did not return subscription config")
-		} else if !testutil.Equal(foundSubs, gotSubsConfig) {
-			t.Errorf("Subscriptions() found config: %v, want: %v", foundSubs, gotSubsConfig)
+		if testutil.Equal(subs.Name, subscriptionPath) {
+			foundSubs = subs
+			break
 		}
+	}
+	if foundSubs == nil {
+		t.Error("Subscriptions() did not return subscription config")
+	} else if !testutil.Equal(foundSubs, gotSubsConfig) {
+		t.Errorf("Subscriptions() found config: %v, want: %v", foundSubs, gotSubsConfig)
 	}
 
 	if subsPathIt, err := client.TopicSubscriptions(ctx, topicPath); err != nil {
