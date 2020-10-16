@@ -24,12 +24,19 @@ import (
 	"google.golang.org/api/iterator"
 )
 
-const (
-	gibi = 1 << 30
-)
+const gibi = 1 << 30
 
 var (
 	rng *rand.Rand
+
+	// A random zone is selected for each integration test run.
+	supportedZones = []string{
+		"us-central1-a",
+		"us-central1-b",
+		"us-central1-c",
+		"europe-west1-b",
+		"europe-west1-d",
+	}
 )
 
 func initIntegrationTest(t *testing.T) {
@@ -54,19 +61,25 @@ func cleanUpSubscription(ctx context.Context, t *testing.T, client *Client, name
 	}
 }
 
+func randomLiteZone() string {
+	i := rng.Int63() % int64(len(supportedZones))
+	return supportedZones[i]
+}
+
 func TestResourceAdminOperations(t *testing.T) {
 	initIntegrationTest(t)
 
 	ctx := context.Background()
 	proj := testutil.ProjID()
-	zone := "us-central1-a"
+	zone := randomLiteZone()
+	region, _ := ZoneToRegion(zone)
 	resourceID := fmt.Sprintf("go-test-admin-%d", rng.Int63())
 	locationPath := LocationPath{Project: proj, Zone: zone}
 	topicPath := TopicPath{Project: proj, Zone: zone, TopicID: resourceID}
 	subscriptionPath := SubscriptionPath{Project: proj, Zone: zone, SubscriptionID: resourceID}
 	t.Logf("Topic path: %s", topicPath)
 
-	client, err := NewAdminClient(ctx, ZoneToRegion(zone))
+	client, err := NewAdminClient(ctx, region)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}

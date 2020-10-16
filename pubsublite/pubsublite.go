@@ -34,6 +34,8 @@ type Client struct {
 
 // NewAdminClient creates a new Cloud Pub/Sub Lite client to perform admin
 // operations for resources within a given region.
+// See https://cloud.google.com/pubsub/lite/docs/locations for the list of
+// regions and zones where Google Pub/Sub Lite is available.
 func NewAdminClient(ctx context.Context, region string, opts ...option.ClientOption) (c *Client, err error) {
 	if err := ValidateRegion(region); err != nil {
 		return nil, err
