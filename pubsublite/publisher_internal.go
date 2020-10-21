@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 
-package wire
+package pubsublite
 
 import (
 	"container/list"
@@ -21,7 +21,6 @@ import (
 	"reflect"
 	"sync"
 
-	"cloud.google.com/go/pubsublite/common"
 	"google.golang.org/api/support/bundler"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -63,7 +62,7 @@ func (b *publishBatch) ToPublishRequest() *pb.PublishRequest {
 	}
 }
 
-type SinglePartitionPublisher struct {
+type singlePartitionPublisher struct {
 	// Immutable after creation.
 	ctx        context.Context
 	pubClient  *vkit.PublisherClient
@@ -83,8 +82,8 @@ type SinglePartitionPublisher struct {
 	publishQueue *list.List
 }
 
-func NewSinglePartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings common.PublishSettings, topicPath string, partition int) *SinglePartitionPublisher {
-	publisher := &SinglePartitionPublisher{
+func newSinglePartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topicPath string, partition int) *singlePartitionPublisher {
+	publisher := &singlePartitionPublisher{
 		ctx:       ctx,
 		pubClient: pubClient,
 		header:    fmt.Sprintf("partition=%d&topic=%s", partition, url.QueryEscape(topicPath)),
@@ -106,7 +105,7 @@ func NewSinglePartitionPublisher(ctx context.Context, pubClient *vkit.PublisherC
 	msgBundler.DelayThreshold = settings.DelayThreshold
 	msgBundler.BundleCountThreshold = settings.CountThreshold
 	msgBundler.BundleByteThreshold = settings.ByteThreshold
-	msgBundler.BundleByteLimit = common.MaxPublishRequestBytes
+	msgBundler.BundleByteLimit = MaxPublishRequestBytes
 	msgBundler.BufferedByteLimit = settings.BufferedByteLimit * 10 // Managed by this publisher
 	msgBundler.HandlerLimit = 1                                    // Handle batches serially
 
@@ -115,11 +114,11 @@ func NewSinglePartitionPublisher(ctx context.Context, pubClient *vkit.PublisherC
 	return publisher
 }
 
-func (p *SinglePartitionPublisher) Start(result chan error) {
+func (p *singlePartitionPublisher) Start(result chan error) {
 	p.stream.Start(result)
 }
 
-func (p *SinglePartitionPublisher) Publish(msg *pb.PubSubMessage) {
+func (p *singlePartitionPublisher) Publish(msg *pb.PubSubMessage) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	// TODO: error handling
@@ -127,7 +126,7 @@ func (p *SinglePartitionPublisher) Publish(msg *pb.PubSubMessage) {
 	p.msgBundler.Add(&messageHolder{Msg: msg}, 1)
 }
 
-func (p *SinglePartitionPublisher) Stop() {
+func (p *singlePartitionPublisher) Stop() {
 	p.mu.Lock()
 
 	if p.shutdown > 0 {
@@ -153,7 +152,7 @@ func (p *SinglePartitionPublisher) Stop() {
 	}
 }
 
-func (p *SinglePartitionPublisher) newStream() (grpc.ClientStream, context.CancelFunc, error) {
+func (p *singlePartitionPublisher) newStream() (grpc.ClientStream, context.CancelFunc, error) {
 	// TODO: Move this to util
 	md, _ := metadata.FromOutgoingContext(p.ctx)
 	md = md.Copy()
@@ -164,11 +163,11 @@ func (p *SinglePartitionPublisher) newStream() (grpc.ClientStream, context.Cance
 	return stream, cancel, err
 }
 
-func (p *SinglePartitionPublisher) initialRequest() interface{} {
+func (p *singlePartitionPublisher) initialRequest() interface{} {
 	return p.initialReq
 }
 
-func (p *SinglePartitionPublisher) validateInitialResponse(response interface{}) error {
+func (p *singlePartitionPublisher) validateInitialResponse(response interface{}) error {
 	pubResponse, ok := response.(*pb.PublishResponse)
 	if !ok {
 		// This should not occur.
@@ -180,7 +179,7 @@ func (p *SinglePartitionPublisher) validateInitialResponse(response interface{})
 	return nil
 }
 
-func (p *SinglePartitionPublisher) onStreamStatusChange(status streamStatus) {
+func (p *singlePartitionPublisher) onStreamStatusChange(status streamStatus) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -198,7 +197,7 @@ func (p *SinglePartitionPublisher) onStreamStatusChange(status streamStatus) {
 	}
 }
 
-func (p *SinglePartitionPublisher) onResponse(response interface{}) {
+func (p *singlePartitionPublisher) onResponse(response interface{}) {
 	pubResponse, ok := response.(*pb.PublishResponse)
 	if !ok {
 		// This should not occur.
@@ -222,7 +221,7 @@ func (p *SinglePartitionPublisher) onResponse(response interface{}) {
 	}
 }
 
-func (p *SinglePartitionPublisher) handleBatch(messages []*messageHolder) {
+func (p *singlePartitionPublisher) handleBatch(messages []*messageHolder) {
 	if len(messages) == 0 {
 		// This should not occur.
 		return

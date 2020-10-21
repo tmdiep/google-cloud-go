@@ -23,8 +23,6 @@ import (
 
 	"cloud.google.com/go/internal/testutil"
 	"cloud.google.com/go/internal/uid"
-	"cloud.google.com/go/pubsublite/common"
-	"cloud.google.com/go/pubsublite/internal/wire"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/api/option/internaloption"
@@ -320,7 +318,7 @@ func TestSimplePublish(t *testing.T) {
 	}
 
 	publisherClient := publisherClient(ctx, t, zone)
-	publisher := wire.NewSinglePartitionPublisher(ctx, publisherClient, common.DefaultPublishSettings, topic.String(), 0)
+	publisher := newSinglePartitionPublisher(ctx, publisherClient, DefaultPublishSettings, topic.String(), 0)
 
 	startResults := make(chan error, numPartitions)
 	publisher.Start(startResults)

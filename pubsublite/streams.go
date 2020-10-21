@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 
-package wire
+package pubsublite
 
 import (
 	"context"
@@ -109,7 +109,7 @@ func (rs *retryableStream) Send(request interface{}) bool {
 		}
 
 		// TODO: handle retries or fail with permanent error
-		fmt.Println("Send to stream failed: %v", err)
+		fmt.Printf("Send to stream failed: %v\n", err)
 	}
 	return false
 }
@@ -128,8 +128,8 @@ func (rs *retryableStream) Terminate(err error) {
 	rs.terminateError = err
 	rs.clearStream()
 
-	// There is a high risk of deadlock here, as Terminate can be called from
-	// within a streamHandler method with a lock held. So notify from a goroutine.
+	// Terminate can be called from within a streamHandler method with a lock
+	// held. So notify from a goroutine to prevent deadlock.
 	go rs.handler.onStreamStatusChange(streamTerminated)
 }
 
@@ -153,7 +153,7 @@ func (rs *retryableStream) currentStream() grpc.ClientStream {
 	return rs.stream
 }
 
-// clearStream must be called with the mutex already held.
+// clearStream must be called with the retryableStream.mu locked.
 func (rs *retryableStream) clearStream() {
 	if rs.cancelStream != nil {
 		rs.cancelStream()
@@ -164,39 +164,44 @@ func (rs *retryableStream) clearStream() {
 	}
 }
 
-func (rs *retryableStream) canReconnect() bool {
+// Intended to be called in a goroutine.
+func (rs *retryableStream) reconnect(result *chan error) {
 	rs.mu.Lock()
-	defer rs.mu.Unlock()
 
 	// There should not be more than 1 goroutine reconnecting.
 	if rs.status == streamReconnecting {
-		return false
+		rs.mu.Unlock()
+		return
 	}
 	rs.status = streamReconnecting
 	rs.clearStream()
-	return true
-}
+	rs.mu.Unlock()
 
-// Intended to be called in a goroutine.
-func (rs *retryableStream) reconnect(result *chan error) {
-	if !rs.canReconnect() {
-		return
-	}
 	rs.handler.onStreamStatusChange(streamReconnecting)
 
-	var newStream grpc.ClientStream
-	var cancelFunc context.CancelFunc
-	var err error
+	newStream, cancelFunc, err := rs.initNewStream()
+	if err != nil {
+		rs.Terminate(err)
+	} else {
+		rs.mu.Lock()
+		rs.status = streamConnected
+		rs.stream = newStream
+		rs.cancelStream = cancelFunc
+		rs.mu.Unlock()
+
+		rs.handler.onStreamStatusChange(streamConnected)
+		go rs.listen()
+	}
+
+	if result != nil {
+		*result <- err
+	}
+}
+
+func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelFunc context.CancelFunc, err error) {
 	defer func() {
-		if err != nil {
-			if newStream != nil {
-				cancelFunc()
-			}
-			rs.Terminate(err)
-		}
-		if result != nil {
-			*result <- err
-		} else {
+		if err != nil && cancelFunc != nil {
+			cancelFunc()
 		}
 	}()
 
@@ -218,18 +223,7 @@ func (rs *retryableStream) reconnect(result *chan error) {
 		// TODO: this is a permanent error
 		return
 	}
-
-	func() {
-		rs.mu.Lock()
-		defer rs.mu.Unlock()
-
-		rs.status = streamConnected
-		rs.stream = newStream
-		rs.cancelStream = cancelFunc
-	}()
-
-	rs.handler.onStreamStatusChange(streamConnected)
-	go rs.listen()
+	return
 }
 
 // Intended to be called in a goroutine.
