@@ -11,18 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 
-package pubsublite
-
-const (
-	// MaxPublishMessageBytes is the maximum allowed serialized size of a single
-	// Pub/Sub message in bytes.
-	MaxPublishMessageBytes = 1000000
-
-	// MaxPublishRequestCount is the maximum number of messages that can be
-	// batched in a single publish request.
-	MaxPublishRequestCount = 1000
-
-	// MaxPublishRequestBytes is the maximum allowed serialized size of a single
-	// publish request (containing a batch of messages) in bytes.
-	MaxPublishRequestBytes = 3500000
-)
+/*
+Package common contains shared constants and types for the Google Pub/Sub Lite
+library.
+*/
+package common // import "cloud.google.com/go/pubsublite/common"

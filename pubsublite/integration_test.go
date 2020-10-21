@@ -14,24 +14,29 @@
 package pubsublite
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"math/rand"
 	"testing"
 	"time"
 
 	"cloud.google.com/go/internal/testutil"
 	"cloud.google.com/go/internal/uid"
+	"cloud.google.com/go/pubsublite/common"
+	"cloud.google.com/go/pubsublite/internal/wire"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
+	"google.golang.org/api/option/internaloption"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
+	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 const gibi = 1 << 30
 
 var (
-	resourceIDs = uid.NewSpace("go-admin-test", nil)
-	rng         *rand.Rand
+	rng *rand.Rand
 
 	// A random zone is selected for each integration test run.
 	supportedZones = []string{
@@ -76,6 +81,30 @@ func adminClient(ctx context.Context, t *testing.T, region string, opts ...optio
 	return admin
 }
 
+// Temporary
+func NewPublisherClient(ctx context.Context, zone string, opts ...option.ClientOption) (*vkit.PublisherClient, error) {
+	region, err := ZoneToRegion(zone)
+	if err != nil {
+		return nil, err
+	}
+	options := []option.ClientOption{internaloption.WithDefaultEndpoint(region + "-pubsublite.googleapis.com:443")}
+	options = append(options, opts...)
+	return vkit.NewPublisherClient(ctx, options...)
+}
+
+func publisherClient(ctx context.Context, t *testing.T, zone string, opts ...option.ClientOption) *vkit.PublisherClient {
+	ts := testutil.TokenSource(ctx, vkit.DefaultAuthScopes()...)
+	if ts == nil {
+		t.Skip("Integration tests skipped. See CONTRIBUTING.md for details")
+	}
+	opts = append(withGRPCHeadersAssertion(t, option.WithTokenSource(ts)), opts...)
+	publisher, err := NewPublisherClient(ctx, zone, opts...)
+	if err != nil {
+		t.Fatalf("Failed to create publisher client: %v", err)
+	}
+	return publisher
+}
+
 func cleanUpTopic(ctx context.Context, t *testing.T, admin *AdminClient, name TopicPath) {
 	if err := admin.DeleteTopic(ctx, name); err != nil {
 		t.Errorf("Failed to delete topic %s: %v", name, err)
@@ -99,6 +128,7 @@ func TestResourceAdminOperations(t *testing.T) {
 	proj := testutil.ProjID()
 	zone := randomLiteZone()
 	region, _ := ZoneToRegion(zone)
+	resourceIDs := uid.NewSpace("go-admin-test", nil)
 	resourceID := resourceIDs.New()
 
 	locationPath := LocationPath{Project: proj, Zone: zone}
@@ -269,4 +299,51 @@ func TestResourceAdminOperations(t *testing.T) {
 	} else if diff := testutil.Diff(gotSubsConfig, wantUpdatedSubsConfig); diff != "" {
 		t.Errorf("UpdateSubscription() got: -, want: +\n%s", diff)
 	}
+}
+
+func TestSimplePublish(t *testing.T) {
+	initIntegrationTest(t)
+
+	ctx := context.Background()
+	proj := testutil.ProjID()
+	zone := "us-central1-b"
+	region, _ := ZoneToRegion(zone)
+	resourceID := "go-publish-test"
+	numPartitions := 1
+	topic := TopicPath{Project: proj, Zone: zone, TopicID: resourceID}
+
+	admin := adminClient(ctx, t, region)
+	defer admin.Close()
+
+	if _, err := admin.Topic(ctx, topic); err != nil {
+		t.Fatalf("Failed to get topic: %v", err)
+	}
+
+	publisherClient := publisherClient(ctx, t, zone)
+	publisher := wire.NewSinglePartitionPublisher(ctx, publisherClient, common.DefaultPublishSettings, topic.String(), 0)
+
+	startResults := make(chan error, numPartitions)
+	publisher.Start(startResults)
+	numStarted := 0
+	for {
+		err := <-startResults
+		fmt.Sprintf("Start result: %v", err)
+		if err != nil {
+			t.Fatalf("Failed to start publisher: %v", err)
+		}
+		numStarted++
+		if numStarted == numPartitions {
+			break
+		}
+	}
+
+	publisher.Publish(&pb.PubSubMessage{
+		Data: bytes.Repeat([]byte{'a'}, 10),
+	})
+	publisher.Publish(&pb.PubSubMessage{
+		Data: bytes.Repeat([]byte{'b'}, 10),
+	})
+
+	publisher.Stop()
+	time.Sleep(5 * time.Second)
 }

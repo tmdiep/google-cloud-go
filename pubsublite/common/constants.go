@@ -11,12 +11,18 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 
-package pubsublite
+package common
 
-import "fmt"
+const (
+	// MaxPublishRequestCount is the maximum number of messages that can be
+	// batched in a single publish request.
+	MaxPublishRequestCount = 1000
 
-var (
-	// ErrOversizedMessage indicates that a message's size exceeds
-	// `MaxPublishMessageBytes`.
-	ErrOversizedMessage = fmt.Errorf("maximum size of a message is %d bytes", MaxPublishMessageBytes)
+	// MaxPublishMessageBytes is the maximum allowed serialized size of a single
+	// Pub/Sub message in bytes.
+	MaxPublishMessageBytes = 1000000
+
+	// MaxPublishRequestBytes is the maximum allowed serialized size of a single
+	// publish request (containing a batch of messages) in bytes.
+	MaxPublishRequestBytes = 3500000
 )
