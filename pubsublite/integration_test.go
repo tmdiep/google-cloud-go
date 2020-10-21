@@ -14,7 +14,6 @@
 package pubsublite
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"math/rand"
@@ -28,7 +27,6 @@ import (
 	"google.golang.org/api/option/internaloption"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
-	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 const gibi = 1 << 30
@@ -334,14 +332,14 @@ func TestSimplePublish(t *testing.T) {
 			break
 		}
 	}
-
-	publisher.Publish(&pb.PubSubMessage{
-		Data: bytes.Repeat([]byte{'a'}, 10),
-	})
-	publisher.Publish(&pb.PubSubMessage{
-		Data: bytes.Repeat([]byte{'b'}, 10),
-	})
-
+	/*
+		publisher.Publish(&pb.PubSubMessage{
+			Data: bytes.Repeat([]byte{'a'}, 10),
+		})
+		publisher.Publish(&pb.PubSubMessage{
+			Data: bytes.Repeat([]byte{'b'}, 10),
+		})
+	*/
 	publisher.Stop()
 	time.Sleep(5 * time.Second)
 }

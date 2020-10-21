@@ -62,6 +62,7 @@ func (b *publishBatch) ToPublishRequest() *pb.PublishRequest {
 	}
 }
 
+// singlePartitionPublisher publishes messages to a single topic partition.
 type singlePartitionPublisher struct {
 	// Immutable after creation.
 	ctx        context.Context
@@ -110,7 +111,7 @@ func newSinglePartitionPublisher(ctx context.Context, pubClient *vkit.PublisherC
 	msgBundler.HandlerLimit = 1                                    // Handle batches serially
 
 	publisher.msgBundler = msgBundler
-	publisher.stream = newRetryableStream(publisher, settings.Timeout, reflect.TypeOf(pb.PublishResponse{}))
+	publisher.stream = newRetryableStream(ctx, publisher, settings.Timeout, reflect.TypeOf(pb.PublishResponse{}))
 	return publisher
 }
 
@@ -152,15 +153,13 @@ func (p *singlePartitionPublisher) Stop() {
 	}
 }
 
-func (p *singlePartitionPublisher) newStream() (grpc.ClientStream, context.CancelFunc, error) {
+func (p *singlePartitionPublisher) newStream(ctx context.Context) (grpc.ClientStream, error) {
 	// TODO: Move this to util
-	md, _ := metadata.FromOutgoingContext(p.ctx)
+	md, _ := metadata.FromOutgoingContext(ctx)
 	md = md.Copy()
 	md["x-goog-request-params"] = []string{p.header}
 
-	cctx, cancel := context.WithCancel(metadata.NewOutgoingContext(p.ctx, md))
-	stream, err := p.pubClient.Publish(cctx)
-	return stream, cancel, err
+	return p.pubClient.Publish(metadata.NewOutgoingContext(ctx, md))
 }
 
 func (p *singlePartitionPublisher) initialRequest() interface{} {

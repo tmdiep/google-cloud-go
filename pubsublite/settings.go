@@ -42,8 +42,8 @@ type PublishSettings struct {
 
 	// The maximum time that the client will attempt to establish a publish stream
 	// connection to the server. The timeout is exceeded, the publisher will
-	// terminate with the ErrConnectionTimeout error. Note that if the timeout
-	// duration is long, ErrOverflow may occur first.
+	// terminate with the last error that occurred while trying to reconnect. Note
+	// that if the timeout duration is long, ErrOverflow may occur first.
 	Timeout time.Duration
 
 	// The maximum number of bytes that the publisher will keep in memory before

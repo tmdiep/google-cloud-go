@@ -23,10 +23,6 @@ var (
 	// MaxPublishMessageBytes.
 	ErrOversizedMessage = status.Errorf(codes.InvalidArgument, "pubsublite: maximum size of a message is %d bytes", MaxPublishMessageBytes)
 
-	// ErrConnectionTimeout indicates that a connection to the server could not be
-	// established within the duration configured in settings.
-	ErrConnectionTimeout = status.Errorf(codes.DeadlineExceeded, "pubsublite: timed out establishing a connection to the server")
-
 	// ErrOverflow indicates that the publish buffers have overflowed. See
 	// comments for PublishSettings.BufferedByteLimit.
 	ErrOverflow = status.Errorf(codes.ResourceExhausted, "pubsublite: client-side publish buffers have overflowed")
