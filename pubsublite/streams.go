@@ -90,7 +90,10 @@ func newRetryableStream(handler streamHandler, connectTimeout time.Duration, res
 }
 
 func (rs *retryableStream) Start(result chan error) {
-	if rs.Status() != streamUninitialized {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	if rs.status != streamUninitialized {
 		result <- status.Error(codes.Internal, "pubsublite: stream has already been started")
 		return
 	}
@@ -167,9 +170,9 @@ func (rs *retryableStream) clearStream() {
 // Intended to be called in a goroutine.
 func (rs *retryableStream) reconnect(result *chan error) {
 	rs.mu.Lock()
-
-	// There should not be more than 1 goroutine reconnecting.
+	// TODO: if terminated, abort and tell channel the error
 	if rs.status == streamReconnecting {
+		// There cannot be more than 1 goroutine reconnecting.
 		rs.mu.Unlock()
 		return
 	}
@@ -183,16 +186,18 @@ func (rs *retryableStream) reconnect(result *chan error) {
 	if err != nil {
 		rs.Terminate(err)
 	} else {
+		// TODO: check stream terminated
 		rs.mu.Lock()
 		rs.status = streamConnected
 		rs.stream = newStream
 		rs.cancelStream = cancelFunc
+		go rs.listen(newStream)
 		rs.mu.Unlock()
 
 		rs.handler.onStreamStatusChange(streamConnected)
-		go rs.listen()
 	}
 
+	// Move up to top
 	if result != nil {
 		*result <- err
 	}
@@ -226,21 +231,14 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 	return
 }
 
-// Intended to be called in a goroutine.
-func (rs *retryableStream) listen() {
-	recvStream := rs.currentStream()
-	if recvStream == nil {
-		return
-	}
-
+// listen receives responses from the current stream. It should end when the
+// current stream has closed. Intended to be called in a goroutine.
+func (rs *retryableStream) listen(recvStream grpc.ClientStream) {
 	for {
 		response := reflect.New(rs.responseType).Interface()
-		fmt.Printf("Waiting for response...\n")
+		fmt.Println("Waiting for response...")
 		err := recvStream.RecvMsg(response)
-		if err != nil {
-			fmt.Printf("Stream recv got err %v\n", err)
-		}
-		fmt.Printf("Stream recv got response %v\n", response)
+		fmt.Printf("Stream recv got err=%v, response=%v\n", err, response)
 
 		// If the current stream has changed while listening, any errors or messages
 		// received now are obsolete. Discard and end the goroutine.
@@ -249,10 +247,14 @@ func (rs *retryableStream) listen() {
 		}
 
 		if err != nil {
-			// TODO: retry
-			rs.Terminate(err)
+			if isRetryableStreamError(err) {
+				go rs.reconnect(nil)
+			} else {
+				rs.Terminate(err)
+			}
 			break
 		}
+
 		rs.handler.onResponse(response)
 	}
 
