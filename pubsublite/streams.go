@@ -15,7 +15,6 @@ package pubsublite
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"reflect"
 	"sync"
@@ -44,22 +43,23 @@ const (
 // streamHandler provides hooks for different streaming RPCs (e.g. publish,
 // subscribe, streaming cursor, etc) to use retryableStream. All Pub/Sub Lite
 // streaming RPCs implement a similar handshaking protocol, where an initial
-// request and response must be transmitted  before other requests can be sent
+// request and response must be transmitted before other requests can be sent
 // over the stream.
 //
 // streamHandler methods must not be called while holding the retryableStream.mu
 // in order to prevent the streamHandler calling back into the retryableStream
 // and deadlocking.
 type streamHandler interface {
-	// newStream implementations must create the client stream with a cancellable
-	// context. The CancelFunc will be called to close the stream.
+	// newStream implementations must create the client stream with the given
+	// (cancellable) context.
 	newStream(context.Context) (grpc.ClientStream, error)
 	initialRequest() interface{}
 	validateInitialResponse(interface{}) error
 
 	// onStreamStatusChange is used to notify stream handlers when the stream has
 	// changed state. In particular, the `streamTerminated` state must be handled.
-	// Stream handlers should perform any necessary reset of state upon
+	// retryableStream.Error() returns the error that caused the stream to
+	// terminate. Stream handlers should perform any necessary reset of state upon
 	// `streamConnected`.
 	onStreamStatusChange(streamStatus)
 	// onResponse forwards a response received on the stream to the stream
@@ -68,7 +68,12 @@ type streamHandler interface {
 }
 
 // retryableStream is a wrapper around a bidirectional gRPC client stream to
-// handle reconnection when the stream breaks due to retryable errors.
+// handle automatic reconnection when the stream breaks.
+//
+// A retryableStream cycles between the following goroutines:
+//   Start() --> reconnect() <--> listen()
+// terminate() can be called at any time, either by the client to force stream
+// closure, or as a result of an unretryable error.
 type retryableStream struct {
 	// Immutable after creation.
 	ctx          context.Context
@@ -79,10 +84,10 @@ type retryableStream struct {
 	// Guards access to fields below.
 	mu sync.Mutex
 
-	stream         grpc.ClientStream
-	cancelStream   context.CancelFunc
-	status         streamStatus
-	terminateError error
+	stream       grpc.ClientStream
+	cancelStream context.CancelFunc
+	status       streamStatus
+	finalErr     error
 }
 
 // newRetryableStream creates a new retryable stream wrapper. `timeout` is the
@@ -110,6 +115,11 @@ func (rs *retryableStream) Start(result chan error) {
 	go rs.reconnect(&result)
 }
 
+// Stop gracefully closes the stream without error.
+func (rs *retryableStream) Stop() {
+	rs.terminate(nil)
+}
+
 // Send attempts to send the request to the underlying stream and returns true
 // if successfully sent. Returns false if an error occurred or a reconnection is
 // in progress.
@@ -117,8 +127,8 @@ func (rs *retryableStream) Send(request interface{}) (sent bool) {
 	rs.mu.Lock()
 
 	if rs.stream != nil {
-		fmt.Printf("Sending data to stream: %v\n", request)
 		err := rs.stream.SendMsg(request)
+		// Note that if SendMsg returns an error, the stream is aborted.
 		switch {
 		case err == nil:
 			sent = true
@@ -129,35 +139,14 @@ func (rs *retryableStream) Send(request interface{}) (sent bool) {
 		case isRetryableSendError(err):
 			go rs.reconnect(nil)
 		default:
-			rs.mu.Unlock() // Terminate acquires the mutex.
-			rs.Terminate(err)
+			rs.mu.Unlock() // terminate acquires the mutex.
+			rs.terminate(err)
 			return
 		}
 	}
 
 	rs.mu.Unlock()
 	return
-}
-
-// Terminate forces the stream to terminate with the given error (can be nil for
-// user-initiated shutdown).
-func (rs *retryableStream) Terminate(err error) {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-
-	if rs.status == streamTerminated {
-		return
-	}
-
-	fmt.Printf("Stream terminated with error %v\n", err)
-
-	rs.status = streamTerminated
-	rs.terminateError = err
-	rs.clearStream()
-
-	// Terminate can be called from within a streamHandler method with a lock
-	// held. So notify from a goroutine to prevent deadlock.
-	go rs.handler.onStreamStatusChange(streamTerminated)
 }
 
 // Status returns the current status of the stream.
@@ -167,11 +156,12 @@ func (rs *retryableStream) Status() streamStatus {
 	return rs.status
 }
 
-// Error returns the error that caused the stream to terminate.
+// Error returns the error that caused the stream to terminate. Can be nil if it
+// was initiated by Stop().
 func (rs *retryableStream) Error() error {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
-	return rs.terminateError
+	return rs.finalErr
 }
 
 func (rs *retryableStream) currentStream() grpc.ClientStream {
@@ -183,6 +173,7 @@ func (rs *retryableStream) currentStream() grpc.ClientStream {
 // clearStream must be called with the retryableStream.mu locked.
 func (rs *retryableStream) clearStream() {
 	if rs.cancelStream != nil {
+		// If the stream did not already abort due to error, this will abort it.
 		rs.cancelStream()
 		rs.cancelStream = nil
 	}
@@ -192,7 +183,7 @@ func (rs *retryableStream) clearStream() {
 }
 
 // reconnect attempts to establish a valid connection with the server. Due to
-// the potential high latency, it should not be done while holding
+// the potential high latency, initNewStream() should not be done while holding
 // retryableStream.mu. Hence we need to handle the stream being force terminated
 // during reconnection.
 //
@@ -200,9 +191,8 @@ func (rs *retryableStream) clearStream() {
 // established or the stream terminated.
 func (rs *retryableStream) reconnect(result *chan error) {
 	var outerErr error
-	notifyResult := true
 	defer func() {
-		if result != nil && notifyResult {
+		if result != nil {
 			*result <- outerErr
 		}
 	}()
@@ -212,15 +202,13 @@ func (rs *retryableStream) reconnect(result *chan error) {
 		defer rs.mu.Unlock()
 
 		if rs.status == streamReconnecting {
-			// There cannot be more than 1 goroutine reconnecting.
-			notifyResult = false
+			// There can only be 1 goroutine reconnecting.
 			return false
 		}
 		if rs.status == streamTerminated {
 			outerErr = status.Error(codes.Aborted, "pubsublite: stream has stopped")
 			return false
 		}
-
 		rs.status = streamReconnecting
 		rs.clearStream()
 		return true
@@ -232,7 +220,7 @@ func (rs *retryableStream) reconnect(result *chan error) {
 
 	newStream, cancelFunc, outerErr := rs.initNewStream()
 	if outerErr != nil {
-		rs.Terminate(outerErr)
+		rs.terminate(outerErr)
 		return
 	}
 
@@ -244,7 +232,6 @@ func (rs *retryableStream) reconnect(result *chan error) {
 			outerErr = status.Error(codes.Aborted, "pubsublite: stream has stopped")
 			return false
 		}
-
 		rs.status = streamConnected
 		rs.stream = newStream
 		rs.cancelStream = cancelFunc
@@ -275,13 +262,11 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 			if err != nil {
 				return r.RetryRecv(err)
 			}
-			fmt.Printf("Sending initial request %v\n", rs.handler.initialRequest())
 			if err = newStream.SendMsg(rs.handler.initialRequest()); err != nil {
 				return r.RetrySend(err)
 			}
 			response := reflect.New(rs.responseType).Interface()
 			if err = newStream.RecvMsg(response); err != nil {
-				fmt.Printf("Initial stream recv got err %v\n", err)
 				return r.RetryRecv(err)
 			}
 			if err = rs.handler.validateInitialResponse(response); err != nil {
@@ -310,28 +295,39 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 func (rs *retryableStream) listen(recvStream grpc.ClientStream) {
 	for {
 		response := reflect.New(rs.responseType).Interface()
-		fmt.Println("Waiting for response...")
 		err := recvStream.RecvMsg(response)
-		fmt.Printf("Stream recv got err=%v, response=%v\n", err, response)
 
 		// If the current stream has changed while listening, any errors or messages
 		// received now are obsolete. Discard and end the goroutine.
 		if rs.currentStream() != recvStream {
-			fmt.Println("Discarded stream recv")
 			break
 		}
-
 		if err != nil {
 			if isRetryableRecvError(err) {
 				go rs.reconnect(nil)
 			} else {
-				rs.Terminate(err)
+				rs.terminate(err)
 			}
 			break
 		}
-
 		rs.handler.onResponse(response)
 	}
+}
 
-	fmt.Println("listen goroutine terminated")
+// terminate forces the stream to terminate with the given error (can be nil)
+// Is a no-op if the stream has already terminated.
+func (rs *retryableStream) terminate(err error) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	if rs.status == streamTerminated {
+		return
+	}
+	rs.status = streamTerminated
+	rs.finalErr = err
+	rs.clearStream()
+
+	// terminate can be called from within a streamHandler method with a lock
+	// held. So notify from a goroutine to prevent deadlock.
+	go rs.handler.onStreamStatusChange(streamTerminated)
 }

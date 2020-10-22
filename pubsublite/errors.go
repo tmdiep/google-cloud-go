@@ -19,10 +19,6 @@ import (
 )
 
 var (
-	// ErrOversizedMessage indicates that a message's size exceeds
-	// MaxPublishMessageBytes.
-	ErrOversizedMessage = status.Errorf(codes.InvalidArgument, "pubsublite: maximum size of a message is %d bytes", MaxPublishMessageBytes)
-
 	// ErrOverflow indicates that the publish buffers have overflowed. See
 	// comments for PublishSettings.BufferedByteLimit.
 	ErrOverflow = status.Errorf(codes.ResourceExhausted, "pubsublite: client-side publish buffers have overflowed")
