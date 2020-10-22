@@ -16,6 +16,8 @@ package pubsublite
 import (
 	"time"
 
+	"google.golang.org/api/option"
+	"google.golang.org/api/option/internaloption"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -64,7 +66,7 @@ func isRetryableSendCode(code codes.Code) bool {
 	switch code {
 	// Client-side errors that occur during grpc.ClientStream.SendMsg() have a
 	// smaller set of retryable codes.
-	case codes.Unavailable:
+	case codes.DeadlineExceeded, codes.Unavailable:
 		return true
 	default:
 		return false
@@ -97,4 +99,10 @@ func isRetryableStreamError(err error, isEligible func(codes.Code) bool) bool {
 		return true
 	}
 	return isEligible(s.Code())
+}
+
+func defaultClientOptions(region string) []option.ClientOption {
+	return []option.ClientOption{
+		internaloption.WithDefaultEndpoint(region + "-pubsublite.googleapis.com:443"),
+	}
 }

@@ -26,7 +26,6 @@ import (
 	"cloud.google.com/go/internal/uid"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
-	"google.golang.org/api/option/internaloption"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
@@ -80,24 +79,13 @@ func adminClient(ctx context.Context, t *testing.T, region string, opts ...optio
 	return admin
 }
 
-// Temporary
-func NewPublisherClient(ctx context.Context, zone string, opts ...option.ClientOption) (*vkit.PublisherClient, error) {
-	region, err := ZoneToRegion(zone)
-	if err != nil {
-		return nil, err
-	}
-	options := []option.ClientOption{internaloption.WithDefaultEndpoint(region + "-pubsublite.googleapis.com:443")}
-	options = append(options, opts...)
-	return vkit.NewPublisherClient(ctx, options...)
-}
-
-func publisherClient(ctx context.Context, t *testing.T, zone string, opts ...option.ClientOption) *vkit.PublisherClient {
+func publisherClient(ctx context.Context, t *testing.T, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) *routingPublisher {
 	ts := testutil.TokenSource(ctx, vkit.DefaultAuthScopes()...)
 	if ts == nil {
 		t.Skip("Integration tests skipped. See CONTRIBUTING.md for details")
 	}
 	opts = append(withGRPCHeadersAssertion(t, option.WithTokenSource(ts)), opts...)
-	publisher, err := NewPublisherClient(ctx, zone, opts...)
+	publisher, err := newRoutingPublisher(ctx, settings, topic, opts...)
 	if err != nil {
 		t.Fatalf("Failed to create publisher client: %v", err)
 	}
@@ -306,38 +294,14 @@ func TestSimplePublish(t *testing.T) {
 	ctx := context.Background()
 	proj := testutil.ProjID()
 	zone := "us-central1-b"
-	region, _ := ZoneToRegion(zone)
 	resourceID := "go-publish-test"
-	numPartitions := 1
 	topic := TopicPath{Project: proj, Zone: zone, TopicID: resourceID}
 
-	admin := adminClient(ctx, t, region)
-	defer admin.Close()
-
-	if _, err := admin.Topic(ctx, topic); err != nil {
-		t.Fatalf("Failed to get topic: %v", err)
-	}
-
-	publisherClient := publisherClient(ctx, t, zone)
 	settings := DefaultPublishSettings
 	settings.CountThreshold = 2
 	settings.ByteThreshold = 100
-	publisher := newSinglePartitionPublisher(ctx, publisherClient, settings, topic.String(), 0)
-
-	startResults := make(chan error, numPartitions)
-	publisher.Start(startResults)
-	numStarted := 0
-	for {
-		err := <-startResults
-		fmt.Sprintf("Start result: %v", err)
-		if err != nil {
-			t.Fatalf("Failed to start publisher: %v", err)
-		}
-		numStarted++
-		if numStarted == numPartitions {
-			break
-		}
-	}
+	publisher := publisherClient(ctx, t, settings, topic)
+	publisher.Start()
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -361,7 +325,7 @@ func TestSimplePublish(t *testing.T) {
 		Data: bytes.Repeat([]byte{'c'}, 50),
 	}, onPublishDone)
 
-	publisher.Stop()
+	publisher.Stop(false)
 	wg.Wait()
 	time.Sleep(5 * time.Second)
 }

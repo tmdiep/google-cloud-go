@@ -17,7 +17,6 @@ import (
 	"context"
 
 	"google.golang.org/api/option"
-	"google.golang.org/api/option/internaloption"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
@@ -38,7 +37,7 @@ func NewAdminClient(ctx context.Context, region string, opts ...option.ClientOpt
 	if err := validateRegion(region); err != nil {
 		return nil, err
 	}
-	options := []option.ClientOption{internaloption.WithDefaultEndpoint(region + "-pubsublite.googleapis.com:443")}
+	options := defaultClientOptions(region)
 	options = append(options, opts...)
 	admin, err := vkit.NewAdminClient(ctx, options...)
 	if err != nil {

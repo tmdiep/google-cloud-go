@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/golang/protobuf/proto"
+	"google.golang.org/api/option"
 	"google.golang.org/api/support/bundler"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -35,11 +36,25 @@ import (
 type shutdownMode int
 
 const (
-	noShutdown        shutdownMode = 0
-	flushPending      shutdownMode = 1
+	// Publisher is active.
+	noShutdown shutdownMode = 0
+	// Flush all pending messages before terminating the publisher. This mode
+	// should be used when:
+	// - The user calls Stop().
+	// - A new message fails preconditions. This should block the publish of
+	//   subsequent messages to preserve order, but ideally all prior messages
+	//   should be published to avoid forcing the user to republish them.
+	//   Republishing may result in duplicates if there were in-flight batches
+	//   sent to the server, but the responses have not yet been received.
+	flushPending shutdownMode = 1
+	// Immediately terminate the publisher and error all in-flight batches and
+	// pending messages in the bundler. This mode should be used when:
+	// - The publish stream terminates with a non-retryable error.
+	// - An inconsistency is detected in the server's publish responses.
 	immediateShutdown shutdownMode = 2
 )
 
+// publishMetadata holds the results of a successfully published message.
 type publishMetadata struct {
 	partition int
 	offset    int64
@@ -58,6 +73,8 @@ type messageHolder struct {
 	size   int
 }
 
+// publishBatch holds messages that are published in the same
+// MessagePublishRequest.
 type publishBatch struct {
 	msgHolders []*messageHolder
 }
@@ -77,8 +94,9 @@ func (b *publishBatch) toPublishRequest() *pb.PublishRequest {
 	}
 }
 
-// singlePartitionPublisher publishes messages to a single topic partition.
-type singlePartitionPublisher struct {
+// partitionPublisher publishes messages to a single topic partition.
+// Safe to call from multiple goroutines.
+type partitionPublisher struct {
 	// Immutable after creation.
 	ctx        context.Context
 	pubClient  *vkit.PublisherClient
@@ -95,24 +113,24 @@ type singlePartitionPublisher struct {
 
 	// Used to batch messages.
 	msgBundler *bundler.Bundler
-	// In-flight batches of published messages. Results have not yet been
-	// received from the stream.
+	// Ordered list of In-flight batches of published messages. Results have not
+	// yet been received from the stream.
 	publishQueue          *list.List
 	minExpectedNextOffset int64
 	enableSendToStream    bool
 	availableBufferBytes  int
 }
 
-func newSinglePartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topicPath string, partition int) *singlePartitionPublisher {
-	publisher := &singlePartitionPublisher{
+func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic TopicPath, partition int) *partitionPublisher {
+	publisher := &partitionPublisher{
 		ctx:       ctx,
 		pubClient: pubClient,
 		partition: partition,
-		header:    fmt.Sprintf("partition=%d&topic=%s", partition, url.QueryEscape(topicPath)),
+		header:    fmt.Sprintf("partition=%d&topic=%s", partition, url.QueryEscape(topic.String())),
 		initialReq: &pb.PublishRequest{
 			RequestType: &pb.PublishRequest_InitialRequest{
 				InitialRequest: &pb.InitialPublishRequest{
-					Topic:     topicPath,
+					Topic:     topic.String(),
 					Partition: int64(partition),
 				},
 			},
@@ -139,11 +157,24 @@ func newSinglePartitionPublisher(ctx context.Context, pubClient *vkit.PublisherC
 	return publisher
 }
 
-func (p *singlePartitionPublisher) Start(result chan error) {
+// Start establishes a publish stream connection.
+func (p *partitionPublisher) Start(result chan error) {
 	p.stream.Start(result)
 }
 
-func (p *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onDone publishResultFunc) {
+// Stop initiates shutdown of the publisher. If `forceTerminate` is true, the
+// publisher is shutdown immediately and all pending messages are errored.
+// Otherwise a graceful shutdown will occur, where all pending messages are
+// flushed.
+func (p *partitionPublisher) Stop(forceTerminate bool) {
+	if forceTerminate {
+		p.initiateShutdown(immediateShutdown, status.Errorf(codes.Canceled, "pubsublite: user terminated publisher"))
+	} else {
+		p.initiateShutdown(flushPending, nil)
+	}
+}
+
+func (p *partitionPublisher) Publish(msg *pb.PubSubMessage, onDone publishResultFunc) {
 	processMessage := func() error {
 		p.mu.Lock()
 		defer p.mu.Unlock()
@@ -172,20 +203,15 @@ func (p *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onDone publish
 		return nil
 	}
 
-	// If there the new message cannot be published, flush pending messages to
-	// avoid the user having to republish duplicates. These operations cannot be
-	// called with the mutex held to avoid deadlocks.
+	// If the new message cannot be published, flush pending messages. These
+	// operations cannot be called with the mutex held to avoid deadlocks.
 	if err := processMessage(); err != nil {
 		p.initiateShutdown(flushPending, err)
 		onDone(nil, err)
 	}
 }
 
-func (p *singlePartitionPublisher) Stop() {
-	p.initiateShutdown(flushPending, nil)
-}
-
-func (p *singlePartitionPublisher) newStream(ctx context.Context) (grpc.ClientStream, error) {
+func (p *partitionPublisher) newStream(ctx context.Context) (grpc.ClientStream, error) {
 	// TODO: Move this to util
 	md, _ := metadata.FromOutgoingContext(ctx)
 	md = md.Copy()
@@ -194,11 +220,11 @@ func (p *singlePartitionPublisher) newStream(ctx context.Context) (grpc.ClientSt
 	return p.pubClient.Publish(metadata.NewOutgoingContext(ctx, md))
 }
 
-func (p *singlePartitionPublisher) initialRequest() interface{} {
+func (p *partitionPublisher) initialRequest() interface{} {
 	return p.initialReq
 }
 
-func (p *singlePartitionPublisher) validateInitialResponse(response interface{}) error {
+func (p *partitionPublisher) validateInitialResponse(response interface{}) error {
 	pubResponse, _ := response.(*pb.PublishResponse)
 	if pubResponse.GetInitialResponse() == nil {
 		return status.Errorf(codes.Internal, "pubsublite: server returned invalid initial publish response")
@@ -206,7 +232,7 @@ func (p *singlePartitionPublisher) validateInitialResponse(response interface{})
 	return nil
 }
 
-func (p *singlePartitionPublisher) onStreamStatusChange(status streamStatus) {
+func (p *partitionPublisher) onStreamStatusChange(status streamStatus) {
 	fmt.Printf("onStreamStatusChange: %v\n", status)
 
 	switch status {
@@ -239,7 +265,26 @@ func (p *singlePartitionPublisher) onStreamStatusChange(status streamStatus) {
 	}
 }
 
-func (p *singlePartitionPublisher) onResponse(response interface{}) {
+func (p *partitionPublisher) handleBatch(messages []*messageHolder) {
+	if len(messages) == 0 {
+		// This should not occur.
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	batch := &publishBatch{msgHolders: messages}
+	p.publishQueue.PushBack(batch)
+
+	if p.enableSendToStream {
+		// Note: if the stream is reconnecting, the entire publish queue will be
+		// sent to the stream once the connection has been established.
+		p.stream.Send(batch.toPublishRequest())
+	}
+}
+
+func (p *partitionPublisher) onResponse(response interface{}) {
 	processResponse := func() (*publishBatch, int64, error) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
@@ -285,36 +330,16 @@ func (p *singlePartitionPublisher) onResponse(response interface{}) {
 	}
 }
 
-func (p *singlePartitionPublisher) handleBatch(messages []*messageHolder) {
-	if len(messages) == 0 {
-		// This should not occur.
-		return
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	batch := &publishBatch{msgHolders: messages}
-	p.publishQueue.PushBack(batch)
-
-	if p.enableSendToStream {
-		// Note: if the stream is reconnecting, the entire publish queue will be
-		// sent to the stream once the connection has been established.
-		p.stream.Send(batch.toPublishRequest())
-	}
-}
-
-func (p *singlePartitionPublisher) initiateShutdown(mode shutdownMode, err error) {
+func (p *partitionPublisher) initiateShutdown(mode shutdownMode, err error) {
 	p.mu.Lock()
 
-	if p.shutdown > 0 {
-		// Already shutting down.
+	// Don't re-execute the same shutdown mode. However, allow immediate
+	// termination while attempting to flush.
+	if p.shutdown >= mode {
 		p.mu.Unlock()
 		return
 	}
 
-	// Setting the shutdown mode here will prevent any new messages from being
-	// added to the bundler.
 	p.shutdown = mode
 	p.finalErr = err
 
@@ -325,22 +350,23 @@ func (p *singlePartitionPublisher) initiateShutdown(mode shutdownMode, err error
 		p.stream.Stop()
 	}
 
-	// Flush may invoke the bunder handler (in a goroutine), which also acquires
-	// the mutex, so it cannot be held here.
+	// Bundler.Flush invokes handleBatch() in a goroutine and blocks. Setting the
+	// shutdown mode prevents any new messages from being added to the bundler.
+	// handleBatch() also acquires the mutex, so it cannot be held here.
 	p.mu.Unlock()
 	p.msgBundler.Flush()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// If there are no pending messages, the stream can be closed.
+	// If flushing, wait for the results of queued batches.
 	if mode == flushPending {
 		p.checkDone()
 		return
 	}
 
-	// Otherwise set the error message for all queued messages and clear the
-	// queue.
+	// Otherwise set the error message for all pending messages and clear the
+	// publish queue.
 	for elem := p.publishQueue.Front(); elem != nil; elem = elem.Next() {
 		if batch, ok := elem.Value.(*publishBatch); ok {
 			for _, msgHolder := range batch.msgHolders {
@@ -351,12 +377,122 @@ func (p *singlePartitionPublisher) initiateShutdown(mode shutdownMode, err error
 	p.publishQueue.Init()
 }
 
-// checkDone must be called with singlePartitionPublisher.mu held.
-func (p *singlePartitionPublisher) checkDone() {
+// checkDone must be called with partitionPublisher.mu held.
+func (p *partitionPublisher) checkDone() {
 	// If a shutdown was in progress, close the stream once all queued messages
 	// have been published.
 	if p.shutdown > 0 && p.publishQueue.Len() == 0 {
 		fmt.Println("Done, shutting down")
 		p.stream.Stop()
 	}
+}
+
+type routingPublisher struct {
+	// Immutable after creation.
+	ctx       context.Context
+	pubClient *vkit.PublisherClient
+	admin     *AdminClient
+	topic     TopicPath
+	settings  PublishSettings
+
+	// Guards access to fields below.
+	mu sync.Mutex
+
+	publishers map[int]*partitionPublisher
+}
+
+func newInternalPublisherClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.PublisherClient, error) {
+	if err := validateRegion(region); err != nil {
+		return nil, err
+	}
+	options := defaultClientOptions(region)
+	options = append(options, opts...)
+	return vkit.NewPublisherClient(ctx, options...)
+}
+
+func newRoutingPublisher(ctx context.Context, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) (*routingPublisher, error) {
+	region, err := ZoneToRegion(topic.Zone)
+	if err != nil {
+		return nil, err
+	}
+	pubClient, err := newInternalPublisherClient(ctx, region, opts...)
+	if err != nil {
+		return nil, err
+	}
+	admin, err := NewAdminClient(ctx, region, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &routingPublisher{
+		ctx:        ctx,
+		pubClient:  pubClient,
+		admin:      admin,
+		topic:      topic,
+		settings:   settings,
+		publishers: make(map[int]*partitionPublisher),
+	}, nil
+}
+
+func (p *routingPublisher) Start() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if len(p.publishers) > 0 {
+		// Already started.
+		return nil
+	}
+
+	partitionCount, err := p.admin.TopicPartitions(p.ctx, p.topic)
+	if err != nil {
+		return err
+	}
+	if partitionCount <= 0 {
+		return status.Errorf(codes.Internal, "pubsublite: unexpected number of partitions %d\n", partitionCount)
+	}
+	fmt.Printf("%s, partitions=%d", p.topic, partitionCount)
+
+	startResults := make(chan error, partitionCount)
+	for i := 0; i < partitionCount; i++ {
+		pub := newPartitionPublisher(p.ctx, p.pubClient, p.settings, p.topic, i)
+		pub.Start(startResults)
+		p.publishers[i] = pub
+	}
+
+	for numStarted := 0; numStarted < partitionCount; numStarted++ {
+		err = <-startResults
+		if err != nil {
+			break
+		}
+	}
+
+	if err != nil {
+		// Clear publishers upon error.
+		for _, pub := range p.publishers {
+			pub.Stop(true)
+		}
+		p.publishers = make(map[int]*partitionPublisher)
+	}
+	return err
+}
+
+func (p *routingPublisher) Stop(forceTerminate bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, pub := range p.publishers {
+		pub.Stop(forceTerminate)
+	}
+}
+
+func (p *routingPublisher) Publish(msg *pb.PubSubMessage, onDone publishResultFunc) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if len(p.publishers) == 0 {
+		// TODO
+	}
+
+	// TODO: route to partition
+	p.publishers[0].Publish(msg, onDone)
 }
