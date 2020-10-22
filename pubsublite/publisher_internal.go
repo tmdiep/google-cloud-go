@@ -96,7 +96,7 @@ type singlePartitionPublisher struct {
 	// Used to batch messages.
 	msgBundler *bundler.Bundler
 	// In-flight batches of published messages. Results have not yet been
-	// received.
+	// received from the stream.
 	publishQueue          *list.List
 	minExpectedNextOffset int64
 	enableSendToStream    bool
