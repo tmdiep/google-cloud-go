@@ -85,7 +85,7 @@ func publisherClient(ctx context.Context, t *testing.T, settings PublishSettings
 		t.Skip("Integration tests skipped. See CONTRIBUTING.md for details")
 	}
 	opts = append(withGRPCHeadersAssertion(t, option.WithTokenSource(ts)), opts...)
-	publisher, err := newRoutingPublisher(ctx, settings, topic, opts...)
+	publisher, err := newRoutingPublisher(ctx, newDefaultMessageRouter(rng), settings, topic, opts...)
 	if err != nil {
 		t.Fatalf("Failed to create publisher client: %v", err)
 	}

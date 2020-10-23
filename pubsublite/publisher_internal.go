@@ -40,9 +40,9 @@ const (
 	noShutdown shutdownMode = 0
 	// Flush all pending messages before terminating the publisher. This mode
 	// should be used when:
-	// - The user calls Stop().
+	// - The user calls Stop(terminate=false).
 	// - A new message fails preconditions. This should block the publish of
-	//   subsequent messages to preserve order, but ideally all prior messages
+	//   subsequent messages to ensure ordering, but ideally all prior messages
 	//   should be published to avoid forcing the user to republish them.
 	//   Republishing may result in duplicates if there were in-flight batches
 	//   sent to the server, but the responses have not yet been received.
@@ -162,12 +162,12 @@ func (p *partitionPublisher) Start(result chan error) {
 	p.stream.Start(result)
 }
 
-// Stop initiates shutdown of the publisher. If `forceTerminate` is true, the
+// Stop initiates shutdown of the publisher. If `immediate` is true, the
 // publisher is shutdown immediately and all pending messages are errored.
 // Otherwise a graceful shutdown will occur, where all pending messages are
 // flushed.
-func (p *partitionPublisher) Stop(forceTerminate bool) {
-	if forceTerminate {
+func (p *partitionPublisher) Stop(immediate bool) {
+	if immediate {
 		p.initiateShutdown(immediateShutdown, status.Errorf(codes.Canceled, "pubsublite: user terminated publisher"))
 	} else {
 		p.initiateShutdown(flushPending, nil)
@@ -398,6 +398,7 @@ type routingPublisher struct {
 	// Guards access to fields below.
 	mu sync.Mutex
 
+	msgRouter  messageRouter
 	publishers map[int]*partitionPublisher
 }
 
@@ -410,7 +411,7 @@ func newInternalPublisherClient(ctx context.Context, region string, opts ...opti
 	return vkit.NewPublisherClient(ctx, options...)
 }
 
-func newRoutingPublisher(ctx context.Context, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) (*routingPublisher, error) {
+func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) (*routingPublisher, error) {
 	region, err := ZoneToRegion(topic.Zone)
 	if err != nil {
 		return nil, err
@@ -430,6 +431,7 @@ func newRoutingPublisher(ctx context.Context, settings PublishSettings, topic To
 		admin:      admin,
 		topic:      topic,
 		settings:   settings,
+		msgRouter:  msgRouter,
 		publishers: make(map[int]*partitionPublisher),
 	}, nil
 }
@@ -448,9 +450,10 @@ func (p *routingPublisher) Start() error {
 		return err
 	}
 	if partitionCount <= 0 {
-		return status.Errorf(codes.Internal, "pubsublite: unexpected number of partitions %d\n", partitionCount)
+		return status.Errorf(codes.Internal, "pubsublite: topic has unexpected number of partitions %d\n", partitionCount)
 	}
-	fmt.Printf("%s, partitions=%d", p.topic, partitionCount)
+	fmt.Printf("%s, partitions=%d\n", p.topic, partitionCount)
+	p.msgRouter.SetPartitionCount(partitionCount)
 
 	startResults := make(chan error, partitionCount)
 	for i := 0; i < partitionCount; i++ {
@@ -458,7 +461,6 @@ func (p *routingPublisher) Start() error {
 		pub.Start(startResults)
 		p.publishers[i] = pub
 	}
-
 	for numStarted := 0; numStarted < partitionCount; numStarted++ {
 		err = <-startResults
 		if err != nil {
@@ -476,23 +478,34 @@ func (p *routingPublisher) Start() error {
 	return err
 }
 
-func (p *routingPublisher) Stop(forceTerminate bool) {
+func (p *routingPublisher) Stop(immediate bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	for _, pub := range p.publishers {
-		pub.Stop(forceTerminate)
+		pub.Stop(immediate)
 	}
 }
 
 func (p *routingPublisher) Publish(msg *pb.PubSubMessage, onDone publishResultFunc) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	pub, err := func() (*partitionPublisher, error) {
+		p.mu.Lock()
+		defer p.mu.Unlock()
 
-	if len(p.publishers) == 0 {
-		// TODO
+		if len(p.publishers) == 0 {
+			return nil, status.Errorf(codes.FailedPrecondition, "pubsublite: publisher has not been started")
+		}
+		partition := p.msgRouter.Route(msg.GetKey())
+		pub, ok := p.publishers[partition]
+		if !ok {
+			return nil, status.Errorf(codes.Internal, "pubsublite: publisher unavailable for partition %d", partition)
+		}
+		return pub, nil
+	}()
+
+	if err != nil {
+		onDone(nil, err)
+		return
 	}
-
-	// TODO: route to partition
-	p.publishers[0].Publish(msg, onDone)
+	pub.Publish(msg, onDone)
 }
