@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"sync"
 	"testing"
 	"time"
 
@@ -28,7 +27,6 @@ import (
 	"google.golang.org/api/option"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
-	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 const gibi = 1 << 30
@@ -79,13 +77,13 @@ func adminClient(ctx context.Context, t *testing.T, region string, opts ...optio
 	return admin
 }
 
-func publisherClient(ctx context.Context, t *testing.T, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) *routingPublisher {
+func publisherClient(ctx context.Context, t *testing.T, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) *PublisherClient {
 	ts := testutil.TokenSource(ctx, vkit.DefaultAuthScopes()...)
 	if ts == nil {
 		t.Skip("Integration tests skipped. See CONTRIBUTING.md for details")
 	}
 	opts = append(withGRPCHeadersAssertion(t, option.WithTokenSource(ts)), opts...)
-	publisher, err := newRoutingPublisher(ctx, newDefaultMessageRouter(rng), settings, topic, opts...)
+	publisher, err := NewPublisherClient(ctx, settings, topic, opts...)
 	if err != nil {
 		t.Fatalf("Failed to create publisher client: %v", err)
 	}
@@ -303,29 +301,25 @@ func TestSimplePublish(t *testing.T) {
 	publisher := publisherClient(ctx, t, settings, topic)
 	publisher.Start()
 
-	var wg sync.WaitGroup
-	wg.Add(3)
+	var results []*PublishResult
+	results = append(results, publisher.Publish(ctx, &Message{
+		Data: bytes.Repeat([]byte{'a'}, 50),
+	}))
+	results = append(results, publisher.Publish(ctx, &Message{
+		Data: bytes.Repeat([]byte{'b'}, 50),
+	}))
+	results = append(results, publisher.Publish(ctx, &Message{
+		Data: bytes.Repeat([]byte{'c'}, 50),
+	}))
+	publisher.Stop()
 
-	onPublishDone := func(pm *publishMetadata, err error) {
+	time.Sleep(5 * time.Second)
+
+	for _, r := range results {
+		id, err := r.Get(ctx)
 		if err != nil {
 			t.Errorf("Publish failed with error: %v", err)
-		} else {
-			fmt.Printf("Publish succeeded: %s\n", pm)
 		}
-		wg.Done()
+		fmt.Printf("Published a message with a message ID: %s\n", id)
 	}
-
-	publisher.Publish(&pb.PubSubMessage{
-		Data: bytes.Repeat([]byte{'a'}, 50),
-	}, onPublishDone)
-	publisher.Publish(&pb.PubSubMessage{
-		Data: bytes.Repeat([]byte{'b'}, 50),
-	}, onPublishDone)
-	publisher.Publish(&pb.PubSubMessage{
-		Data: bytes.Repeat([]byte{'c'}, 50),
-	}, onPublishDone)
-
-	publisher.Stop(false)
-	wg.Wait()
-	time.Sleep(5 * time.Second)
 }
