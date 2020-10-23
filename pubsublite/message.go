@@ -15,7 +15,6 @@ package pubsublite
 
 import (
 	"crypto/sha256"
-	"fmt"
 	"math/big"
 	"math/rand"
 	"time"
@@ -56,8 +55,11 @@ func (m *Message) toProto() (*pb.PubSubMessage, error) {
 		Key:  m.OrderingKey,
 	}
 
-	for key, values := range m.Attributes {
-		msgpb.Attributes[key] = &pb.AttributeValues{Values: values}
+	if len(m.Attributes) > 0 {
+		msgpb.Attributes = make(map[string]*pb.AttributeValues)
+		for key, values := range m.Attributes {
+			msgpb.Attributes[key] = &pb.AttributeValues{Values: values}
+		}
 	}
 
 	if !m.EventTime.IsZero() {
@@ -74,6 +76,8 @@ func (m *Message) toProto() (*pb.PubSubMessage, error) {
 // undefined when:
 // - setPartitionCount() is called with count <= 0.
 // - route() is called before setPartitionCount() to initialize the router.
+//
+// Message routers need to accommodate topic partition resizing.
 type messageRouter interface {
 	SetPartitionCount(count int)
 	Route(orderingKey []byte) int
@@ -89,7 +93,7 @@ type roundRobinMsgRouter struct {
 
 func (r *roundRobinMsgRouter) SetPartitionCount(count int) {
 	r.partitionCount = count
-	r.nextPartition = r.rng.Intn(count)
+	r.nextPartition = int(r.rng.Int63n(int64(count)))
 }
 
 func (r *roundRobinMsgRouter) Route(orderingKey []byte) (partition int) {
@@ -118,12 +122,11 @@ func (r *hashingMsgRouter) Route(orderingKey []byte) int {
 	h := sha256.Sum256(orderingKey)
 	num := new(big.Int).SetBytes(h[:])
 	partition := new(big.Int).Mod(num, r.partitionCount)
-	fmt.Printf("msgrouter key=%v, partition=%v\n", orderingKey, partition)
 	return int(partition.Int64())
 }
 
-// compositeMsgRouter delegates to different message routers for messages with/
-// without ordering keys.
+// compositeMsgRouter delegates to different message routers for messages
+// with/without ordering keys.
 type compositeMsgRouter struct {
 	keyedRouter   messageRouter
 	keylessRouter messageRouter
