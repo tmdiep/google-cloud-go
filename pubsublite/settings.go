@@ -11,7 +11,12 @@
 
 package pubsublite
 
-import "time"
+import (
+	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
 
 const (
 	// MaxPublishRequestCount is the maximum number of messages that can be
@@ -29,25 +34,27 @@ const (
 
 // PublishSettings control the batching of published messages.
 type PublishSettings struct {
-	// Publish a non-empty batch after this delay has passed.
+	// Publish a non-empty batch after this delay has passed. Must be > 0.
 	DelayThreshold time.Duration
 
-	// Publish a batch when it has this many messages. The maximum is
+	// Publish a batch when it has this many messages. Must be > 0. The maximum is
 	// MaxPublishRequestCount.
 	CountThreshold int
 
-	// Publish a batch when its size in bytes reaches this value. The maximum is
-	// MaxPublishRequestBytes.
+	// Publish a batch when its size in bytes reaches this value. Must be > 0. The
+	// maximum is MaxPublishRequestBytes.
 	ByteThreshold int
 
 	// The maximum time that the client will attempt to establish a publish stream
-	// connection to the server. The timeout is exceeded, the publisher will
-	// terminate with the last error that occurred while trying to reconnect. Note
-	// that if the timeout duration is long, ErrOverflow may occur first.
+	// connection to the server. Must be > 0.
+	//
+	// The timeout is exceeded, the publisher will terminate with the last error
+	// that occurred while trying to reconnect. Note that if the timeout duration
+	// is long, ErrOverflow may occur first.
 	Timeout time.Duration
 
 	// The maximum number of bytes that the publisher will keep in memory before
-	// returning ErrOverflow.
+	// returning ErrOverflow. Must be > 0.
 	//
 	// Note that Pub/Sub Lite topics are provisioned a publishing throughput
 	// capacity, per partition, shared by all publisher clients. Setting a large
@@ -68,4 +75,29 @@ var DefaultPublishSettings = PublishSettings{
 	// number 10 is chosen as a reasonable amount of messages in the worst case
 	// whilst still capping the number to a low enough value to not OOM users.
 	BufferedByteLimit: 10 * MaxPublishRequestBytes,
+}
+
+func validatePublishSettings(settings PublishSettings) error {
+	if settings.DelayThreshold <= 0 {
+		return status.Error(codes.InvalidArgument, "pubsublite: invalid publish settings. DelayThreshold duration must be > 0")
+	}
+	if settings.Timeout <= 0 {
+		return status.Error(codes.InvalidArgument, "pubsublite: invalid publish settings. Timeout duration must be > 0")
+	}
+	if settings.CountThreshold <= 0 {
+		return status.Error(codes.InvalidArgument, "pubsublite: invalid publish settings. CountThreshold must be > 0")
+	}
+	if settings.CountThreshold > MaxPublishRequestCount {
+		return status.Errorf(codes.InvalidArgument, "pubsublite: invalid publish settings. Maximum CountThreshold is MaxPublishRequestCount (%d)", MaxPublishRequestCount)
+	}
+	if settings.ByteThreshold <= 0 {
+		return status.Error(codes.InvalidArgument, "pubsublite: invalid publish settings. ByteThreshold must be > 0")
+	}
+	if settings.ByteThreshold > MaxPublishRequestBytes {
+		return status.Errorf(codes.InvalidArgument, "pubsublite: invalid publish settings. Maximum ByteThreshold is MaxPublishRequestBytes (%d)", MaxPublishRequestBytes)
+	}
+	if settings.BufferedByteLimit <= 0 {
+		return status.Error(codes.InvalidArgument, "pubsublite: invalid publish settings. BufferedByteLimit must be > 0")
+	}
+	return nil
 }
