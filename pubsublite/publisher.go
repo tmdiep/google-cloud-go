@@ -65,6 +65,7 @@ func (r *PublishResult) set(pm *publishMetadata, err error) {
 type publisher interface {
 	Start() error
 	Stop(immediate bool)
+	WaitUntilDone()
 	Publish(msg *pb.PubSubMessage, onDone publishResultFunc)
 }
 
@@ -114,6 +115,6 @@ func (p *PublisherClient) Publish(ctx context.Context, msg *Message) (result *Pu
 // Returns once all outstanding messages have been sent or have failed to be
 // sent.
 func (p *PublisherClient) Stop() {
-	// TODO: Block until stopped.
 	p.pub.Stop(false)
+	p.pub.WaitUntilDone()
 }

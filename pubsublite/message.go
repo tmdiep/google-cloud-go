@@ -15,6 +15,7 @@ package pubsublite
 
 import (
 	"crypto/sha256"
+	"fmt"
 	"math/big"
 	"math/rand"
 	"time"
@@ -117,6 +118,7 @@ func (r *hashingMsgRouter) Route(orderingKey []byte) int {
 	h := sha256.Sum256(orderingKey)
 	num := new(big.Int).SetBytes(h[:])
 	partition := new(big.Int).Mod(num, r.partitionCount)
+	fmt.Printf("msgrouter key=%v, partition=%v\n", orderingKey, partition)
 	return int(partition.Int64())
 }
 

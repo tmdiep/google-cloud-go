@@ -292,7 +292,7 @@ func TestSimplePublish(t *testing.T) {
 	ctx := context.Background()
 	proj := testutil.ProjID()
 	zone := "us-central1-b"
-	resourceID := "go-publish-test"
+	resourceID := "go-publish-test-4"
 	topic := TopicPath{Project: proj, Zone: zone, TopicID: resourceID}
 
 	settings := DefaultPublishSettings
@@ -303,17 +303,19 @@ func TestSimplePublish(t *testing.T) {
 
 	var results []*PublishResult
 	results = append(results, publisher.Publish(ctx, &Message{
-		Data: bytes.Repeat([]byte{'a'}, 50),
+		Data:        bytes.Repeat([]byte{'a'}, 50),
+		OrderingKey: []byte("hello"),
 	}))
 	results = append(results, publisher.Publish(ctx, &Message{
-		Data: bytes.Repeat([]byte{'b'}, 50),
+		Data:        bytes.Repeat([]byte{'b'}, 50),
+		OrderingKey: []byte("world"),
 	}))
 	results = append(results, publisher.Publish(ctx, &Message{
-		Data: bytes.Repeat([]byte{'c'}, 50),
+		Data:        bytes.Repeat([]byte{'c'}, 50),
+		OrderingKey: []byte("hello"),
 	}))
-	publisher.Stop()
 
-	time.Sleep(5 * time.Second)
+	publisher.Stop()
 
 	for _, r := range results {
 		id, err := r.Get(ctx)
