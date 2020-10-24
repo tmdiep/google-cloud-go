@@ -40,7 +40,7 @@ type PublishResult interface {
 // module.
 type publisher interface {
 	Start() error
-	Stop(immediate bool)
+	Stop()
 	Wait()
 	Publish(msg *pb.PubSubMessage) *publishMetadata
 }
@@ -60,7 +60,7 @@ func NewPublisherClient(ctx context.Context, settings PublishSettings, topic Top
 		return nil, err
 	}
 	if err := pub.Start(); err != nil {
-		pub.Stop(true)
+		pub.Stop()
 		return nil, err
 	}
 	return &PublisherClient{pub: pub}, nil
@@ -86,6 +86,6 @@ func (p *PublisherClient) Publish(ctx context.Context, msg *Message) PublishResu
 // Returns once all outstanding messages have been sent or have failed to be
 // sent.
 func (p *PublisherClient) Stop() {
-	p.pub.Stop(false)
+	p.pub.Stop()
 	p.pub.Wait()
 }

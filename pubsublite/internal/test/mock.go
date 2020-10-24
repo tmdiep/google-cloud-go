@@ -14,13 +14,13 @@
 package test
 
 import (
-	"container/list"
 	"fmt"
 	"io"
+	"reflect"
 	"sync"
-	"testing"
 
 	"cloud.google.com/go/internal/testutil"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -55,82 +55,9 @@ func (s *Server) Close() {
 	s.gRPCServer.Close()
 }
 
-type rpcMetadata struct {
-	wantRequest interface{}
-	retResponse interface{}
-	retErr      error
-}
-
-type RPCVerifier struct {
-	t *testing.T
-	// An ordered list of expected RPCs.
-	rpcs     *list.List
-	numCalls int
-}
-
-func newRPCVerifier(t *testing.T) *RPCVerifier {
-	return &RPCVerifier{
-		t:        t,
-		rpcs:     list.New(),
-		numCalls: -1,
-	}
-}
-
-func (v *RPCVerifier) Push(wantRequest interface{}, retResponse interface{}, retErr error) {
-	v.rpcs.PushBack(&rpcMetadata{
-		wantRequest: wantRequest,
-		retResponse: retResponse,
-		retErr:      retErr,
-	})
-}
-
-func (v *RPCVerifier) Pop(gotRequest interface{}) (interface{}, error) {
-	v.numCalls++
-	elem := v.rpcs.Front()
-	if elem == nil {
-		v.t.Error("call(%d): unexpected request:\n%v", v.numCalls, gotRequest)
-		return nil, status.Error(codes.FailedPrecondition, "mockserver: got unexpected request")
-	}
-
-	rpc, _ := elem.Value.(*rpcMetadata)
-	v.rpcs.Remove(elem)
-
-	if !testutil.Equal(gotRequest, rpc.wantRequest) {
-		v.t.Errorf("call(%d): got request: %v\nwant request: %v", v.numCalls, gotRequest, rpc.wantRequest)
-	}
-	return rpc.retResponse, rpc.retErr
-}
-
-type streamVerifiers struct {
-	t *testing.T
-	// An ordered list of RPCVerifiers for each stream connection.
-	verifiers  *list.List
-	numStreams int
-}
-
-func newStreamVerifiers(t *testing.T) *streamVerifiers {
-	return &streamVerifiers{
-		t:          t,
-		verifiers:  list.New(),
-		numStreams: -1,
-	}
-}
-
-func (v *streamVerifiers) Push(rv *RPCVerifier) {
-	v.verifiers.PushBack(rv)
-}
-
-func (v *streamVerifiers) Pop() (*RPCVerifier, error) {
-	v.numStreams++
-	elem := v.verifiers.Front()
-	if elem == nil {
-		v.t.Error("stream(%d): unexpected connection with no verifiers", v.numStreams)
-		return nil, status.Error(codes.FailedPrecondition, "mockserver: got unexpected stream connection")
-	}
-
-	rv, _ := elem.Value.(*RPCVerifier)
-	v.verifiers.Remove(elem)
-	return rv, nil
+type streamHolder struct {
+	stream   grpc.ServerStream
+	verifier *RPCVerifier
 }
 
 // MockLiteServer is an in-memory mock implementation of a Pub/Sub Lite service,
@@ -141,8 +68,15 @@ type MockLiteServer struct {
 
 	mu sync.Mutex
 
+	// Global list of verifiers for all unary RPCs. This should be set before the
+	// test begins.
+	globalVerifier *RPCVerifier
+
 	// Publish stream verifiers by topic & partition.
 	publishVerifiers map[string]*streamVerifiers
+
+	nextStreamID  int
+	activeStreams map[int]*streamHolder
 }
 
 func key(path string, partition int) string {
@@ -152,6 +86,28 @@ func key(path string, partition int) string {
 func newMockLiteServer() *MockLiteServer {
 	return &MockLiteServer{
 		publishVerifiers: make(map[string]*streamVerifiers),
+		activeStreams:    make(map[int]*streamHolder),
+	}
+}
+
+func (s *MockLiteServer) OnTestStart(globalVerifier *RPCVerifier) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.globalVerifier = globalVerifier
+	s.publishVerifiers = make(map[string]*streamVerifiers)
+}
+
+func (s *MockLiteServer) OnTestEnd() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.globalVerifier != nil {
+		s.globalVerifier.Flush()
+	}
+
+	for _, as := range s.activeStreams {
+		as.verifier.Flush()
 	}
 }
 
@@ -173,13 +129,59 @@ func (s *MockLiteServer) popStreamVerifier(key string, verifiers map[string]*str
 
 	sv, ok := verifiers[key]
 	if !ok {
-		return nil, status.Error(codes.FailedPrecondition, "mockserver: unexpected connection with no verifiers")
+		return nil, status.Error(codes.FailedPrecondition, "mockserver: unexpected connection with no configured responses")
 	}
 	return sv.Pop()
 }
 
-func (s *MockLiteServer) AddPublishVerifier(topic string, partition int, verifier *RPCVerifier) {
-	s.pushStreamVerifier(key(topic, partition), verifier, s.publishVerifiers)
+func (s *MockLiteServer) startStream(stream grpc.ServerStream, verifier *RPCVerifier) (id int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id = s.nextStreamID
+	s.nextStreamID++
+	s.activeStreams[id] = &streamHolder{stream: stream, verifier: verifier}
+	return
+}
+
+func (s *MockLiteServer) endStream(id int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.activeStreams, id)
+}
+
+func (s *MockLiteServer) handleStream(stream grpc.ServerStream, req interface{}, requestType reflect.Type, verifier *RPCVerifier) (err error) {
+	id := s.startStream(stream, verifier)
+
+	for {
+		retResponse, retErr := verifier.Pop(req)
+		if retErr != nil {
+			err = retErr
+			break
+		}
+		if err = stream.SendMsg(retResponse); err != nil {
+			err = status.Errorf(codes.FailedPrecondition, "mockserver: stream send error: %v", err)
+			break
+		}
+
+		req = reflect.New(requestType).Interface()
+		if err = stream.RecvMsg(req); err == io.EOF {
+			break
+		} else if err != nil {
+			err = status.Errorf(codes.FailedPrecondition, "mockserver: stream recv error: %v", err)
+			break
+		}
+	}
+
+	// Check whether the stream ended prematurely.
+	verifier.Flush()
+	s.endStream(id)
+	return
+}
+
+func (s *MockLiteServer) AddPublishStream(topic string, partition int, streamVerifier *RPCVerifier) {
+	s.pushStreamVerifier(key(topic, partition), streamVerifier, s.publishVerifiers)
 }
 
 func (s *MockLiteServer) Publish(stream pb.PublisherService_PublishServer) error {
@@ -198,24 +200,5 @@ func (s *MockLiteServer) Publish(stream pb.PublisherService_PublishServer) error
 	if err != nil {
 		return err
 	}
-
-	for {
-		retResponse, retErr := verifier.Pop(req)
-		if retErr != nil {
-			return retErr
-		}
-		resp, _ := retResponse.(*pb.PublishResponse)
-		if err = stream.Send(resp); err != nil {
-			return status.Errorf(codes.FailedPrecondition, "mockserver: stream send error: %v", err)
-		}
-
-		req, err = stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return status.Errorf(codes.FailedPrecondition, "mockserver: stream recv error: %v", err)
-		}
-	}
-	return nil
+	return s.handleStream(stream, req, reflect.TypeOf(pb.PublishRequest{}), verifier)
 }

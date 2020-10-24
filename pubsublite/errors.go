@@ -31,8 +31,4 @@ var (
 	// subscriber) cannot perform an operation because it has stoped or is in the
 	// process of stopping.
 	ErrServiceStopped = status.Error(codes.FailedPrecondition, "pubsublite: service has stopped or is stopping")
-
-	// ErrUserCanceled indicates that an error occurred because a service
-	// (e.g. publisher or subscriber) was stopped by the user.
-	ErrUserCanceled = status.Errorf(codes.Canceled, "pubsublite: user stopped service")
 )

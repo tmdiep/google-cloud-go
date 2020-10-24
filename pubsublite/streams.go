@@ -15,7 +15,6 @@ package pubsublite
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"reflect"
 	"sync"
@@ -26,6 +25,11 @@ import (
 	"google.golang.org/grpc/status"
 
 	gax "github.com/googleapis/gax-go/v2"
+)
+
+var (
+	errDuplicateStreamStart = status.Error(codes.Internal, "pubsublite: stream has already been started")
+	errStreamStopped        = status.Error(codes.Canceled, "pubsublite: stream has stopped")
 )
 
 // streamStatus is the state of a gRPC client stream. A stream starts off
@@ -85,7 +89,9 @@ type retryableStream struct {
 	// Guards access to fields below.
 	mu sync.Mutex
 
-	stream       grpc.ClientStream
+	// The current connected stream.
+	stream grpc.ClientStream
+	// Function to cancel the current stream (which may be reconnecting).
 	cancelStream context.CancelFunc
 	status       streamStatus
 	finalErr     error
@@ -110,7 +116,7 @@ func (rs *retryableStream) Start(result chan error) {
 	defer rs.mu.Unlock()
 
 	if rs.status != streamUninitialized {
-		result <- status.Error(codes.Internal, "pubsublite: stream has already been started")
+		result <- errDuplicateStreamStart
 		return
 	}
 	go rs.reconnect(result)
@@ -128,7 +134,6 @@ func (rs *retryableStream) Send(request interface{}) (sent bool) {
 	rs.mu.Lock()
 
 	if rs.stream != nil {
-		fmt.Printf("Sending %v\n", request)
 		err := rs.stream.SendMsg(request)
 		// Note that if SendMsg returns an error, the stream is aborted.
 		switch {
@@ -184,6 +189,12 @@ func (rs *retryableStream) clearStream() {
 	}
 }
 
+func (rs *retryableStream) setCancel(cancel context.CancelFunc) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.cancelStream = cancel
+}
+
 // reconnect attempts to establish a valid connection with the server. Due to
 // the potential high latency, initNewStream() should not be done while holding
 // retryableStream.mu. Hence we need to handle the stream being force terminated
@@ -208,7 +219,7 @@ func (rs *retryableStream) reconnect(result chan error) {
 			return false
 		}
 		if rs.status == streamTerminated {
-			outerErr = status.Error(codes.Aborted, "pubsublite: stream has stopped")
+			outerErr = errStreamStopped
 			return false
 		}
 		rs.status = streamReconnecting
@@ -231,7 +242,8 @@ func (rs *retryableStream) reconnect(result chan error) {
 		defer rs.mu.Unlock()
 
 		if rs.status == streamTerminated {
-			outerErr = status.Error(codes.Aborted, "pubsublite: stream has stopped")
+			outerErr = errStreamStopped
+			rs.clearStream()
 			return false
 		}
 		rs.status = streamConnected
@@ -260,6 +272,10 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 
 			var cctx context.Context
 			cctx, cancelFunc = context.WithCancel(rs.ctx)
+			// Store the cancel func to quickly cancel reconnecting if the stream is
+			// terminated.
+			rs.setCancel(cancelFunc)
+
 			newStream, err = rs.handler.newStream(cctx)
 			if err != nil {
 				return r.RetryRecv(err)
@@ -298,7 +314,6 @@ func (rs *retryableStream) listen(recvStream grpc.ClientStream) {
 	for {
 		response := reflect.New(rs.responseType).Interface()
 		err := recvStream.RecvMsg(response)
-		fmt.Printf("Received err=%v, %v\n", err, response)
 
 		// If the current stream has changed while listening, any errors or messages
 		// received now are obsolete. Discard and end the goroutine.

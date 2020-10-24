@@ -33,6 +33,12 @@ import (
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
+var (
+	errInvalidInitalPubResponse = status.Error(codes.Internal, "pubsublite: server returned invalid initial publish response")
+	errInvalidMsgPubResponse    = status.Error(codes.Internal, "pubsublite: received unexpected publish response from server")
+	errPublishQueueEmpty        = status.Error(codes.Internal, "pubsublite: received unexpected message response from server for no in-flight published messages")
+)
+
 // publishMetadata holds the results of a published message. It implements the
 // PublishResult interface.
 type publishMetadata struct {
@@ -122,12 +128,12 @@ const (
 	noShutdown shutdownMode = 0
 	// Flush all pending messages before terminating the publisher. This mode
 	// should be used when:
-	// - The user calls Stop(terminate=false).
+	// - The user calls Stop().
 	// - A new message fails preconditions. This should block the publish of
 	//   subsequent messages to ensure ordering, but ideally all prior messages
-	//   should be published to avoid forcing the user to republish them.
+	//   should be flushed to avoid forcing the user to republish them.
 	//   Republishing may result in duplicates if there were in-flight batches
-	//   sent to the server, but the responses have not yet been received.
+	//   sent to the server with pending results.
 	flushPending shutdownMode = 1
 	// Immediately terminate the publisher and error all in-flight batches and
 	// pending messages in the bundler. This mode should be used when:
@@ -210,16 +216,15 @@ func (p *partitionPublisher) Start(result chan error) {
 	p.stream.Start(result)
 }
 
-// Stop initiates shutdown of the publisher. If `immediate` is true, the
-// publisher is shutdown immediately and all pending messages are errored.
-// Otherwise a graceful shutdown will occur, where all pending messages are
-// flushed.
-func (p *partitionPublisher) Stop(immediate bool) {
-	if immediate {
-		p.initiateShutdown(immediateShutdown, ErrUserCanceled)
-	} else {
-		p.initiateShutdown(flushPending, nil)
-	}
+// Stop initiates shutdown of the publisher. All pending messages are flushed.
+func (p *partitionPublisher) Stop() {
+	p.initiateShutdown(flushPending, nil)
+}
+
+func (p *partitionPublisher) Error() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.finalErr
 }
 
 func (p *partitionPublisher) Publish(msg *pb.PubSubMessage) *publishMetadata {
@@ -251,8 +256,8 @@ func (p *partitionPublisher) Publish(msg *pb.PubSubMessage) *publishMetadata {
 		return nil
 	}
 
-	// If the new message cannot be published, flush pending messages. Cannot be
-	// called with the mutex held to avoid deadlock.
+	// If the new message cannot be published, flush pending messages and then
+	// shutdown. Cannot be called with the mutex held to avoid deadlock.
 	if err := processMessage(); err != nil {
 		result.error(err)
 		p.initiateShutdown(flushPending, err)
@@ -276,14 +281,12 @@ func (p *partitionPublisher) initialRequest() interface{} {
 func (p *partitionPublisher) validateInitialResponse(response interface{}) error {
 	pubResponse, _ := response.(*pb.PublishResponse)
 	if pubResponse.GetInitialResponse() == nil {
-		return status.Error(codes.Internal, "pubsublite: server returned invalid initial publish response")
+		return errInvalidInitalPubResponse
 	}
 	return nil
 }
 
 func (p *partitionPublisher) onStreamStatusChange(status streamStatus) {
-	fmt.Printf("onStreamStatusChange: %v\n", status)
-
 	switch status {
 	case streamConnected:
 		p.mu.Lock()
@@ -344,11 +347,11 @@ func (p *partitionPublisher) onResponse(response interface{}) {
 
 		pubResponse, _ := response.(*pb.PublishResponse)
 		if pubResponse.GetMessageResponse() == nil {
-			return status.Error(codes.Internal, "pubsublite: received unexpected publish response from server")
+			return errInvalidMsgPubResponse
 		}
 		frontElem := p.publishQueue.Front()
 		if frontElem == nil {
-			return status.Error(codes.Internal, "pubsublite: received unexpected message response from server for no in-flight published messages")
+			return errPublishQueueEmpty
 		}
 		firstOffset := pubResponse.GetMessageResponse().GetStartCursor().GetOffset()
 		if firstOffset < p.minExpectedNextOffset {
@@ -361,7 +364,7 @@ func (p *partitionPublisher) onResponse(response interface{}) {
 			p.availableBufferBytes += msgHolder.size
 		}
 
-		p.minExpectedNextOffset += int64(len(batch.msgHolders))
+		p.minExpectedNextOffset = firstOffset + int64(len(batch.msgHolders))
 		p.publishQueue.Remove(frontElem)
 		p.checkDone()
 		return nil
@@ -384,7 +387,10 @@ func (p *partitionPublisher) initiateShutdown(mode shutdownMode, err error) {
 	}
 
 	p.shutdown = mode
-	p.finalErr = err
+	if err != nil {
+		// Prevent a higher shutdown mode with nil error clobbering original error.
+		p.finalErr = err
+	}
 
 	// Close the stream if this is an immediate shutdown. Otherwise leave it open
 	// to send pending messages.
@@ -426,7 +432,6 @@ func (p *partitionPublisher) checkDone() {
 	// If a shutdown was in progress, close the stream once all queued messages
 	// have been published.
 	if p.shutdown > 0 && p.publishQueue.Len() == 0 {
-		fmt.Println("Done, shutting down")
 		p.stream.Stop()
 	}
 }
@@ -504,20 +509,20 @@ func (rp *routingPublisher) Start() error {
 	for numStarted := 0; numStarted < partitionCount; numStarted++ {
 		err = <-startResults
 		if err != nil {
-			// Terminate all publishers immediately if one fails to start.
-			rp.Stop(true)
+			// Terminate all publishers if one fails to start.
+			rp.Stop()
 			break
 		}
 	}
 	return err
 }
 
-func (rp *routingPublisher) Stop(immediate bool) {
+func (rp *routingPublisher) Stop() {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 
 	for _, p := range rp.publishers {
-		p.pub.Stop(immediate)
+		p.pub.Stop()
 	}
 }
 
@@ -528,7 +533,7 @@ func (rp *routingPublisher) Wait() {
 func (rp *routingPublisher) Publish(msg *pb.PubSubMessage) *publishMetadata {
 	pub, err := rp.routeToPublisher(msg)
 	if err != nil {
-		rp.Stop(false)
+		rp.Stop()
 		return newPublishMetadataWithError(err)
 	}
 	return pub.Publish(msg)
@@ -593,7 +598,7 @@ func (rp *routingPublisher) onPublisherTerminated(pub *partitionPublisher) {
 		} else if !p.terminated {
 			// If a publisher terminates due to permanent error, stop them all, but
 			// allow them to flush pending messages.
-			p.pub.Stop(false)
+			p.pub.Stop()
 		}
 	}
 }
