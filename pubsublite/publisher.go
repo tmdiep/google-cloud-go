@@ -24,53 +24,25 @@ import (
 )
 
 // A PublishResult holds the result from a call to Publish.
-type PublishResult struct {
-	ready    chan struct{}
-	serverID string
-	err      error
+type PublishResult interface {
+	// Ready returns a channel that is closed when the result is ready. When the
+	// Ready channel is closed, Get is guaranteed not to block.
+	Ready() <-chan struct{}
+
+	// Get returns the server-generated message ID and/or error result of a
+	// Publish call. Get blocks until the Publish call completes or the context is
+	// done.
+	Get(ctx context.Context) (serverID string, err error)
 }
 
-func newPublishResult() *PublishResult {
-	return &PublishResult{ready: make(chan struct{})}
-}
-
-// Ready returns a channel that is closed when the result is ready.
-// When the Ready channel is closed, Get is guaranteed not to block.
-func (r *PublishResult) Ready() <-chan struct{} { return r.ready }
-
-// Get returns the server-generated message ID and/or error result of a Publish
-// call. Get blocks until the Publish call completes or the context is done.
-func (r *PublishResult) Get(ctx context.Context) (serverID string, err error) {
-	// If the result is already ready, return it even if the context is done.
-	select {
-	case <-r.Ready():
-		return r.serverID, r.err
-	default:
-	}
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case <-r.Ready():
-		return r.serverID, r.err
-	}
-}
-
-func (r *PublishResult) set(pm *publishMetadata, err error) {
-	if pm != nil {
-		r.serverID = pm.String()
-	}
-	r.err = err
-	close(r.ready)
-}
-
-// publisher is an internal implementation of a Pub/Sub Lite publisher, which
-// is closer to the wire protocol. PublisherClient provides a facade to match
-// the Google Cloud Pub/Sub (pubsub) module.
+// publisher is an internal implementation of a Pub/Sub Lite publisher.
+// PublisherClient provides a facade to match the Google Cloud Pub/Sub (pubsub)
+// module.
 type publisher interface {
 	Start() error
 	Stop(immediate bool)
 	Wait()
-	Publish(msg *pb.PubSubMessage, onDone publishResultFunc)
+	Publish(msg *pb.PubSubMessage) *publishMetadata
 }
 
 type PublisherClient struct {
@@ -87,13 +59,11 @@ func NewPublisherClient(ctx context.Context, settings PublishSettings, topic Top
 	if err != nil {
 		return nil, err
 	}
+	if err := pub.Start(); err != nil {
+		pub.Stop(true)
+		return nil, err
+	}
 	return &PublisherClient{pub: pub}, nil
-}
-
-// Start attempts to establish publish streams and blocks until ready, or a
-// permanent error has occurred. Start() needs to be called prior to Publish().
-func (p *PublisherClient) Start() error {
-	return p.pub.Start()
 }
 
 // Publish publishes `msg` to the topic asynchronously. Messages are batched and
@@ -104,15 +74,12 @@ func (p *PublisherClient) Start() error {
 //
 // Once Stop() has been called, future calls to Publish will immediately return
 // a PublishResult with an error.
-func (p *PublisherClient) Publish(ctx context.Context, msg *Message) (result *PublishResult) {
-	result = newPublishResult()
+func (p *PublisherClient) Publish(ctx context.Context, msg *Message) PublishResult {
 	msgpb, err := msg.toProto()
 	if err != nil {
-		result.set(nil, err)
-		return
+		return newPublishMetadataWithError(err)
 	}
-	p.pub.Publish(msgpb, result.set)
-	return
+	return p.pub.Publish(msgpb)
 }
 
 // Stop sends all remaining published messages and closes publish streams.

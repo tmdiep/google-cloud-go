@@ -21,5 +21,18 @@ import (
 var (
 	// ErrOverflow indicates that the publish buffers have overflowed. See
 	// comments for PublishSettings.BufferedByteLimit.
-	ErrOverflow = status.Errorf(codes.ResourceExhausted, "pubsublite: client-side publish buffers have overflowed")
+	ErrOverflow = status.Error(codes.ResourceExhausted, "pubsublite: client-side publish buffers have overflowed")
+
+	// ErrServiceUninitialized indicates that a service (e.g. publisher or
+	// subscriber) cannot perform an operation because it is uninitialized.
+	ErrServiceUninitialized = status.Error(codes.FailedPrecondition, "pubsublite: service must be started")
+
+	// ErrServiceTerminated indicates that a service (e.g. publisher or
+	// subscriber) cannot perform an operation because it has stoped or is in the
+	// process of stopping.
+	ErrServiceStopped = status.Error(codes.FailedPrecondition, "pubsublite: service has stopped or is stopping")
+
+	// ErrUserCanceled indicates that an error occurred because a service
+	// (e.g. publisher or subscriber) was stopped by the user.
+	ErrUserCanceled = status.Errorf(codes.Canceled, "pubsublite: user stopped service")
 )

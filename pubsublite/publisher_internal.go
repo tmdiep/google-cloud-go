@@ -33,43 +33,63 @@ import (
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
-type shutdownMode int
-
-const (
-	// Publisher is active.
-	noShutdown shutdownMode = 0
-	// Flush all pending messages before terminating the publisher. This mode
-	// should be used when:
-	// - The user calls Stop(terminate=false).
-	// - A new message fails preconditions. This should block the publish of
-	//   subsequent messages to ensure ordering, but ideally all prior messages
-	//   should be published to avoid forcing the user to republish them.
-	//   Republishing may result in duplicates if there were in-flight batches
-	//   sent to the server, but the responses have not yet been received.
-	flushPending shutdownMode = 1
-	// Immediately terminate the publisher and error all in-flight batches and
-	// pending messages in the bundler. This mode should be used when:
-	// - The publish stream terminates with a non-retryable error.
-	// - An inconsistency is detected in the server's publish responses.
-	immediateShutdown shutdownMode = 2
-)
-
-// publishMetadata holds the results of a successfully published message.
+// publishMetadata holds the results of a published message. It implements the
+// PublishResult interface.
 type publishMetadata struct {
+	ready     chan struct{}
 	partition int
 	offset    int64
+	err       error
 }
 
-func (pm *publishMetadata) String() string {
+func newPublishMetadata() *publishMetadata {
+	return &publishMetadata{ready: make(chan struct{})}
+}
+
+func newPublishMetadataWithError(err error) *publishMetadata {
+	pm := newPublishMetadata()
+	pm.error(err)
+	return pm
+}
+
+func (pm *publishMetadata) Ready() <-chan struct{} { return pm.ready }
+
+func (pm *publishMetadata) Get(ctx context.Context) (serverID string, err error) {
+	// If the result is already ready, return it even if the context is done.
+	select {
+	case <-pm.ready:
+		return pm.id(), pm.err
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-pm.ready:
+		return pm.id(), pm.err
+	}
+}
+
+func (pm *publishMetadata) id() string {
+	if pm.err != nil {
+		return ""
+	}
 	return fmt.Sprintf("%d:%d", pm.partition, pm.offset)
 }
 
-// publishResultFunc receives the outcome of a message publish.
-type publishResultFunc func(pm *publishMetadata, err error)
+func (pm *publishMetadata) set(partition int, offset int64) {
+	pm.partition = partition
+	pm.offset = offset
+	close(pm.ready)
+}
+
+func (pm *publishMetadata) error(err error) {
+	pm.err = err
+	close(pm.ready)
+}
 
 type messageHolder struct {
 	msg    *pb.PubSubMessage
-	onDone publishResultFunc
+	result *publishMetadata
 	size   int
 }
 
@@ -93,6 +113,28 @@ func (b *publishBatch) toPublishRequest() *pb.PublishRequest {
 		},
 	}
 }
+
+// shutdownMode indicates the behavior of the publisher when shutting down.
+type shutdownMode int
+
+const (
+	// Publisher is active.
+	noShutdown shutdownMode = 0
+	// Flush all pending messages before terminating the publisher. This mode
+	// should be used when:
+	// - The user calls Stop(terminate=false).
+	// - A new message fails preconditions. This should block the publish of
+	//   subsequent messages to ensure ordering, but ideally all prior messages
+	//   should be published to avoid forcing the user to republish them.
+	//   Republishing may result in duplicates if there were in-flight batches
+	//   sent to the server, but the responses have not yet been received.
+	flushPending shutdownMode = 1
+	// Immediately terminate the publisher and error all in-flight batches and
+	// pending messages in the bundler. This mode should be used when:
+	// - The publish stream terminates with a non-retryable error.
+	// - An inconsistency is detected in the server's publish responses.
+	immediateShutdown shutdownMode = 2
+)
 
 // publisherTerminatedFunc is used to notify the parent of a partitionPublisher
 // that it has terminated.
@@ -174,34 +216,33 @@ func (p *partitionPublisher) Start(result chan error) {
 // flushed.
 func (p *partitionPublisher) Stop(immediate bool) {
 	if immediate {
-		p.initiateShutdown(immediateShutdown, status.Errorf(codes.Canceled, "pubsublite: user terminated publisher"))
+		p.initiateShutdown(immediateShutdown, ErrUserCanceled)
 	} else {
 		p.initiateShutdown(flushPending, nil)
 	}
 }
 
-func (p *partitionPublisher) Publish(msg *pb.PubSubMessage, onDone publishResultFunc) {
+func (p *partitionPublisher) Publish(msg *pb.PubSubMessage) *publishMetadata {
+	result := newPublishMetadata()
+
 	processMessage := func() error {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 
+		msgSize := proto.Size(msg)
 		switch {
 		case p.stream.Status() == streamUninitialized:
-			return status.Errorf(codes.FailedPrecondition, "pubsublite: publisher has not been started")
+			return ErrServiceUninitialized
 		case p.shutdown > 0:
-			return status.Errorf(codes.FailedPrecondition, "pubsublite: publisher has terminated or is terminating")
-		default:
-			break
-		}
-
-		msgSize := proto.Size(msg)
-		if msgSize > MaxPublishMessageBytes {
+			return ErrServiceStopped
+		case msgSize > MaxPublishMessageBytes:
 			return status.Errorf(codes.FailedPrecondition, "pubsublite: serialized message size is %d bytes, maximum allowed size is MaxPublishMessageBytes (%d)", msgSize, MaxPublishMessageBytes)
-		}
-		if msgSize > p.availableBufferBytes {
+		case msgSize > p.availableBufferBytes:
 			return ErrOverflow
 		}
-		if err := p.msgBundler.Add(&messageHolder{msg: msg, onDone: onDone, size: msgSize}, msgSize); err != nil {
+
+		holder := &messageHolder{msg: msg, result: result, size: msgSize}
+		if err := p.msgBundler.Add(holder, msgSize); err != nil {
 			// As we've already checked the size of the message and overflow, the
 			// bundler should not return an error.
 			return status.Errorf(codes.Internal, "pubsublite: failed to batch message: %v", err)
@@ -210,12 +251,13 @@ func (p *partitionPublisher) Publish(msg *pb.PubSubMessage, onDone publishResult
 		return nil
 	}
 
-	// If the new message cannot be published, flush pending messages. These
-	// operations cannot be called with the mutex held to avoid deadlocks.
+	// If the new message cannot be published, flush pending messages. Cannot be
+	// called with the mutex held to avoid deadlock.
 	if err := processMessage(); err != nil {
+		result.error(err)
 		p.initiateShutdown(flushPending, err)
-		onDone(nil, err)
 	}
+	return result
 }
 
 func (p *partitionPublisher) newStream(ctx context.Context) (grpc.ClientStream, error) {
@@ -234,7 +276,7 @@ func (p *partitionPublisher) initialRequest() interface{} {
 func (p *partitionPublisher) validateInitialResponse(response interface{}) error {
 	pubResponse, _ := response.(*pb.PublishResponse)
 	if pubResponse.GetInitialResponse() == nil {
-		return status.Errorf(codes.Internal, "pubsublite: server returned invalid initial publish response")
+		return status.Error(codes.Internal, "pubsublite: server returned invalid initial publish response")
 	}
 	return nil
 }
@@ -248,12 +290,17 @@ func (p *partitionPublisher) onStreamStatusChange(status streamStatus) {
 		// To ensure messages are sent in order, we should send everything in
 		// publishQueue to the stream first after reconnecting, before any new
 		// batches.
+		reenableSend := true
 		for elem := p.publishQueue.Front(); elem != nil; elem = elem.Next() {
 			if batch, ok := elem.Value.(*publishBatch); ok {
-				p.stream.Send(batch.toPublishRequest())
+				// If an error occurs during send, the stream will be aborted.
+				if !p.stream.Send(batch.toPublishRequest()) {
+					reenableSend = false
+					break
+				}
 			}
 		}
-		p.enableSendToStream = true
+		p.enableSendToStream = reenableSend
 		p.mu.Unlock()
 
 	case streamReconnecting:
@@ -268,10 +315,6 @@ func (p *partitionPublisher) onStreamStatusChange(status streamStatus) {
 		if p.onTerminated != nil {
 			p.onTerminated(p)
 		}
-
-	default:
-		// Unexpected state. Should not occur.
-		break
 	}
 }
 
@@ -295,48 +338,38 @@ func (p *partitionPublisher) handleBatch(messages []*messageHolder) {
 }
 
 func (p *partitionPublisher) onResponse(response interface{}) {
-	processResponse := func() (*publishBatch, int64, error) {
+	processResponse := func() error {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 
 		pubResponse, _ := response.(*pb.PublishResponse)
 		if pubResponse.GetMessageResponse() == nil {
-			return nil, 0, status.Errorf(codes.Internal, "pubsublite: received unexpected publish response from server")
+			return status.Error(codes.Internal, "pubsublite: received unexpected publish response from server")
 		}
-
 		frontElem := p.publishQueue.Front()
 		if frontElem == nil {
-			return nil, 0, status.Errorf(codes.Internal, "pubsublite: received unexpected message response from server for no in-flight published messages")
+			return status.Error(codes.Internal, "pubsublite: received unexpected message response from server for no in-flight published messages")
 		}
-
 		firstOffset := pubResponse.GetMessageResponse().GetStartCursor().GetOffset()
 		if firstOffset < p.minExpectedNextOffset {
-			return nil, 0, status.Errorf(codes.Internal, "pubsublite: server returned message start offset = %d, expected >= %d", firstOffset, p.minExpectedNextOffset)
+			return status.Errorf(codes.Internal, "pubsublite: server returned message start offset = %d, expected >= %d", firstOffset, p.minExpectedNextOffset)
 		}
 
 		batch, _ := frontElem.Value.(*publishBatch)
-		for _, msgHolder := range batch.msgHolders {
+		for i, msgHolder := range batch.msgHolders {
+			msgHolder.result.set(p.partition, firstOffset+int64(i))
 			p.availableBufferBytes += msgHolder.size
 		}
+
 		p.minExpectedNextOffset += int64(len(batch.msgHolders))
 		p.publishQueue.Remove(frontElem)
 		p.checkDone()
-		return batch, firstOffset, nil
+		return nil
 	}
 
-	batch, firstOffset, err := processResponse()
-
-	// These operations below need to be done without holding the mutex to avoid
-	// deadlocks.
-	if err != nil {
+	if err := processResponse(); err != nil {
+		// Needs to be done without holding the mutex to avoid deadlock.
 		p.initiateShutdown(immediateShutdown, err)
-		return
-	}
-
-	for i, msgHolder := range batch.msgHolders {
-		msgHolder.onDone(
-			&publishMetadata{partition: p.partition, offset: firstOffset + int64(i)},
-			nil)
 	}
 }
 
@@ -360,9 +393,10 @@ func (p *partitionPublisher) initiateShutdown(mode shutdownMode, err error) {
 		p.stream.Stop()
 	}
 
-	// Bundler.Flush invokes handleBatch() in a goroutine and blocks. Setting the
-	// shutdown mode prevents any new messages from being added to the bundler.
+	// msgBundler.Flush invokes handleBatch() in a goroutine and blocks.
 	// handleBatch() also acquires the mutex, so it cannot be held here.
+	// Setting the shutdown mode prevents any new messages from being added to the
+	// bundler after flush.
 	p.mu.Unlock()
 	p.msgBundler.Flush()
 
@@ -380,7 +414,7 @@ func (p *partitionPublisher) initiateShutdown(mode shutdownMode, err error) {
 	for elem := p.publishQueue.Front(); elem != nil; elem = elem.Next() {
 		if batch, ok := elem.Value.(*publishBatch); ok {
 			for _, msgHolder := range batch.msgHolders {
-				msgHolder.onDone(nil, err)
+				msgHolder.result.error(err)
 			}
 		}
 	}
@@ -409,17 +443,17 @@ type routingPublisher struct {
 	admin     *AdminClient
 	topic     TopicPath
 	settings  PublishSettings
+	// Used to block until all partition publishers have terminated.
+	waitTerminated sync.WaitGroup
 
 	// Guards access to fields below.
 	mu sync.Mutex
 
 	msgRouter  messageRouter
 	publishers map[int]*publisherHolder
-	// Used to block until all partition publishers have terminated.
-	waitTerminated *sync.WaitGroup
 }
 
-func newInternalPublisherClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.PublisherClient, error) {
+func newPublisherClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.PublisherClient, error) {
 	if err := validateRegion(region); err != nil {
 		return nil, err
 	}
@@ -433,7 +467,7 @@ func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings 
 	if err != nil {
 		return nil, err
 	}
-	pubClient, err := newInternalPublisherClient(ctx, region, opts...)
+	pubClient, err := newPublisherClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -443,14 +477,13 @@ func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings 
 	}
 
 	return &routingPublisher{
-		ctx:            ctx,
-		pubClient:      pubClient,
-		admin:          admin,
-		topic:          topic,
-		settings:       settings,
-		msgRouter:      msgRouter,
-		publishers:     make(map[int]*publisherHolder),
-		waitTerminated: new(sync.WaitGroup),
+		ctx:        ctx,
+		pubClient:  pubClient,
+		admin:      admin,
+		topic:      topic,
+		settings:   settings,
+		msgRouter:  msgRouter,
+		publishers: make(map[int]*publisherHolder),
 	}, nil
 }
 
@@ -467,9 +500,12 @@ func (rp *routingPublisher) Start() error {
 	for _, pub := range publishers {
 		pub.Start(startResults)
 	}
+
 	for numStarted := 0; numStarted < partitionCount; numStarted++ {
 		err = <-startResults
 		if err != nil {
+			// Terminate all publishers immediately if one fails to start.
+			rp.Stop(true)
 			break
 		}
 	}
@@ -489,14 +525,13 @@ func (rp *routingPublisher) Wait() {
 	rp.waitTerminated.Wait()
 }
 
-func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onDone publishResultFunc) {
+func (rp *routingPublisher) Publish(msg *pb.PubSubMessage) *publishMetadata {
 	pub, err := rp.routeToPublisher(msg)
 	if err != nil {
 		rp.Stop(false)
-		onDone(nil, err)
-		return
+		return newPublishMetadataWithError(err)
 	}
-	pub.Publish(msg, onDone)
+	return pub.Publish(msg)
 }
 
 func (rp *routingPublisher) initPublishers() ([]*partitionPublisher, error) {
@@ -533,7 +568,7 @@ func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*partitionP
 	defer rp.mu.Unlock()
 
 	if len(rp.publishers) == 0 {
-		return nil, status.Errorf(codes.FailedPrecondition, "pubsublite: publisher has not been started")
+		return nil, ErrServiceUninitialized
 	}
 
 	partition := rp.msgRouter.Route(msg.GetKey())
