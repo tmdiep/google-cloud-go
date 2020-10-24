@@ -30,6 +30,10 @@ type PublishResult struct {
 	err      error
 }
 
+func newPublishResult() *PublishResult {
+	return &PublishResult{ready: make(chan struct{})}
+}
+
 // Ready returns a channel that is closed when the result is ready.
 // When the Ready channel is closed, Get is guaranteed not to block.
 func (r *PublishResult) Ready() <-chan struct{} { return r.ready }
@@ -65,7 +69,7 @@ func (r *PublishResult) set(pm *publishMetadata, err error) {
 type publisher interface {
 	Start() error
 	Stop(immediate bool)
-	WaitUntilDone()
+	Wait()
 	Publish(msg *pb.PubSubMessage, onDone publishResultFunc)
 }
 
@@ -101,7 +105,7 @@ func (p *PublisherClient) Start() error {
 // Once Stop() has been called, future calls to Publish will immediately return
 // a PublishResult with an error.
 func (p *PublisherClient) Publish(ctx context.Context, msg *Message) (result *PublishResult) {
-	result = &PublishResult{ready: make(chan struct{})}
+	result = newPublishResult()
 	msgpb, err := msg.toProto()
 	if err != nil {
 		result.set(nil, err)
@@ -116,5 +120,5 @@ func (p *PublisherClient) Publish(ctx context.Context, msg *Message) (result *Pu
 // sent.
 func (p *PublisherClient) Stop() {
 	p.pub.Stop(false)
-	p.pub.WaitUntilDone()
+	p.pub.Wait()
 }

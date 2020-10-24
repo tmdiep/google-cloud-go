@@ -453,46 +453,24 @@ func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings 
 	}, nil
 }
 
+// No-op if already successfully started.
 func (rp *routingPublisher) Start() error {
-	rp.mu.Lock()
-	defer rp.mu.Unlock()
-
-	if len(rp.publishers) > 0 {
-		// Already started.
-		return nil
-	}
-
-	partitionCount, err := rp.admin.TopicPartitions(rp.ctx, rp.topic)
-	if err != nil {
+	publishers, err := rp.initPublishers()
+	if publishers == nil {
+		// Note: error is nil if already started.
 		return err
 	}
-	if partitionCount <= 0 {
-		return status.Errorf(codes.Internal, "pubsublite: topic has unexpected number of partitions %d\n", partitionCount)
-	}
-	fmt.Printf("%s, partitions=%d\n", rp.topic, partitionCount)
-	rp.msgRouter.SetPartitionCount(partitionCount)
 
+	partitionCount := len(publishers)
 	startResults := make(chan error, partitionCount)
-	for i := 0; i < partitionCount; i++ {
-		pub := newPartitionPublisher(rp.ctx, rp.pubClient, rp.settings, rp.topic, i, rp.onPublisherTerminated)
+	for _, pub := range publishers {
 		pub.Start(startResults)
-		rp.publishers[i] = &publisherHolder{pub: pub}
 	}
 	for numStarted := 0; numStarted < partitionCount; numStarted++ {
 		err = <-startResults
 		if err != nil {
 			break
 		}
-	}
-
-	if err != nil {
-		// Clear publishers upon error.
-		for _, p := range rp.publishers {
-			p.pub.Stop(true)
-		}
-		rp.publishers = make(map[int]*publisherHolder)
-	} else {
-		rp.waitTerminated.Add(len(rp.publishers))
 	}
 	return err
 }
@@ -506,31 +484,64 @@ func (rp *routingPublisher) Stop(immediate bool) {
 	}
 }
 
-func (rp *routingPublisher) WaitUntilDone() {
+func (rp *routingPublisher) Wait() {
 	rp.waitTerminated.Wait()
 }
 
 func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onDone publishResultFunc) {
-	pub, err := func() (*partitionPublisher, error) {
-		rp.mu.Lock()
-		defer rp.mu.Unlock()
-
-		if len(rp.publishers) == 0 {
-			return nil, status.Errorf(codes.FailedPrecondition, "pubsublite: publisher has not been started")
-		}
-		partition := rp.msgRouter.Route(msg.GetKey())
-		p, ok := rp.publishers[partition]
-		if !ok {
-			return nil, status.Errorf(codes.Internal, "pubsublite: publisher unavailable for partition %d", partition)
-		}
-		return p.pub, nil
-	}()
-
+	pub, err := rp.routeToPublisher(msg)
 	if err != nil {
+		rp.Stop(false)
 		onDone(nil, err)
 		return
 	}
 	pub.Publish(msg, onDone)
+}
+
+func (rp *routingPublisher) initPublishers() ([]*partitionPublisher, error) {
+	rp.mu.Lock()
+	defer rp.mu.Unlock()
+
+	if len(rp.publishers) > 0 {
+		// Already started.
+		return nil, nil
+	}
+
+	partitionCount, err := rp.admin.TopicPartitions(rp.ctx, rp.topic)
+	if err != nil {
+		return nil, err
+	}
+	if partitionCount <= 0 {
+		return nil, status.Errorf(codes.Internal, "pubsublite: topic has unexpected number of partitions %d\n", partitionCount)
+	}
+
+	var publishers []*partitionPublisher
+	for i := 0; i < partitionCount; i++ {
+		pub := newPartitionPublisher(rp.ctx, rp.pubClient, rp.settings, rp.topic, i, rp.onPublisherTerminated)
+		publishers = append(publishers, pub)
+		rp.publishers[i] = &publisherHolder{pub: pub}
+	}
+
+	rp.msgRouter.SetPartitionCount(partitionCount)
+	rp.waitTerminated.Add(partitionCount)
+	return publishers, nil
+}
+
+func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*partitionPublisher, error) {
+	rp.mu.Lock()
+	defer rp.mu.Unlock()
+
+	if len(rp.publishers) == 0 {
+		return nil, status.Errorf(codes.FailedPrecondition, "pubsublite: publisher has not been started")
+	}
+
+	partition := rp.msgRouter.Route(msg.GetKey())
+	p, ok := rp.publishers[partition]
+	if !ok {
+		// This indicates a bug.
+		return nil, status.Errorf(codes.Internal, "pubsublite: publisher not found for partition %d", partition)
+	}
+	return p.pub, nil
 }
 
 func (rp *routingPublisher) onPublisherTerminated(pub *partitionPublisher) {
@@ -539,11 +550,13 @@ func (rp *routingPublisher) onPublisherTerminated(pub *partitionPublisher) {
 
 	for _, p := range rp.publishers {
 		if p.pub == pub {
-			p.terminated = true
-			rp.waitTerminated.Done()
+			if !p.terminated {
+				p.terminated = true
+				rp.waitTerminated.Done()
+			}
 		} else if !p.terminated {
-			// If 1 publisher terminates due to permanent error, stop them all, but
-			// allow them to shutdown gracefully.
+			// If a publisher terminates due to permanent error, stop them all, but
+			// allow them to flush pending messages.
 			p.pub.Stop(false)
 		}
 	}

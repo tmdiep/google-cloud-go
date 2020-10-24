@@ -292,7 +292,7 @@ func TestSimplePublish(t *testing.T) {
 	ctx := context.Background()
 	proj := testutil.ProjID()
 	zone := "us-central1-b"
-	resourceID := "go-publish-test-4"
+	resourceID := "go-publish-test"
 	topic := TopicPath{Project: proj, Zone: zone, TopicID: resourceID}
 
 	settings := DefaultPublishSettings
