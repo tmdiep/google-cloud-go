@@ -94,9 +94,9 @@ func (b *publishBatch) toPublishRequest() *pb.PublishRequest {
 	}
 }
 
-// publisheronTerminated is used to notify the parent of a partitionPublisher
+// publisherTerminatedFunc is used to notify the parent of a partitionPublisher
 // that it has terminated.
-type publisheronTerminated func(*partitionPublisher)
+type publisherTerminatedFunc func(*partitionPublisher)
 
 // partitionPublisher publishes messages to a single topic partition.
 // Safe to call from multiple goroutines.
@@ -107,7 +107,7 @@ type partitionPublisher struct {
 	partition    int
 	header       string
 	initialReq   *pb.PublishRequest
-	onTerminated publisheronTerminated
+	onTerminated publisherTerminatedFunc
 
 	// Guards access to fields below.
 	mu sync.Mutex
@@ -126,7 +126,7 @@ type partitionPublisher struct {
 	availableBufferBytes  int
 }
 
-func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic TopicPath, partition int, terminated publisheronTerminated) *partitionPublisher {
+func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic TopicPath, partition int, terminated publisherTerminatedFunc) *partitionPublisher {
 	publisher := &partitionPublisher{
 		ctx:       ctx,
 		pubClient: pubClient,
@@ -202,8 +202,9 @@ func (p *partitionPublisher) Publish(msg *pb.PubSubMessage, onDone publishResult
 			return ErrOverflow
 		}
 		if err := p.msgBundler.Add(&messageHolder{msg: msg, onDone: onDone, size: msgSize}, msgSize); err != nil {
-			// This should not occur.
-			return status.Errorf(codes.Internal, "pubsublite: failed to bundle message: %v", err)
+			// As we've already checked the size of the message and overflow, the
+			// bundler should not return an error.
+			return status.Errorf(codes.Internal, "pubsublite: failed to batch message: %v", err)
 		}
 		p.availableBufferBytes -= msgSize
 		return nil
