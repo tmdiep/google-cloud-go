@@ -49,14 +49,16 @@ func (r *rpcMetadata) wait() error {
 	}
 }
 
+// RPCVerifier stores an ordered list of requests expected from the client, and
+// the corresponding response or error to return.
 type RPCVerifier struct {
-	t  *testing.T
-	mu sync.Mutex
-	// An ordered list of expected RPCs stored in rpcMetadata.
-	rpcs     *list.List
+	t        *testing.T
+	mu       sync.Mutex
+	rpcs     *list.List // Value = *rpcMetadata
 	numCalls int
 }
 
+// NewRPCVerifier creates a new verifier for requests received by the server.
 func NewRPCVerifier(t *testing.T) *RPCVerifier {
 	return &RPCVerifier{
 		t:        t,
@@ -65,6 +67,7 @@ func NewRPCVerifier(t *testing.T) *RPCVerifier {
 	}
 }
 
+// Push appends a new {request, response, error} tuple.
 func (v *RPCVerifier) Push(wantRequest interface{}, retResponse interface{}, retErr error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -77,8 +80,8 @@ func (v *RPCVerifier) Push(wantRequest interface{}, retResponse interface{}, ret
 }
 
 // PushWithBlock is like Push, but returns a channel that the test should close
-// when it would like the response to be sent. This is useful for introducing
-// delays to allow the client sufficient time to perform some work.
+// when it would like the response to be sent to the client. This is useful for
+// synchronizing with work that needs to be done on the client.
 func (v *RPCVerifier) PushWithBlock(wantRequest interface{}, retResponse interface{}, retErr error) chan struct{} {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -93,6 +96,8 @@ func (v *RPCVerifier) PushWithBlock(wantRequest interface{}, retResponse interfa
 	return block
 }
 
+// Pop validates the received request with the next {request, response, error}
+// tuple.
 func (v *RPCVerifier) Pop(gotRequest interface{}) (interface{}, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -116,6 +121,33 @@ func (v *RPCVerifier) Pop(gotRequest interface{}) (interface{}, error) {
 	return rpc.retResponse, rpc.retErr
 }
 
+// TryPop should be used only for streams. It checks whether the request in the
+// next tuple is nil, in which case the response or error should be returned to
+// the client without waiting for a request. Useful for streams where the server
+// continuously sends data (e.g. subscribe stream).
+func (v *RPCVerifier) TryPop() (interface{}, error, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	elem := v.rpcs.Front()
+	if elem == nil {
+		return nil, nil, false
+	}
+
+	rpc, _ := elem.Value.(*rpcMetadata)
+	if rpc.wantRequest != nil {
+		return nil, nil, false
+	}
+
+	v.rpcs.Remove(elem)
+	if err := rpc.wait(); err != nil {
+		return nil, err, true
+	}
+	return rpc.retResponse, rpc.retErr, true
+}
+
+// Flush logs an error for any remaining {request, response, error} tuples, in
+// case the client terminated early.
 func (v *RPCVerifier) Flush() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -128,10 +160,11 @@ func (v *RPCVerifier) Flush() {
 	v.rpcs.Init()
 }
 
+// streamVerifiers stores an ordered list of verifiers for unique stream
+// connections.
 type streamVerifiers struct {
-	t *testing.T
-	// An ordered list of RPCVerifiers for each unique stream connection.
-	verifiers  *list.List
+	t          *testing.T
+	verifiers  *list.List // Value = *RPCVerifier
 	numStreams int
 }
 
@@ -143,11 +176,11 @@ func newStreamVerifiers(t *testing.T) *streamVerifiers {
 	}
 }
 
-func (v *streamVerifiers) Push(rv *RPCVerifier) {
+func (v *streamVerifiers) push(rv *RPCVerifier) {
 	v.verifiers.PushBack(rv)
 }
 
-func (v *streamVerifiers) Pop() (*RPCVerifier, error) {
+func (v *streamVerifiers) pop() (*RPCVerifier, error) {
 	v.numStreams++
 	elem := v.verifiers.Front()
 	if elem == nil {

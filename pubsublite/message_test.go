@@ -19,18 +19,12 @@ import (
 	"testing"
 	"time"
 
+	"cloud.google.com/go/pubsublite/internal/test"
 	"github.com/golang/protobuf/proto"
 
 	tspb "github.com/golang/protobuf/ptypes/timestamp"
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
-
-type fakeSource struct {
-	ret int64
-}
-
-func (f *fakeSource) Int63() int64    { return f.ret }
-func (f *fakeSource) Seed(seed int64) {}
 
 type fakeMsgRouter struct {
 	multiplier     int
@@ -105,7 +99,7 @@ func TestMessageToProto(t *testing.T) {
 func TestRoundRobinMsgRouter(t *testing.T) {
 	// Using the same msgRouter for each test run ensures that it reinitializes
 	// when the partition count changes.
-	source := &fakeSource{}
+	source := &test.FakeSource{}
 	msgRouter := &roundRobinMsgRouter{rng: rand.New(source)}
 
 	for _, tc := range []struct {
@@ -125,7 +119,7 @@ func TestRoundRobinMsgRouter(t *testing.T) {
 		},
 	} {
 		t.Run(fmt.Sprintf("partitionCount=%d", tc.partitionCount), func(t *testing.T) {
-			source.ret = tc.source
+			source.Ret = tc.source
 			msgRouter.SetPartitionCount(tc.partitionCount)
 			for i, want := range tc.want {
 				got := msgRouter.Route([]byte("IGNORED"))

@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"testing"
 	"time"
@@ -383,6 +384,29 @@ func TestPartitionPublisherInvalidInitialResponse(t *testing.T) {
 	}
 }
 
+func TestPartitionPublisherSpuriousPublishResponse(t *testing.T) {
+	topic := TopicPath{Project: "123456", Zone: "us-central1-b", TopicID: "my-topic"}
+	partition := 0
+
+	mockServer.OnTestStart(nil)
+	defer mockServer.OnTestEnd()
+
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initPubReq(topic, partition), initPubResp(), nil)
+	// The server sends a MessagePublishResponse when no messages were published,
+	// which the client treats as a permanent failure (bug on the server).
+	stream.Push(nil, msgPubResp(0), nil)
+	mockServer.AddPublishStream(topic.String(), partition, stream)
+
+	pub, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	if gotErr := pubStartError(pub); gotErr != nil {
+		t.Errorf("Start() got err: (%v)", gotErr)
+	}
+	if gotErr, wantErr := pubFinalError(t, pub, terminated), errPublishQueueEmpty; !test.ErrorEqual(gotErr, wantErr) {
+		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, wantErr)
+	}
+}
+
 func TestPartitionPublisherBatching(t *testing.T) {
 	topic := TopicPath{Project: "123456", Zone: "us-central1-b", TopicID: "my-topic"}
 	partition := 0
@@ -713,11 +737,12 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 	close(block)
 
 	validatePubResult(ctx, t, result1, "0:4")
-	validatePubErrorCode(ctx, t, result2, codes.Internal)
-	validatePubErrorCode(ctx, t, result3, codes.Internal)
 
-	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorHasCode(gotErr, codes.Internal) {
-		t.Errorf("Publisher final err: (%v), want code: %v", gotErr, codes.Internal)
+	wantCode := codes.FailedPrecondition
+	validatePubErrorCode(ctx, t, result2, wantCode)
+	validatePubErrorCode(ctx, t, result3, wantCode)
+	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorHasCode(gotErr, wantCode) {
+		t.Errorf("Publisher final err: (%v), want code: %v", gotErr, wantCode)
 	}
 }
 
@@ -749,9 +774,6 @@ func TestPartitionPublisherInvalidServerPublishResponse(t *testing.T) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, wantErr)
 	}
 }
-
-// TODO:
-// perm error happens during flush
 
 func TestPartitionPublisherPublishBeforeStart(t *testing.T) {
 	topic := TopicPath{Project: "123456", Zone: "us-central1-b", TopicID: "my-topic"}
@@ -817,4 +839,57 @@ func TestPartitionPublisherFlushMessages(t *testing.T) {
 	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorEqual(gotErr, finalErr) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, finalErr)
 	}
+}
+
+func newTestRoutingPublisher(t *testing.T, topic TopicPath, settings PublishSettings) (*routingPublisher, *test.FakeSource) {
+	ctx := context.Background()
+	source := &test.FakeSource{}
+	msgRouter := &roundRobinMsgRouter{rng: rand.New(source)}
+	pub, err := newRoutingPublisher(ctx, msgRouter, settings, topic, clientOpts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub, source
+}
+
+func topicPartitionsReq(topic TopicPath) *pb.GetTopicPartitionsRequest {
+	return &pb.GetTopicPartitionsRequest{Name: topic.String()}
+}
+
+func topicPartitionsResp(count int) *pb.TopicPartitions {
+	return &pb.TopicPartitions{PartitionCount: int64(count)}
+}
+
+func TestRoutingPublisherStartOnce(t *testing.T) {
+	topic := TopicPath{Project: "123456", Zone: "us-central1-b", TopicID: "my-topic"}
+	numPartitions := 2
+
+	rpc := test.NewRPCVerifier(t)
+	rpc.Push(topicPartitionsReq(topic), topicPartitionsResp(numPartitions), nil)
+
+	mockServer.OnTestStart(rpc)
+	defer mockServer.OnTestEnd()
+
+	stream1 := test.NewRPCVerifier(t)
+	stream1.Push(initPubReq(topic, 0), initPubResp(), nil)
+	mockServer.AddPublishStream(topic.String(), 0, stream1)
+
+	stream2 := test.NewRPCVerifier(t)
+	stream2.Push(initPubReq(topic, 1), initPubResp(), nil)
+	mockServer.AddPublishStream(topic.String(), 1, stream2)
+
+	pub, _ := newTestRoutingPublisher(t, topic, defaultTestPublishSettings)
+	defer pub.Stop()
+
+	t.Run("First succeeds", func(t *testing.T) {
+		if gotErr := pub.Start(); gotErr != nil {
+			t.Errorf("Start() got err: (%v)", gotErr)
+		}
+	})
+	t.Run("Second no-op", func(t *testing.T) {
+		// An error is not returned, but no new streams are opened.
+		if gotErr := pub.Start(); gotErr != nil {
+			t.Errorf("Start() got err: (%v)", gotErr)
+		}
+	})
 }

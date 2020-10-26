@@ -14,6 +14,7 @@
 package test
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"reflect"
@@ -40,6 +41,7 @@ func NewServer() (*Server, error) {
 		return nil, err
 	}
 	liteServer := newMockLiteServer()
+	pb.RegisterAdminServiceServer(srv.Gsrv, liteServer)
 	pb.RegisterPublisherServiceServer(srv.Gsrv, liteServer)
 	srv.Start()
 	return &Server{LiteServer: liteServer, gRPCServer: srv}, nil
@@ -64,6 +66,7 @@ type streamHolder struct {
 // which allows unit tests to inspect requests received by the server and send
 // fake responses.
 type MockLiteServer struct {
+	pb.AdminServiceServer
 	pb.PublisherServiceServer
 
 	mu sync.Mutex
@@ -90,14 +93,19 @@ func newMockLiteServer() *MockLiteServer {
 	}
 }
 
+// OnTestStart must be called at the start of each test to clear any existing
+// state and set the verifier for unary RPCs.
 func (s *MockLiteServer) OnTestStart(globalVerifier *RPCVerifier) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.globalVerifier = globalVerifier
 	s.publishVerifiers = make(map[string]*streamVerifiers)
+	s.activeStreams = make(map[int]*streamHolder)
 }
 
+// OnTestEnd should be called at the end of each test to flush the verifiers
+// (i.e. check whether any expected requests were not sent to the server).
 func (s *MockLiteServer) OnTestEnd() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -120,7 +128,7 @@ func (s *MockLiteServer) pushStreamVerifier(key string, v *RPCVerifier, verifier
 		sv = newStreamVerifiers(v.t)
 		verifiers[key] = sv
 	}
-	sv.Push(v)
+	sv.push(v)
 }
 
 func (s *MockLiteServer) popStreamVerifier(key string, verifiers map[string]*streamVerifiers) (*RPCVerifier, error) {
@@ -131,7 +139,7 @@ func (s *MockLiteServer) popStreamVerifier(key string, verifiers map[string]*str
 	if !ok {
 		return nil, status.Error(codes.FailedPrecondition, "mockserver: unexpected connection with no configured responses")
 	}
-	return sv.Pop()
+	return sv.pop()
 }
 
 func (s *MockLiteServer) startStream(stream grpc.ServerStream, verifier *RPCVerifier) (id int) {
@@ -154,8 +162,11 @@ func (s *MockLiteServer) endStream(id int) {
 func (s *MockLiteServer) handleStream(stream grpc.ServerStream, req interface{}, requestType reflect.Type, verifier *RPCVerifier) (err error) {
 	id := s.startStream(stream, verifier)
 
+	// Verify initial request.
+	retResponse, retErr := verifier.Pop(req)
+	var ok bool
+
 	for {
-		retResponse, retErr := verifier.Pop(req)
 		if retErr != nil {
 			err = retErr
 			break
@@ -165,6 +176,12 @@ func (s *MockLiteServer) handleStream(stream grpc.ServerStream, req interface{},
 			break
 		}
 
+		// Check whether the next response isn't blocked on a request.
+		retResponse, retErr, ok = verifier.TryPop()
+		if ok {
+			continue
+		}
+
 		req = reflect.New(requestType).Interface()
 		if err = stream.RecvMsg(req); err == io.EOF {
 			break
@@ -172,6 +189,7 @@ func (s *MockLiteServer) handleStream(stream grpc.ServerStream, req interface{},
 			err = status.Errorf(codes.FailedPrecondition, "mockserver: stream recv error: %v", err)
 			break
 		}
+		retResponse, retErr = verifier.Pop(req)
 	}
 
 	// Check whether the stream ended prematurely.
@@ -180,9 +198,12 @@ func (s *MockLiteServer) handleStream(stream grpc.ServerStream, req interface{},
 	return
 }
 
+// AddPublishStream adds a verifier for a publish stream.
 func (s *MockLiteServer) AddPublishStream(topic string, partition int, streamVerifier *RPCVerifier) {
 	s.pushStreamVerifier(key(topic, partition), streamVerifier, s.publishVerifiers)
 }
+
+// PublisherService implementation.
 
 func (s *MockLiteServer) Publish(stream pb.PublisherService_PublishServer) error {
 	req, err := stream.Recv()
@@ -201,4 +222,18 @@ func (s *MockLiteServer) Publish(stream pb.PublisherService_PublishServer) error
 		return err
 	}
 	return s.handleStream(stream, req, reflect.TypeOf(pb.PublishRequest{}), verifier)
+}
+
+// AdminService implementation.
+
+func (s *MockLiteServer) GetTopicPartitions(ctx context.Context, req *pb.GetTopicPartitionsRequest) (*pb.TopicPartitions, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	retResponse, retErr := s.globalVerifier.Pop(req)
+	resp, ok := retResponse.(*pb.TopicPartitions)
+	if !ok {
+		return nil, status.Errorf(codes.FailedPrecondition, "mockserver: invalid response type %v", reflect.TypeOf(retResponse))
+	}
+	return resp, retErr
 }

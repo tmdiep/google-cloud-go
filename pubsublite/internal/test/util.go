@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// ErrorEqual compares two errors for equivalence.
 func ErrorEqual(got, want error) bool {
 	if got == want {
 		return true
@@ -27,9 +28,18 @@ func ErrorEqual(got, want error) bool {
 	return cmp.Equal(got, want, cmpopts.EquateErrors())
 }
 
+// ErrorHasCode returns true if an error has the desired canonical code.
 func ErrorHasCode(got error, wantCode codes.Code) bool {
 	if s, ok := status.FromError(got); ok {
 		return s.Code() == wantCode
 	}
 	return false
 }
+
+// FakeSource is a fake source that returns a configurable constant.
+type FakeSource struct {
+	Ret int64
+}
+
+func (f *FakeSource) Int63() int64    { return f.Ret }
+func (f *FakeSource) Seed(seed int64) {}

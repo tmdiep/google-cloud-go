@@ -34,9 +34,9 @@ import (
 )
 
 var (
-	errInvalidInitalPubResponse = status.Error(codes.Internal, "pubsublite: server returned invalid initial publish response")
-	errInvalidMsgPubResponse    = status.Error(codes.Internal, "pubsublite: received unexpected publish response from server")
-	errPublishQueueEmpty        = status.Error(codes.Internal, "pubsublite: received unexpected message response from server for no in-flight published messages")
+	errInvalidInitalPubResponse = status.Error(codes.FailedPrecondition, "pubsublite: first response from server was not an initial response")
+	errInvalidMsgPubResponse    = status.Error(codes.FailedPrecondition, "pubsublite: received invalid publish response from server")
+	errPublishQueueEmpty        = status.Error(codes.FailedPrecondition, "pubsublite: received publish response from server with no batches in flight")
 )
 
 // publishMetadata holds the results of a published message. It implements the
@@ -166,9 +166,9 @@ type partitionPublisher struct {
 
 	// Used to batch messages.
 	msgBundler *bundler.Bundler
-	// Ordered list of In-flight batches of published messages. Results have not
+	// Ordered list of in-flight batches of published messages. Results have not
 	// yet been received from the stream.
-	publishQueue          *list.List
+	publishQueue          *list.List // Value = *publishBatch
 	minExpectedNextOffset int64
 	enableSendToStream    bool
 	availableBufferBytes  int
@@ -355,7 +355,7 @@ func (p *partitionPublisher) onResponse(response interface{}) {
 		}
 		firstOffset := pubResponse.GetMessageResponse().GetStartCursor().GetOffset()
 		if firstOffset < p.minExpectedNextOffset {
-			return status.Errorf(codes.Internal, "pubsublite: server returned message start offset = %d, expected >= %d", firstOffset, p.minExpectedNextOffset)
+			return status.Errorf(codes.FailedPrecondition, "pubsublite: server returned publish response with start offset = %d, expected >= %d", firstOffset, p.minExpectedNextOffset)
 		}
 
 		batch, _ := frontElem.Value.(*publishBatch)
@@ -553,7 +553,7 @@ func (rp *routingPublisher) initPublishers() ([]*partitionPublisher, error) {
 		return nil, err
 	}
 	if partitionCount <= 0 {
-		return nil, status.Errorf(codes.Internal, "pubsublite: topic has unexpected number of partitions %d\n", partitionCount)
+		return nil, status.Errorf(codes.FailedPrecondition, "pubsublite: topic has invalid number of partitions %d\n", partitionCount)
 	}
 
 	var publishers []*partitionPublisher
@@ -579,7 +579,7 @@ func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*partitionP
 	partition := rp.msgRouter.Route(msg.GetKey())
 	p, ok := rp.publishers[partition]
 	if !ok {
-		// This indicates a bug.
+		// Should not occur. This indicates a bug in the client.
 		return nil, status.Errorf(codes.Internal, "pubsublite: publisher not found for partition %d", partition)
 	}
 	return p.pub, nil
