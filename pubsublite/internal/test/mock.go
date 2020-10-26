@@ -231,9 +231,12 @@ func (s *MockLiteServer) GetTopicPartitions(ctx context.Context, req *pb.GetTopi
 	defer s.mu.Unlock()
 
 	retResponse, retErr := s.globalVerifier.Pop(req)
+	if retErr != nil {
+		return nil, retErr
+	}
 	resp, ok := retResponse.(*pb.TopicPartitions)
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "mockserver: invalid response type %v", reflect.TypeOf(retResponse))
 	}
-	return resp, retErr
+	return resp, nil
 }
