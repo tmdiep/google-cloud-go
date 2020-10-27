@@ -72,6 +72,9 @@ type streamHandler interface {
 //   Start() --> reconnect() <--> listen()
 // terminate() can be called at any time, either by the client to force stream
 // closure, or as a result of an unretryable error.
+//
+// Safe to call capitalized methods from multiple goroutines, All other methods
+// are private implementation.
 type retryableStream struct {
 	// Immutable after creation.
 	ctx          context.Context
@@ -102,8 +105,8 @@ func newRetryableStream(ctx context.Context, handler streamHandler, timeout time
 	}
 }
 
-// Start establishes a stream connection and returns the result to the given
-// channel.
+// Start establishes a stream connection. It is a no-op if the stream is started
+// again.
 func (rs *retryableStream) Start() {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
