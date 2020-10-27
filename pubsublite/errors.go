@@ -13,22 +13,19 @@
 
 package pubsublite
 
-import (
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-)
+import "errors"
 
 var (
 	// ErrOverflow indicates that the publish buffers have overflowed. See
 	// comments for PublishSettings.BufferedByteLimit.
-	ErrOverflow = status.Error(codes.ResourceExhausted, "pubsublite: client-side publish buffers have overflowed")
+	ErrOverflow = errors.New("pubsublite: client-side publish buffers have overflowed")
 
 	// ErrServiceUninitialized indicates that a service (e.g. publisher or
 	// subscriber) cannot perform an operation because it is uninitialized.
-	ErrServiceUninitialized = status.Error(codes.FailedPrecondition, "pubsublite: service must be started")
+	ErrServiceUninitialized = errors.New("pubsublite: service must be started")
 
 	// ErrServiceStopped indicates that a service (e.g. publisher or subscriber)
 	// cannot perform an operation because it has stoped or is in the process of
 	// stopping.
-	ErrServiceStopped = status.Error(codes.FailedPrecondition, "pubsublite: service has stopped or is stopping")
+	ErrServiceStopped = errors.New("pubsublite: service has stopped or is stopping")
 )
