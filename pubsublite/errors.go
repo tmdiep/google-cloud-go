@@ -27,8 +27,8 @@ var (
 	// subscriber) cannot perform an operation because it is uninitialized.
 	ErrServiceUninitialized = status.Error(codes.FailedPrecondition, "pubsublite: service must be started")
 
-	// ErrServiceTerminated indicates that a service (e.g. publisher or
-	// subscriber) cannot perform an operation because it has stoped or is in the
-	// process of stopping.
+	// ErrServiceStopped indicates that a service (e.g. publisher or subscriber)
+	// cannot perform an operation because it has stoped or is in the process of
+	// stopping.
 	ErrServiceStopped = status.Error(codes.FailedPrecondition, "pubsublite: service has stopped or is stopping")
 )

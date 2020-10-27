@@ -40,7 +40,7 @@ const (
 var (
 	// Initialized in TestMain.
 	testServer *test.Server
-	mockServer *test.MockLiteServer
+	mockServer test.MockServer
 	clientOpts []option.ClientOption
 
 	defaultTestPublishSettings PublishSettings

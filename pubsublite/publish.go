@@ -44,6 +44,8 @@ type publisher interface {
 	Publish(msg *pb.PubSubMessage) *publishMetadata
 }
 
+// PublishClient is a Cloud Pub/Sub Lite client to publish messages to a given
+// topic.
 type PublishClient struct {
 	pub publisher
 }
