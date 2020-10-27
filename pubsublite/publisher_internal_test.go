@@ -196,6 +196,13 @@ func validatePubErrorCode(ctx context.Context, t *testing.T, result *publishMeta
 	}
 }
 
+func validatePubErrorMsg(ctx context.Context, t *testing.T, result *publishMetadata, wantStr string) {
+	_, gotErr := result.Get(ctx)
+	if !test.ErrorHasMsg(gotErr, wantStr) {
+		t.Errorf("Publish() error: (%v), want msg: %q", gotErr, wantStr)
+	}
+}
+
 func TestPartitionPublisherStartOnce(t *testing.T) {
 	topic := TopicPath{Project: "123456", Zone: "us-central1-b", TopicID: "my-topic"}
 	partition := 0
@@ -706,12 +713,13 @@ func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
 	// This message arrives after the publisher has already stopped.
 	result3 := pub.Publish(msg3)
 
+	wantErrMsg := "maximum allowed size is MaxPublishMessageBytes"
 	validatePubResult(ctx, t, result1, "0:0")
-	validatePubErrorCode(ctx, t, result2, codes.FailedPrecondition)
+	validatePubErrorMsg(ctx, t, result2, wantErrMsg)
 	validatePubError(ctx, t, result3, ErrServiceStopped)
 
-	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorHasCode(gotErr, codes.FailedPrecondition) {
-		t.Errorf("Publisher final err: (%v), want code: %v", gotErr, codes.FailedPrecondition)
+	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorHasMsg(gotErr, wantErrMsg) {
+		t.Errorf("Publisher final err: (%v), want msg: %v", gotErr, wantErrMsg)
 	}
 }
 
@@ -748,11 +756,11 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 
 	validatePubResult(ctx, t, result1, "0:4")
 
-	wantCode := codes.FailedPrecondition
-	validatePubErrorCode(ctx, t, result2, wantCode)
-	validatePubErrorCode(ctx, t, result3, wantCode)
-	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorHasCode(gotErr, wantCode) {
-		t.Errorf("Publisher final err: (%v), want code: %v", gotErr, wantCode)
+	wantMsg := "server returned publish response with inconsistent start offset"
+	validatePubErrorMsg(ctx, t, result2, wantMsg)
+	validatePubErrorMsg(ctx, t, result3, wantMsg)
+	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorHasMsg(gotErr, wantMsg) {
+		t.Errorf("Publisher final err: (%v), want msg: %q", gotErr, wantMsg)
 	}
 }
 
@@ -924,8 +932,9 @@ func TestRoutingPublisherPartitionCountInvalid(t *testing.T) {
 
 	pub, _ := newTestRoutingPublisher(t, topic, defaultTestPublishSettings)
 
-	if gotErr := pub.Start(); !test.ErrorHasCode(gotErr, codes.FailedPrecondition) {
-		t.Errorf("Start() got err: (%v), want code: %v", gotErr, codes.FailedPrecondition)
+	wantMsg := "topic has invalid number of partitions"
+	if gotErr := pub.Start(); !test.ErrorHasMsg(gotErr, wantMsg) {
+		t.Errorf("Start() got err: (%v), want msg: %q", gotErr, wantMsg)
 	}
 	if gotLen, wantLen := len(pub.publishers), 0; gotLen != wantLen {
 		t.Errorf("len(publishers) got %d, want %d", gotLen, wantLen)

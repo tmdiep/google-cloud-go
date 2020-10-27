@@ -16,6 +16,7 @@ package pubsublite
 import (
 	"container/list"
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -24,17 +25,15 @@ import (
 	"google.golang.org/api/option"
 	"google.golang.org/api/support/bundler"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 var (
-	errInvalidInitalPubResponse = status.Error(codes.FailedPrecondition, "pubsublite: first response from server was not an initial response")
-	errInvalidMsgPubResponse    = status.Error(codes.FailedPrecondition, "pubsublite: received invalid publish response from server")
-	errPublishQueueEmpty        = status.Error(codes.FailedPrecondition, "pubsublite: received publish response from server with no batches in flight")
+	errInvalidInitalPubResponse = errors.New("pubsublite: first response from server was not an initial response")
+	errInvalidMsgPubResponse    = errors.New("pubsublite: received invalid publish response from server")
+	errPublishQueueEmpty        = errors.New("pubsublite: received publish response from server with no batches in flight")
 )
 
 // publishMetadata holds the results of a published message. It implements the
@@ -258,7 +257,7 @@ func (p *partitionPublisher) Publish(msg *pb.PubSubMessage) (result *publishMeta
 		case p.status > publisherActive:
 			return ErrServiceStopped
 		case msgSize > MaxPublishMessageBytes:
-			return status.Errorf(codes.FailedPrecondition, "pubsublite: serialized message size is %d bytes, maximum allowed size is MaxPublishMessageBytes (%d)", msgSize, MaxPublishMessageBytes)
+			return fmt.Errorf("pubsublite: serialized message size is %d bytes, maximum allowed size is MaxPublishMessageBytes (%d)", msgSize, MaxPublishMessageBytes)
 		case msgSize > p.availableBufferBytes:
 			return ErrOverflow
 		}
@@ -267,7 +266,7 @@ func (p *partitionPublisher) Publish(msg *pb.PubSubMessage) (result *publishMeta
 		if err := p.msgBundler.Add(holder, msgSize); err != nil {
 			// As we've already checked the size of the message and overflow, the
 			// bundler should not return an error.
-			return status.Errorf(codes.Internal, "pubsublite: failed to batch message: %v", err)
+			return fmt.Errorf("pubsublite: failed to batch message: %v", err)
 		}
 		p.availableBufferBytes -= msgSize
 		return nil
@@ -389,7 +388,7 @@ func (p *partitionPublisher) onResponse(response interface{}) {
 		}
 		firstOffset := pubResponse.GetMessageResponse().GetStartCursor().GetOffset()
 		if firstOffset < p.minExpectedNextOffset {
-			return status.Errorf(codes.FailedPrecondition, "pubsublite: server returned publish response with start offset = %d, expected >= %d", firstOffset, p.minExpectedNextOffset)
+			return fmt.Errorf("pubsublite: server returned publish response with inconsistent start offset = %d, expected >= %d", firstOffset, p.minExpectedNextOffset)
 		}
 
 		batch, _ := frontElem.Value.(*publishBatch)
@@ -590,7 +589,7 @@ func (rp *routingPublisher) initPublishers() ([]*partitionPublisher, error) {
 		return nil, err
 	}
 	if partitionCount <= 0 {
-		return nil, status.Errorf(codes.FailedPrecondition, "pubsublite: topic has invalid number of partitions %d\n", partitionCount)
+		return nil, fmt.Errorf("pubsublite: topic has invalid number of partitions %d", partitionCount)
 	}
 
 	var publishers []*partitionPublisher
@@ -618,7 +617,7 @@ func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*partitionP
 	p, ok := rp.publishers[partition]
 	if !ok {
 		// Should not occur. This indicates a bug in the client.
-		return nil, status.Errorf(codes.Internal, "pubsublite: publisher not found for partition %d", partition)
+		return nil, fmt.Errorf("pubsublite: publisher not found for partition %d", partition)
 	}
 	return p.pub, nil
 }
