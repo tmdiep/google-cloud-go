@@ -400,13 +400,16 @@ func TestPartitionPublisherSpuriousPublishResponse(t *testing.T) {
 	// If the server has sent a MessagePublishResponse when no messages were
 	// published, the client treats this as a permanent failure (bug on the
 	// server).
-	stream.Push(nil, msgPubResp(0), nil)
+	block := stream.PushWithBlock(nil, msgPubResp(0), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
 	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
 	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
+
+	// Send after startup to ensure the test is deterministic.
+	close(block)
 
 	if gotErr, wantErr := pubFinalError(t, pub, terminated), errPublishQueueEmpty; !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, wantErr)

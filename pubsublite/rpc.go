@@ -14,11 +14,15 @@
 package pubsublite
 
 import (
+	"context"
+	"fmt"
+	"net/url"
 	"time"
 
 	"google.golang.org/api/option"
 	"google.golang.org/api/option/internaloption"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	gax "github.com/googleapis/gax-go/v2"
@@ -101,8 +105,21 @@ func isRetryableStreamError(err error, isEligible func(codes.Code) bool) bool {
 	return isEligible(s.Code())
 }
 
+const (
+	pubsubLiteDefaultEndpoint = "-pubsublite.googleapis.com:443"
+	routingMetadataHeader     = "x-goog-request-params"
+)
+
 func defaultClientOptions(region string) []option.ClientOption {
 	return []option.ClientOption{
-		internaloption.WithDefaultEndpoint(region + "-pubsublite.googleapis.com:443"),
+		internaloption.WithDefaultEndpoint(region + pubsubLiteDefaultEndpoint),
 	}
+}
+
+func addRoutingMetadataToContext(ctx context.Context, topic TopicPath, partition int) context.Context {
+	md, _ := metadata.FromOutgoingContext(ctx)
+	md = md.Copy()
+	val := fmt.Sprintf("partition=%d&topic=%s", partition, url.QueryEscape(topic.String()))
+	md[routingMetadataHeader] = append(md[routingMetadataHeader], val)
+	return metadata.NewOutgoingContext(ctx, md)
 }

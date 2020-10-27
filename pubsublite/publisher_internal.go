@@ -17,7 +17,6 @@ import (
 	"container/list"
 	"context"
 	"fmt"
-	"net/url"
 	"reflect"
 	"sync"
 
@@ -26,7 +25,6 @@ import (
 	"google.golang.org/api/support/bundler"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
@@ -93,6 +91,7 @@ func (pm *publishMetadata) error(err error) {
 	close(pm.ready)
 }
 
+// messageHolder stores a message to be published, with associated metadata.
 type messageHolder struct {
 	msg    *pb.PubSubMessage
 	result *publishMetadata
@@ -120,35 +119,15 @@ func (b *publishBatch) toPublishRequest() *pb.PublishRequest {
 	}
 }
 
-// shutdownMode indicates the behavior of the publisher when shutting down.
-type shutdownMode int
-
-const (
-	// Publisher is not shutting down.
-	noShutdown shutdownMode = 0
-	// Flush all pending messages before terminating the publisher. This mode
-	// should be used when:
-	// - The user calls Stop().
-	// - A new message fails preconditions. This should block the publish of
-	//   subsequent messages to ensure ordering, but ideally all prior messages
-	//   should be flushed to avoid forcing the user to republish them.
-	//   Republishing may result in duplicates if there were in-flight batches
-	//   sent to the server with pending results.
-	flushPending shutdownMode = 1
-	// Immediately terminate the publisher and error all in-flight batches and
-	// pending messages in the bundler. This mode should be used when:
-	// - The publish stream terminates with a non-retryable error.
-	// - An inconsistency is detected in the server's publish responses.
-	immediateShutdown shutdownMode = 2
-)
-
+// publisherStatus captures the lifecycle of a publisher, in order. Note that
+// some statuses may be skipped.
 type publisherStatus int
 
 const (
 	// Publisher has not been started.
 	publisherUninitialized publisherStatus = 0
 	// Publisher is active and accepting messages. Note that the underlying stream
-	// may be reconnecting.
+	// may be reconnecting due to retryable errors.
 	publisherActive publisherStatus = 1
 	// Publisher is gracefully shutting down by flushing all pending messages. No
 	// new messages are accepted.
@@ -157,19 +136,35 @@ const (
 	publisherTerminated publisherStatus = 3
 )
 
-// publisherStatusChangeFunc notifies the parent of partitionPublisher of status
+// publisherStatusChangeFunc notifies the parent routingPublisher of status
 // changes. `publisherFlushing` and `publisherTerminated` have an associated
 // error. This error may be nil if the user called Stop().
 type publisherStatusChangeFunc func(*partitionPublisher, publisherStatus, error)
 
 // partitionPublisher publishes messages to a single topic partition.
 //
-// Safe to call from multiple goroutines, as long as the capitalized methods are
-// called. All other methods are private implementation.
+// The life of a successfully published message is as follows:
+// - Publish() receives the message from the user.
+// - If a series of preconditions pass, it is added to `msgBundler`, which
+//   performs batching as per the user-configured PublishSettings.
+// - handleBatch() receives message batches from the bundler.
+// - The batch is added to `publishQueue` and sent to the gRPC stream, if
+//   connected. If the stream is currently reconnecting, the entire
+//   `publishQueue` is resent to the stream immediately after it has
+//   reconnected.
+// - onResponse() receives the cursor offset of the first message of the front
+//   batch of `publishQueue`. It assigns the cursor offsets for each message and
+//   releases the publish result to the user.
+//
+// See comments for initiateShutdown() for error scenarios.
+//
+// Capitalized methods are safe to call from multiple goroutines. All other
+// methods are private implementation.
 type partitionPublisher struct {
 	// Immutable after creation.
 	ctx            context.Context
 	pubClient      *vkit.PublisherClient
+	topic          TopicPath
 	partition      int
 	header         string
 	initialReq     *pb.PublishRequest
@@ -185,7 +180,7 @@ type partitionPublisher struct {
 	// Used to batch messages.
 	msgBundler *bundler.Bundler
 	// Ordered list of in-flight batches of published messages. Results have not
-	// yet been received from the stream.
+	// yet been received from the server.
 	publishQueue          *list.List // Value = *publishBatch
 	minExpectedNextOffset int64
 	enableSendToStream    bool
@@ -196,8 +191,8 @@ func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient,
 	publisher := &partitionPublisher{
 		ctx:       ctx,
 		pubClient: pubClient,
+		topic:     topic,
 		partition: partition,
-		header:    fmt.Sprintf("partition=%d&topic=%s", partition, url.QueryEscape(topic.String())),
 		initialReq: &pb.PublishRequest{
 			RequestType: &pb.PublishRequest_InitialRequest{
 				InitialRequest: &pb.InitialPublishRequest{
@@ -219,7 +214,7 @@ func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient,
 	msgBundler.BundleCountThreshold = settings.CountThreshold
 	msgBundler.BundleByteThreshold = settings.ByteThreshold
 	msgBundler.BundleByteLimit = MaxPublishRequestBytes
-	msgBundler.HandlerLimit = 1 // Handle batches serially
+	msgBundler.HandlerLimit = 1 // Handle batches serially for ordering
 	// The buffer size is managed by this publisher due to the in-flight publish
 	// queue.
 	msgBundler.BufferedByteLimit = settings.BufferedByteLimit * 10
@@ -229,7 +224,7 @@ func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient,
 	return publisher
 }
 
-// Start establishes a publish stream connection.
+// Start attempts to establish a publish stream connection.
 func (p *partitionPublisher) Start() {
 	p.stream.Start()
 }
@@ -241,12 +236,14 @@ func (p *partitionPublisher) Stop() {
 	p.initiateShutdown(publisherFlushing, nil)
 }
 
+// Error returns the error that the publisher terminated with (may be nil).
 func (p *partitionPublisher) Error() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.finalErr
 }
 
+// Publish publishes a pub/sub message.
 func (p *partitionPublisher) Publish(msg *pb.PubSubMessage) (result *publishMetadata) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -277,7 +274,7 @@ func (p *partitionPublisher) Publish(msg *pb.PubSubMessage) (result *publishMeta
 	}
 
 	// If the new message cannot be published, flush pending messages and then
-	// shutdown.
+	// terminate the stream.
 	if err := processMessage(); err != nil {
 		result.error(err)
 		p.initiateShutdown(publisherFlushing, err)
@@ -286,12 +283,7 @@ func (p *partitionPublisher) Publish(msg *pb.PubSubMessage) (result *publishMeta
 }
 
 func (p *partitionPublisher) newStream(ctx context.Context) (grpc.ClientStream, error) {
-	// TODO: Move this to util
-	md, _ := metadata.FromOutgoingContext(ctx)
-	md = md.Copy()
-	md["x-goog-request-params"] = []string{p.header}
-
-	return p.pubClient.Publish(metadata.NewOutgoingContext(ctx, md))
+	return p.pubClient.Publish(addRoutingMetadataToContext(ctx, p.topic, p.partition))
 }
 
 func (p *partitionPublisher) initialRequest() interface{} {
@@ -308,17 +300,19 @@ func (p *partitionPublisher) validateInitialResponse(response interface{}) error
 
 // updateStatus must be called with partitionPublisher.mu held.
 func (p *partitionPublisher) updateStatus(targetStatus publisherStatus, err error) bool {
-	// Already at the same or later stage of the lifecycle.
 	if p.status >= targetStatus {
+		// Already at the same or later stage of the publisher lifecycle.
 		return false
 	}
 
 	p.status = targetStatus
 	if err != nil {
-		// Prevent nil clobbering original error.
+		// Prevent nil clobbering an original error.
 		p.finalErr = err
 	}
 	if p.onStatusChange != nil {
+		// Call back in a goroutine to prevent deadlocks if the parent is holding a
+		// locked mutex.
 		go p.onStatusChange(p, p.status, p.finalErr)
 	}
 	return true
@@ -329,16 +323,21 @@ func (p *partitionPublisher) onStreamStatusChange(status streamStatus) {
 	defer p.mu.Unlock()
 
 	switch status {
+	case streamReconnecting:
+		// This prevents handleBatch() from sending any new batches to the stream
+		// before we've had a chance to send the queued batches below.
+		p.enableSendToStream = false
+
 	case streamConnected:
 		p.updateStatus(publisherActive, nil)
 
 		// To ensure messages are sent in order, we should send everything in
-		// publishQueue to the stream first after reconnecting, before any new
+		// publishQueue to the stream immediately after reconnecting, before any new
 		// batches.
 		reenableSend := true
 		for elem := p.publishQueue.Front(); elem != nil; elem = elem.Next() {
 			if batch, ok := elem.Value.(*publishBatch); ok {
-				// If an error occurs during send, the grpc stream will close and the
+				// If an error occurs during send, the gRPC stream will close and the
 				// retryableStream will transition to `streamReconnecting` or
 				// `streamTerminated`.
 				if !p.stream.Send(batch.toPublishRequest()) {
@@ -349,16 +348,12 @@ func (p *partitionPublisher) onStreamStatusChange(status streamStatus) {
 		}
 		p.enableSendToStream = reenableSend
 
-	case streamReconnecting:
-		// This prevents handleBatch() from sending any new batches to the stream
-		// before we've had a chance to send the queued batches above.
-		p.enableSendToStream = false
-
 	case streamTerminated:
 		p.initiateShutdown(publisherTerminated, p.stream.Error())
 	}
 }
 
+// handleBatch is the bundler's handler func.
 func (p *partitionPublisher) handleBatch(messages []*messageHolder) {
 	if len(messages) == 0 {
 		// This should not occur.
@@ -373,11 +368,12 @@ func (p *partitionPublisher) handleBatch(messages []*messageHolder) {
 
 	if p.enableSendToStream {
 		// Note: if the stream is reconnecting, the entire publish queue will be
-		// sent to the stream once the connection has been established.
+		// sent to the stream in order once the connection has been established.
 		p.stream.Send(batch.toPublishRequest())
 	}
 }
 
+// onResponse receives a server response from the stream.
 func (p *partitionPublisher) onResponse(response interface{}) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -413,6 +409,23 @@ func (p *partitionPublisher) onResponse(response interface{}) {
 	}
 }
 
+// initiateShutdown must be provided a target publisher status, which must be
+// one of:
+// * publisherFlushing: attempts to successfully publish all pending messages
+//   before terminating the publisher. Occurs when:
+//   - The user calls Stop().
+//   - A new message fails preconditions. This should block the publish of
+//     subsequent messages to ensure ordering, but ideally all prior messages
+//     should be flushed to avoid forcing the user to republish them, as
+//     this may result in duplicates if there were in-flight batches with
+//     pending results.
+// * publisherTerminated: immediately terminates the publisher and errors all
+//   in-flight batches and pending messages in the bundler. Occurs when:
+//   - The publish stream terminates with a non-retryable error.
+//   - An inconsistency is detected in the server's publish responses. Assume
+//     there is a bug on the server and terminate the publisher, as correct
+//     processing of messages cannot be guaranteed.
+//
 // initiateShutdown must be called with partitionPublisher.mu held.
 func (p *partitionPublisher) initiateShutdown(targetStatus publisherStatus, err error) {
 	if !p.updateStatus(targetStatus, err) {
