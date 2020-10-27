@@ -36,7 +36,7 @@ type PublishResult interface {
 }
 
 // publisher is an internal implementation of a Pub/Sub Lite publisher.
-// PublishClient provides a facade to match the Google Cloud Pub/Sub (pubsub)
+// PublisherClient provides a facade to match the Google Cloud Pub/Sub (pubsub)
 // module.
 type publisher interface {
 	Start() error
@@ -44,17 +44,17 @@ type publisher interface {
 	Publish(msg *pb.PubSubMessage) *publishMetadata
 }
 
-// PublishClient is a Cloud Pub/Sub Lite client to publish messages to a given
+// PublisherClient is a Cloud Pub/Sub Lite client to publish messages to a given
 // topic.
-type PublishClient struct {
+type PublisherClient struct {
 	pub publisher
 }
 
-// NewPublishClient creates a new Cloud Pub/Sub Lite client to publish messages
-// to a given topic.
+// NewPublisherClient creates a new Cloud Pub/Sub Lite client to publish
+// messages to a given topic.
 // See https://cloud.google.com/pubsub/lite/docs/publishing for more information
 // about publishing.
-func NewPublishClient(ctx context.Context, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) (*PublishClient, error) {
+func NewPublisherClient(ctx context.Context, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) (*PublisherClient, error) {
 	msgRouter := newDefaultMessageRouter(rand.New(rand.NewSource(time.Now().UnixNano())))
 	pub, err := newRoutingPublisher(ctx, msgRouter, settings, topic, opts...)
 	if err != nil {
@@ -64,7 +64,7 @@ func NewPublishClient(ctx context.Context, settings PublishSettings, topic Topic
 		pub.Stop()
 		return nil, err
 	}
-	return &PublishClient{pub: pub}, nil
+	return &PublisherClient{pub: pub}, nil
 }
 
 // Publish publishes `msg` to the topic asynchronously. Messages are batched and
@@ -75,7 +75,7 @@ func NewPublishClient(ctx context.Context, settings PublishSettings, topic Topic
 //
 // Once Stop() has been called, future calls to Publish will immediately return
 // a PublishResult with an error.
-func (p *PublishClient) Publish(ctx context.Context, msg *Message) PublishResult {
+func (p *PublisherClient) Publish(ctx context.Context, msg *Message) PublishResult {
 	msgpb, err := msg.toProto()
 	if err != nil {
 		return newPublishMetadataWithError(err)
@@ -86,6 +86,6 @@ func (p *PublishClient) Publish(ctx context.Context, msg *Message) PublishResult
 // Stop sends all remaining published messages and closes publish streams.
 // Returns once all outstanding messages have been sent or have failed to be
 // sent.
-func (p *PublishClient) Stop() {
+func (p *PublisherClient) Stop() {
 	p.pub.Stop()
 }

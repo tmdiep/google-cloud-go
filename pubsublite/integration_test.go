@@ -82,13 +82,13 @@ func adminClient(ctx context.Context, t *testing.T, region string, opts ...optio
 	return admin
 }
 
-func publishClient(ctx context.Context, t *testing.T, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) *PublishClient {
+func publisherClient(ctx context.Context, t *testing.T, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) *PublisherClient {
 	ts := testutil.TokenSource(ctx, vkit.DefaultAuthScopes()...)
 	if ts == nil {
 		t.Skip("Integration tests skipped. See CONTRIBUTING.md for details")
 	}
 	opts = append(withGRPCHeadersAssertion(t, option.WithTokenSource(ts)), opts...)
-	publisher, err := NewPublishClient(ctx, settings, topic, opts...)
+	publisher, err := NewPublisherClient(ctx, settings, topic, opts...)
 	if err != nil {
 		t.Fatalf("Failed to create publish client: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestSimplePublish(t *testing.T) {
 	settings := DefaultPublishSettings
 	settings.CountThreshold = 2
 	settings.ByteThreshold = 100
-	publisher := publishClient(ctx, t, settings, topic)
+	publisher := publisherClient(ctx, t, settings, topic)
 
 	var results []PublishResult
 	results = append(results, publisher.Publish(ctx, &Message{

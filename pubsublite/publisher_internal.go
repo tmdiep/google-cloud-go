@@ -178,8 +178,8 @@ type partitionPublisher struct {
 
 	// Used to batch messages.
 	msgBundler *bundler.Bundler
-	// Ordered list of in-flight batches of published messages. Results have not
-	// yet been received from the server.
+	// FIFO queue of in-flight batches of published messages. Results have not yet
+	// been received from the server.
 	publishQueue          *list.List // Value = *publishBatch
 	minExpectedNextOffset int64
 	enableSendToStream    bool
