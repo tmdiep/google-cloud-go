@@ -40,7 +40,7 @@ var (
 )
 
 // publishMetadata holds the results of a published message. It implements the
-// PublishResult interface.
+// public PublishResult interface.
 type publishMetadata struct {
 	ready     chan struct{}
 	partition int
@@ -522,10 +522,8 @@ func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings 
 
 // No-op if already successfully started.
 func (rp *routingPublisher) Start() error {
-	fmt.Println("started")
 	publishers, err := rp.initPublishers()
 	if publishers == nil {
-		fmt.Println("return from start")
 		// Note: error is nil if already started.
 		return err
 	}
@@ -534,21 +532,18 @@ func (rp *routingPublisher) Start() error {
 		pub.Start()
 	}
 
-	fmt.Println("waiting for start")
 	rp.waitStarted.Wait()
 	return rp.Error()
 }
 
 // Stop stops all child partitionPublishers and waits for them to terminate.
 func (rp *routingPublisher) Stop() {
-	fmt.Println("stop")
 	rp.mu.Lock()
 	for _, p := range rp.publishers {
 		p.pub.Stop()
 	}
 	rp.mu.Unlock()
 
-	fmt.Println("waiting for stop")
 	rp.waitTerminated.Wait()
 }
 
