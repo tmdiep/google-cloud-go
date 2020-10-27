@@ -782,25 +782,6 @@ func TestPartitionPublisherInvalidServerPublishResponse(t *testing.T) {
 	}
 }
 
-/*
-func TestPartitionPublisherPublishBeforeStart(t *testing.T) {
-	topic := TopicPath{Project: "123456", Zone: "us-central1-b", TopicID: "my-topic"}
-	partition := 0
-
-	mockServer.OnTestStart(nil)
-	defer mockServer.OnTestEnd()
-
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
-	// Start not called.
-	result := pub.Publish(&pb.PubSubMessage{Data: []byte{'1'}})
-
-	wantErr := ErrServiceUninitialized
-	validatePubError(contextWithTimeout(), t, result, wantErr)
-	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorEqual(gotErr, wantErr) {
-		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, wantErr)
-	}
-}
-*/
 func TestPartitionPublisherFlushMessages(t *testing.T) {
 	topic := TopicPath{Project: "123456", Zone: "us-central1-b", TopicID: "my-topic"}
 	partition := 0

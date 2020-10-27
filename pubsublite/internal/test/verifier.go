@@ -25,32 +25,34 @@ import (
 )
 
 const (
+	// blockWaitTimeout is the timeout for any wait operations to ensure no
+	// deadlocks.
 	blockWaitTimeout = 30 * time.Second
 )
 
 type rpcMetadata struct {
-	wantRequest interface{}
-	retResponse interface{}
-	retErr      error
-	block       chan struct{}
+	wantRequest   interface{}
+	retResponse   interface{}
+	retErr        error
+	blockResponse chan struct{}
 }
 
-// wait until the block is released by the test, or a timeout occurs. Returns
-// immediately if there was no block.
+// wait until the `blockResponse` is released by the test, or a timeout occurs.
+// Returns immediately if there was no block.
 func (r *rpcMetadata) wait() error {
-	if r.block == nil {
+	if r.blockResponse == nil {
 		return nil
 	}
 	select {
 	case <-time.After(blockWaitTimeout):
 		return status.Errorf(codes.FailedPrecondition, "mockserver: test did not unblock response within %v", blockWaitTimeout)
-	case <-r.block:
+	case <-r.blockResponse:
 		return nil
 	}
 }
 
-// RPCVerifier stores an ordered list of requests expected from the client, and
-// the corresponding response or error to return.
+// RPCVerifier stores an stack of requests expected from the client, and the
+// corresponding response or error to return.
 type RPCVerifier struct {
 	t        *testing.T
 	mu       sync.Mutex
@@ -88,10 +90,10 @@ func (v *RPCVerifier) PushWithBlock(wantRequest interface{}, retResponse interfa
 
 	block := make(chan struct{})
 	v.rpcs.PushBack(&rpcMetadata{
-		wantRequest: wantRequest,
-		retResponse: retResponse,
-		retErr:      retErr,
-		block:       block,
+		wantRequest:   wantRequest,
+		retResponse:   retResponse,
+		retErr:        retErr,
+		blockResponse: block,
 	})
 	return block
 }
@@ -160,8 +162,7 @@ func (v *RPCVerifier) Flush() {
 	v.rpcs.Init()
 }
 
-// streamVerifiers stores an ordered list of verifiers for unique stream
-// connections.
+// streamVerifiers stores a stack of verifiers for unique stream connections.
 type streamVerifiers struct {
 	t          *testing.T
 	verifiers  *list.List // Value = *RPCVerifier
