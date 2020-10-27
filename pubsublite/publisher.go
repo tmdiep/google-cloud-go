@@ -41,7 +41,6 @@ type PublishResult interface {
 type publisher interface {
 	Start() error
 	Stop()
-	Wait()
 	Publish(msg *pb.PubSubMessage) *publishMetadata
 }
 
@@ -87,5 +86,4 @@ func (p *PublisherClient) Publish(ctx context.Context, msg *Message) PublishResu
 // sent.
 func (p *PublisherClient) Stop() {
 	p.pub.Stop()
-	p.pub.Wait()
 }
