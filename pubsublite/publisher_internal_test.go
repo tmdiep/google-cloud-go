@@ -81,11 +81,11 @@ func newTestPartitionPublisher(t *testing.T, topic TopicPath, partition int, set
 
 	started = make(chan struct{})
 	terminated = make(chan struct{})
-	onPubStatusChange := func(p *partitionPublisher, status publisherStatus, err error) {
-		if status == publisherActive {
+	onPubStatusChange := func(s service, event serviceEvent, err error) {
+		if event == serviceStarted {
 			close(started)
 		}
-		if status == publisherTerminated {
+		if event == serviceTerminated {
 			close(terminated)
 		}
 	}

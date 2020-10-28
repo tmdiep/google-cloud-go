@@ -17,6 +17,9 @@ import (
 	"container/list"
 	"errors"
 	"sync"
+
+	vkit "cloud.google.com/go/pubsublite/apiv1"
+	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 var (
@@ -66,6 +69,8 @@ func (ah *ackHandler) Acked() bool {
 	return ah.acked
 }
 
+// Clear is called when the ack is obsolete. The ackedFunc is cleared, which
+// renders any future acks ineffective.
 func (ah *ackHandler) Clear() {
 	ah.mu.Lock()
 	defer ah.mu.Unlock()
@@ -88,6 +93,20 @@ func newAckTracker() *ackTracker {
 		ackedPrefixOffset: -1,
 		outstandingAcks:   list.New(),
 	}
+}
+
+// Clear resets the ackTracker back to its initial state. Any remaining
+// outstanding acks are considered to be obsolete.
+func (at *ackTracker) Clear() {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+
+	for elem := at.outstandingAcks.Front(); elem != nil; elem = elem.Next() {
+		ack, _ := elem.Value.(*ackHandler)
+		ack.Clear()
+	}
+	at.outstandingAcks.Init()
+	at.ackedPrefixOffset = -1
 }
 
 // AckedPrefix indicates that all message offsets before and including this
@@ -133,4 +152,22 @@ func (at *ackTracker) Pop() int64 {
 		ack.Clear()
 	}
 	return at.ackedPrefixOffset
+}
+
+type committer struct {
+	// Immutable after creation.
+	cursorClient *vkit.CursorClient
+	subscription SubscriptionPath
+	partition    int
+	initialReq   *pb.StreamingCommitCursorRequest
+	//onStatusChange publisherStatusChangeFunc
+
+	// Guards access to fields below.
+	mu sync.Mutex
+
+	stream *retryableStream
+	//status   publisherStatus
+	finalErr error
+
+	acks *ackTracker
 }

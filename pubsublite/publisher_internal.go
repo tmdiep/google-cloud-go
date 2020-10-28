@@ -135,11 +135,6 @@ const (
 	publisherTerminated publisherStatus = 3
 )
 
-// publisherStatusChangeFunc notifies the parent routingPublisher of status
-// changes. `publisherFlushing` and `publisherTerminated` have an associated
-// error. This error may be nil if the user called Stop().
-type publisherStatusChangeFunc func(*partitionPublisher, publisherStatus, error)
-
 // partitionPublisher publishes messages to a single topic partition.
 //
 // The life of a successfully published message is as follows:
@@ -165,9 +160,8 @@ type partitionPublisher struct {
 	pubClient      *vkit.PublisherClient
 	topic          TopicPath
 	partition      int
-	header         string
 	initialReq     *pb.PublishRequest
-	onStatusChange publisherStatusChangeFunc
+	onStatusChange serviceEventFunc
 
 	// Guards access to fields below.
 	mu sync.Mutex
@@ -186,7 +180,7 @@ type partitionPublisher struct {
 	availableBufferBytes  int
 }
 
-func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic TopicPath, partition int, onStatusChange publisherStatusChangeFunc) *partitionPublisher {
+func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic TopicPath, partition int, onStatusChange serviceEventFunc) *partitionPublisher {
 	publisher := &partitionPublisher{
 		ctx:       ctx,
 		pubClient: pubClient,
@@ -225,6 +219,8 @@ func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient,
 
 // Start attempts to establish a publish stream connection.
 func (p *partitionPublisher) Start() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.stream.Start()
 }
 
@@ -310,9 +306,22 @@ func (p *partitionPublisher) updateStatus(targetStatus publisherStatus, err erro
 		p.finalErr = err
 	}
 	if p.onStatusChange != nil {
-		// Call back in a goroutine to prevent deadlocks if the parent is holding a
-		// locked mutex.
-		go p.onStatusChange(p, p.status, p.finalErr)
+		// Translate publisher status to service events.
+		var event serviceEvent
+		switch targetStatus {
+		case publisherActive:
+			event = serviceStarted
+		case publisherFlushing:
+			event = serviceTerminating
+		case publisherTerminated:
+			event = serviceTerminated
+		}
+
+		if event > 0 {
+			// Call back in a goroutine to prevent deadlocks if the parent is holding
+			// a locked mutex.
+			go p.onStatusChange(p, event, p.finalErr)
+		}
 	}
 	return true
 }
@@ -474,11 +483,6 @@ func (p *partitionPublisher) checkDone() {
 	}
 }
 
-type publisherHolder struct {
-	pub     *partitionPublisher
-	stopped bool
-}
-
 type routingPublisher struct {
 	// Immutable after creation.
 	ctx       context.Context
@@ -486,16 +490,11 @@ type routingPublisher struct {
 	admin     *AdminClient
 	topic     TopicPath
 	settings  PublishSettings
-	// Used to block until all partition publishers have started or terminated.
-	waitStarted    sync.WaitGroup
-	waitTerminated sync.WaitGroup
-
-	// Guards access to fields below.
-	mu sync.Mutex
 
 	msgRouter  messageRouter
-	publishers map[int]*publisherHolder
-	finalErr   error
+	publishers map[int]*partitionPublisher
+
+	compositeService
 }
 
 func newPublisherClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.PublisherClient, error) {
@@ -528,42 +527,18 @@ func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings 
 		topic:      topic,
 		settings:   settings,
 		msgRouter:  msgRouter,
-		publishers: make(map[int]*publisherHolder),
+		publishers: make(map[int]*partitionPublisher),
 	}, nil
 }
 
 // No-op if already successfully started.
 func (rp *routingPublisher) Start() error {
-	publishers, err := rp.initPublishers()
-	if publishers == nil {
+	start, err := rp.initPublishers()
+	if !start {
 		// Note: error is nil if already started.
 		return err
 	}
-
-	for _, pub := range publishers {
-		pub.Start()
-	}
-
-	rp.waitStarted.Wait()
-	return rp.Error()
-}
-
-// Stop stops all child partitionPublishers and waits for them to terminate.
-func (rp *routingPublisher) Stop() {
-	rp.mu.Lock()
-	for _, p := range rp.publishers {
-		p.pub.Stop()
-	}
-	rp.mu.Unlock()
-
-	rp.waitTerminated.Wait()
-}
-
-func (rp *routingPublisher) Error() error {
-	rp.mu.Lock()
-	defer rp.mu.Unlock()
-
-	return rp.finalErr
+	return rp.compositeService.Start()
 }
 
 func (rp *routingPublisher) Publish(msg *pb.PubSubMessage) *publishMetadata {
@@ -575,34 +550,33 @@ func (rp *routingPublisher) Publish(msg *pb.PubSubMessage) *publishMetadata {
 	return pub.Publish(msg)
 }
 
-func (rp *routingPublisher) initPublishers() ([]*partitionPublisher, error) {
+func (rp *routingPublisher) initPublishers() (bool, error) {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 
 	if len(rp.publishers) > 0 {
 		// Already started.
-		return nil, nil
+		return false, nil
 	}
 
 	partitionCount, err := rp.admin.TopicPartitions(rp.ctx, rp.topic)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	if partitionCount <= 0 {
-		return nil, fmt.Errorf("pubsublite: topic has invalid number of partitions %d", partitionCount)
+		return false, fmt.Errorf("pubsublite: topic has invalid number of partitions %d", partitionCount)
 	}
 
 	var publishers []*partitionPublisher
 	for i := 0; i < partitionCount; i++ {
-		pub := newPartitionPublisher(rp.ctx, rp.pubClient, rp.settings, rp.topic, i, rp.onPublisherStatusChange)
+		pub := newPartitionPublisher(rp.ctx, rp.pubClient, rp.settings, rp.topic, i, rp.onServiceEvent)
 		publishers = append(publishers, pub)
-		rp.publishers[i] = &publisherHolder{pub: pub}
+		rp.publishers[i] = pub
+		rp.addService(pub)
 	}
 
 	rp.msgRouter.SetPartitionCount(partitionCount)
-	rp.waitStarted.Add(partitionCount)
-	rp.waitTerminated.Add(partitionCount)
-	return publishers, nil
+	return true, nil
 }
 
 func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*partitionPublisher, error) {
@@ -614,37 +588,10 @@ func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*partitionP
 	}
 
 	partition := rp.msgRouter.Route(msg.GetKey())
-	p, ok := rp.publishers[partition]
+	pub, ok := rp.publishers[partition]
 	if !ok {
 		// Should not occur. This indicates a bug in the client.
 		return nil, fmt.Errorf("pubsublite: publisher not found for partition %d", partition)
 	}
-	return p.pub, nil
-}
-
-func (rp *routingPublisher) onPublisherStatusChange(pub *partitionPublisher, status publisherStatus, err error) {
-	rp.mu.Lock()
-	defer rp.mu.Unlock()
-
-	if status > publisherActive && rp.finalErr == nil {
-		rp.finalErr = err
-	}
-
-	for _, p := range rp.publishers {
-		if p.pub == pub {
-			if status == publisherActive {
-				rp.waitStarted.Done()
-			}
-			if status == publisherTerminated {
-				rp.waitTerminated.Done()
-			}
-			if status > publisherActive {
-				p.stopped = true
-			}
-		} else if status > publisherActive && !p.stopped {
-			// If a single partitionPublisher terminates, stop them all, but allow
-			// the others to flush pending messages.
-			p.pub.Stop()
-		}
-	}
+	return pub, nil
 }
