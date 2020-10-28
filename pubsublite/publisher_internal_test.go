@@ -81,11 +81,11 @@ func newTestPartitionPublisher(t *testing.T, topic TopicPath, partition int, set
 
 	started = make(chan struct{})
 	terminated = make(chan struct{})
-	onPubStatusChange := func(s service, event serviceEvent, err error) {
-		if event == serviceStarted {
+	onPubStatusChange := func(s service, status serviceStatus, err error) {
+		if status == serviceActive {
 			close(started)
 		}
-		if event == serviceTerminated {
+		if status == serviceTerminated {
 			close(terminated)
 		}
 	}
@@ -899,6 +899,7 @@ func TestRoutingPublisherStartOnce(t *testing.T) {
 			t.Errorf("Start() got err: (%v)", gotErr)
 		}
 	})
+
 }
 
 func TestRoutingPublisherPartitionCountFail(t *testing.T) {

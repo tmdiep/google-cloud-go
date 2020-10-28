@@ -32,6 +32,7 @@ import (
 var (
 	errOutOfOrderMessages           = errors.New("pubsublite: messages are out of order")
 	errInvalidInitialCommitResponse = errors.New("pubsublite: first response from server was not an initial response for streaming commit")
+	errInvalidCommitResponse        = errors.New("pubsublite: received invalid commit response from server")
 )
 
 const (
@@ -112,7 +113,8 @@ func newAckTracker() *ackTracker {
 }
 
 // Reset the ackTracker back to its initial state. Any remaining outstanding
-// acks are considered to be obsolete.
+// acks are considered to be obsolete. This should be called when the
+// subscriber client terminates.
 func (at *ackTracker) Reset() {
 	at.mu.Lock()
 	defer at.mu.Unlock()
@@ -201,30 +203,30 @@ func extractOffsetFromElem(elem *list.Element) int64 {
 }
 
 // ClearPending discards old pending offsets. Should be called when the stream
-// reconnects.
+// reconnects, as the acknowledgements for these would not be received.
 func (ct *committedCursorTracker) ClearPending() {
 	ct.pendingOffsets.Init()
 }
 
 // NextOffset is the next offset to be sent to the stream, if any.
 func (ct *committedCursorTracker) NextOffset() int64 {
-	wantCommitOffset := ct.acks.CommitOffset()
-	if wantCommitOffset <= ct.lastConfirmedOffset {
+	newCommitOffset := ct.acks.CommitOffset()
+	if newCommitOffset <= ct.lastConfirmedOffset {
 		return nilCursorOffset
 	}
-	if wantCommitOffset <= extractOffsetFromElem(ct.pendingOffsets.Back()) {
+	if newCommitOffset <= extractOffsetFromElem(ct.pendingOffsets.Back()) {
 		return nilCursorOffset
 	}
-	return wantCommitOffset
+	return newCommitOffset
 }
 
-// AddPending adds a sent, but not yet confirmed, offset.
+// AddPending adds a sent, but not yet acknowledged, committed offset.
 func (ct *committedCursorTracker) AddPending(offset int64) {
 	ct.pendingOffsets.PushBack(offset)
 }
 
 // AcknowledgeOffsets processes the server's acknowledgement of the first
-// `num` pending offsets.
+// `numAcked` pending offsets.
 func (ct *committedCursorTracker) AcknowledgeOffsets(numAcked int64) error {
 	if numPending := int64(ct.pendingOffsets.Len()); numPending < numAcked {
 		return fmt.Errorf("pubsublite: server acknowledged %d cursor commits, but only %d were sent", numAcked, numPending)
@@ -235,28 +237,14 @@ func (ct *committedCursorTracker) AcknowledgeOffsets(numAcked int64) error {
 		ct.lastConfirmedOffset = extractOffsetFromElem(front)
 		ct.pendingOffsets.Remove(front)
 	}
-	fmt.Printf("Last confirmed offset = %d\n", ct.lastConfirmedOffset)
+	fmt.Printf("Last confirmed offset: %d\n", ct.lastConfirmedOffset)
 	return nil
 }
 
-// committerStatus captures the lifecycle of a committer, in order. Note that
-// some statuses may be skipped.
-type committerStatus int
-
-const (
-	// Note: committer.updateStatus assumes these have the same numeric values as
-	// serviceEvent. Refactor if this changes.
-
-	// Committer has not been started.
-	committerUninitialized committerStatus = 0
-	// Committer is active. Note that the underlying stream may be reconnecting
-	// due to retryable errors.
-	committerActive committerStatus = 1
-	// Committer is gracefully shutting down by flushing all pending commits.
-	committerFlushing committerStatus = 2
-	// Committer has terminated.
-	committerTerminated committerStatus = 3
-)
+// Done when there are no more unacknowledged offsets.
+func (ct *committedCursorTracker) Done() bool {
+	return ct.pendingOffsets.Len() == 0
+}
 
 type committer struct {
 	// Immutable after creation.
@@ -264,19 +252,17 @@ type committer struct {
 	subscription SubscriptionPath
 	partition    int
 	initialReq   *pb.StreamingCommitCursorRequest
-	onEvent      serviceEventFunc
-
-	pollCommitsTicker *time.Ticker
-	stopPolling       chan struct{}
 
 	// Guards access to fields below.
 	mu sync.Mutex
 
-	stream   *retryableStream
-	status   committerStatus
-	finalErr error
+	stream *retryableStream
 
-	cursorTracker *committedCursorTracker
+	pollCommitsTicker *time.Ticker
+	stopPolling       chan struct{}
+	cursorTracker     *committedCursorTracker
+
+	abstractService
 }
 
 func newCursorClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.CursorClient, error) {
@@ -287,7 +273,7 @@ func newCursorClient(ctx context.Context, region string, opts ...option.ClientOp
 	return vkit.NewCursorClient(ctx, options...)
 }
 
-func newCommitter(ctx context.Context, cursor *vkit.CursorClient, subs SubscriptionPath, partition int, onEvent serviceEventFunc, acks *ackTracker) *committer {
+func newCommitter(ctx context.Context, cursor *vkit.CursorClient, subs SubscriptionPath, partition int, onStatusChange serviceStatusChangeFunc, acks *ackTracker) *committer {
 	commit := &committer{
 		cursorClient: cursor,
 		subscription: subs,
@@ -300,12 +286,12 @@ func newCommitter(ctx context.Context, cursor *vkit.CursorClient, subs Subscript
 				},
 			},
 		},
-		onEvent:           onEvent,
 		pollCommitsTicker: time.NewTicker(commitCursorPeriod),
 		stopPolling:       make(chan struct{}),
 		cursorTracker:     newCommittedCursorTracker(acks),
 	}
 	// TODO: the timeout should be from ReceiveSettings.
+	commit.onStatusChange = onStatusChange
 	commit.stream = newRetryableStream(ctx, commit, time.Minute, reflect.TypeOf(pb.StreamingCommitCursorResponse{}))
 	return commit
 }
@@ -319,6 +305,9 @@ func (c *committer) Start() {
 }
 
 func (c *committer) Stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unsafeInitiateShutdown(serviceTerminating, nil)
 }
 
 func (c *committer) newStream(ctx context.Context) (grpc.ClientStream, error) {
@@ -338,13 +327,12 @@ func (c *committer) validateInitialResponse(response interface{}) error {
 }
 
 func (c *committer) onStreamStatusChange(status streamStatus) {
-	fmt.Printf("Committer.onStreamStatusChange(%d), err=%v\n", status, c.stream.Error())
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	switch status {
 	case streamConnected:
-		// TODO: update status
+		c.unsafeUpdateStatus(c, serviceActive, nil)
 		c.unsafeCommitOffsetToStream()
 		c.pollCommitsTicker.Reset(commitCursorPeriod)
 
@@ -353,7 +341,7 @@ func (c *committer) onStreamStatusChange(status streamStatus) {
 		c.pollCommitsTicker.Stop()
 
 	case streamTerminated:
-		close(c.stopPolling)
+		c.unsafeInitiateShutdown(serviceTerminated, c.stream.Error())
 	}
 }
 
@@ -378,7 +366,7 @@ func (c *committer) unsafeCommitOffsetToStream() {
 		},
 	}
 	if c.stream.Send(req) {
-		fmt.Printf("Sent: %v\n", req)
+		fmt.Printf("Committed: %v\n", req)
 		c.cursorTracker.AddPending(nextOffset)
 	}
 }
@@ -388,15 +376,22 @@ func (c *committer) onResponse(response interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	commitResponse, _ := response.(*pb.StreamingCommitCursorResponse)
-	if commitResponse.GetCommit() == nil {
-		return
+	processResponse := func() error {
+		commitResponse, _ := response.(*pb.StreamingCommitCursorResponse)
+		if commitResponse.GetCommit() == nil {
+			return errInvalidCommitResponse
+		}
+		numAcked := commitResponse.GetCommit().GetAcknowledgedCommits()
+		if numAcked <= 0 {
+			return fmt.Errorf("pubsublite: server acknowledged an invalid commit count: %d", numAcked)
+		}
+		c.cursorTracker.AcknowledgeOffsets(numAcked)
+		c.unsafeCheckDone()
+		return nil
 	}
-	numAcked := commitResponse.GetCommit().GetAcknowledgedCommits()
-	if numAcked <= 0 {
-		return
+	if err := processResponse(); err != nil {
+		c.unsafeInitiateShutdown(serviceTerminated, err)
 	}
-	c.cursorTracker.AcknowledgeOffsets(numAcked)
 }
 
 // pollCommits executes in a goroutine to periodically commit cursors to the
@@ -406,36 +401,38 @@ func (c *committer) pollCommits() {
 	for {
 		select {
 		case <-c.stopPolling:
-			break
+			fmt.Printf("Stopped: %v\n", time.Now())
+			return
 		case <-c.pollCommitsTicker.C:
-			c.mu.Lock()
 			c.commitOffsetToStream()
-			c.mu.Unlock()
 		}
 	}
-	fmt.Printf("Stopped: %v\n", time.Now())
 }
 
-// updateStatus must be called with committer.mu held.
-func (c *committer) updateStatus(targetStatus committerStatus, err error) bool {
-	if c.status >= targetStatus {
-		// Already at the same or later stage of the committer lifecycle.
-		return false
+// Must be called with committer.mu held.
+func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
+	if !c.unsafeUpdateStatus(c, targetStatus, err) {
+		return
 	}
 
-	c.status = targetStatus
-	if err != nil {
-		// Prevent nil clobbering an original error.
-		c.finalErr = err
-	}
-	if c.onEvent != nil {
-		// Translate committer status to service events. They currently have the
-		// same values.
-		event := serviceEvent(targetStatus)
+	// Stop pollCommits to prevent more in-flight commits added to the stream.
+	c.pollCommitsTicker.Stop()
 
-		// Notify in a goroutine to prevent deadlocks if the parent is holding a
-		// locked mutex.
-		go c.onEvent(c, event, c.finalErr)
+	if targetStatus == serviceTerminating {
+		// Try sending final commit to the stream.
+		c.unsafeCommitOffsetToStream()
+		c.unsafeCheckDone()
+		return
 	}
-	return true
+
+	// Otherwise immediately terminate the stream.
+	close(c.stopPolling)
+	c.stream.Stop()
+}
+
+// unsafeCheckDone must be called with committer.mu held.
+func (c *committer) unsafeCheckDone() {
+	if c.status == serviceTerminating && c.cursorTracker.Done() {
+		c.stream.Stop()
+	}
 }

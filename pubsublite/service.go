@@ -13,38 +13,75 @@
 
 package pubsublite
 
-import "sync"
+import (
+	"sync"
+)
 
 // service is the interface that must be implemented by services (essentially
 // gRPC client stream wrappers) that can be dependencies of a compositeService.
 type service interface {
-	// Start the service and attempt to open the gRPC client stream.
+	// Start the service.
 	Start()
 	// Stop the service gracefully, flushing any pending data.
 	Stop()
 }
 
-// serviceEvent are events that the service must send notifications for.
-type serviceEvent int
+// serviceStatus specifies the current status of the service. The order of the
+// values reflects the lifecycle of services. Note that some statuses may be
+// skipped.
+type serviceStatus int
 
 const (
-	// Service successfully started.
-	serviceStarted serviceEvent = 1
-	// Service has started shutting down and is flushing pending data, but not
-	// accepting new data. It must send the `serviceTerminated` event once done.
-	serviceTerminating serviceEvent = 2
-	// Service has permanently terminated and no longer active.
-	serviceTerminated serviceEvent = 3
+	// Service has not been started.
+	serviceUninitialized serviceStatus = 0
+	// Service is active and accepting new data. Note that the underlying stream
+	// may be reconnecting due to retryable errors.
+	serviceActive serviceStatus = 1
+	// Service is gracefully shutting down by flushing all pending data. No new
+	// data is accepted.
+	serviceTerminating serviceStatus = 2
+	// Service has terminated. No new data is accepted.
+	serviceTerminated serviceStatus = 3
 )
 
-// serviceEventFunc notifies the parent of service events. `serviceTerminating`
-// and `serviceTerminated` have an associated error. This error may be nil if
-// the user called Stop().
-type serviceEventFunc func(service, serviceEvent, error)
+// serviceStatusChangeFunc notifies the parent of service status changes.
+// `serviceTerminating` and `serviceTerminated` have an associated error. This
+// error may be nil if the user called Stop().
+type serviceStatusChangeFunc func(service, serviceStatus, error)
+
+// abstractService can be embedded into other structs to provide common
+// functionality for managing service status.
+type abstractService struct {
+	onStatusChange serviceStatusChangeFunc
+	status         serviceStatus
+	finalErr       error
+}
+
+// unsafeUpdateStatus assumes the service is already holding a mutex when
+// called. `s` must be a pointer to the service embedding the abstractService
+// for the services to be equal in compositeService.onServiceStatusChange.
+func (as *abstractService) unsafeUpdateStatus(s service, targetStatus serviceStatus, err error) bool {
+	if as.status >= targetStatus {
+		// Already at the same or later stage of the service lifecycle.
+		return false
+	}
+
+	as.status = targetStatus
+	if err != nil {
+		// Prevent nil clobbering an original error.
+		as.finalErr = err
+	}
+	if as.onStatusChange != nil {
+		// Notify in a goroutine to prevent deadlocks if the parent is holding a
+		// locked mutex.
+		go as.onStatusChange(s, targetStatus, as.finalErr)
+	}
+	return true
+}
 
 type serviceHolder struct {
-	service   service
-	lastEvent serviceEvent
+	service    service
+	lastStatus serviceStatus
 }
 
 // compositeService can be embedded into other structs to manage child services.
@@ -59,7 +96,7 @@ type compositeService struct {
 	finalErr     error
 }
 
-// Start starts up dependencies and waits for them to finish.
+// Start up dependencies and wait for them to finish.
 func (cs *compositeService) Start() error {
 	for _, s := range cs.services() {
 		s.service.Start()
@@ -68,7 +105,7 @@ func (cs *compositeService) Start() error {
 	return cs.Error()
 }
 
-// Stop stops all dependencies and waits for them to terminate.
+// Stop all dependencies and wait for them to terminate.
 func (cs *compositeService) Stop() {
 	for _, s := range cs.services() {
 		s.service.Stop()
@@ -76,15 +113,16 @@ func (cs *compositeService) Stop() {
 	cs.waitTerminated.Wait()
 }
 
+// Error is the first error encountered, which caused all services to stop.
 func (cs *compositeService) Error() error {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	return cs.finalErr
 }
 
-// addService does not acquire the mutex as it would likely be called while it
-// is held.
-func (cs *compositeService) addService(service service) {
+// unsafeAddService assumes the composite service is already holding the mutex
+// when called.
+func (cs *compositeService) unsafeAddService(service service) {
 	cs.waitStarted.Add(1)
 	cs.waitTerminated.Add(1)
 	cs.dependencies = append(cs.dependencies, &serviceHolder{service: service})
@@ -96,24 +134,24 @@ func (cs *compositeService) services() []*serviceHolder {
 	return cs.dependencies
 }
 
-func (cs *compositeService) onServiceEvent(service service, event serviceEvent, err error) {
+func (cs *compositeService) onServiceStatusChange(service service, status serviceStatus, err error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
-	if event > serviceStarted && cs.finalErr == nil {
+	if status > serviceActive && cs.finalErr == nil {
 		cs.finalErr = err
 	}
 
 	for _, s := range cs.dependencies {
 		if s.service == service {
-			if (event == serviceStarted || event == serviceTerminated) && s.lastEvent < serviceStarted {
+			if (status == serviceActive || status == serviceTerminated) && s.lastStatus < serviceActive {
 				cs.waitStarted.Done()
 			}
-			if event == serviceTerminated && s.lastEvent < serviceTerminated {
+			if status == serviceTerminated && s.lastStatus < serviceTerminated {
 				cs.waitTerminated.Done()
 			}
-			s.lastEvent = event
-		} else if event >= serviceTerminating && s.lastEvent < serviceTerminating {
+			s.lastStatus = status
+		} else if status >= serviceTerminating && s.lastStatus < serviceTerminating {
 			// If a single service terminates, stop them all, but allow the others to
 			// flush pending data.
 			s.service.Stop()

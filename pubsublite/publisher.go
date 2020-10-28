@@ -61,7 +61,6 @@ func NewPublisherClient(ctx context.Context, settings PublishSettings, topic Top
 		return nil, err
 	}
 	if err := pub.Start(); err != nil {
-		pub.Stop()
 		return nil, err
 	}
 	return &PublisherClient{pub: pub}, nil
