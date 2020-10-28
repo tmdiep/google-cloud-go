@@ -16,17 +16,12 @@ package pubsublite
 import (
 	"bytes"
 	"context"
-	"flag"
 	"fmt"
-	"log"
 	"math/rand"
-	"os"
 	"testing"
 	"time"
 
 	"cloud.google.com/go/pubsublite/internal/test"
-	"google.golang.org/api/option"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -36,40 +31,6 @@ import (
 const (
 	publisherWaitTimeout = 30 * time.Second
 )
-
-var (
-	// Initialized in TestMain.
-	testServer *test.Server
-	mockServer test.MockServer
-	clientOpts []option.ClientOption
-
-	defaultTestPublishSettings PublishSettings
-)
-
-func TestMain(m *testing.M) {
-	flag.Parse()
-
-	defaultTestPublishSettings = DefaultPublishSettings
-	// Send 1 message at a time to make tests deterministic.
-	defaultTestPublishSettings.CountThreshold = 1
-	// Send messages with minimal delay to speed up tests.
-	defaultTestPublishSettings.DelayThreshold = time.Millisecond
-
-	testServer, err := test.NewServer()
-	if err != nil {
-		log.Fatal(err)
-	}
-	mockServer = testServer.LiteServer
-	conn, err := grpc.Dial(testServer.Addr(), grpc.WithInsecure())
-	if err != nil {
-		log.Fatal(err)
-	}
-	clientOpts = []option.ClientOption{option.WithGRPCConn(conn)}
-
-	exit := m.Run()
-	testServer.Close()
-	os.Exit(exit)
-}
 
 func newTestPartitionPublisher(t *testing.T, topic TopicPath, partition int, settings PublishSettings) (pub *partitionPublisher, started chan struct{}, terminated chan struct{}) {
 	ctx := context.Background()
