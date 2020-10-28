@@ -607,7 +607,7 @@ func TestPartitionPublisherBufferOverflow(t *testing.T) {
 	topic := TopicPath{Project: "123456", Zone: "us-central1-b", TopicID: "my-topic"}
 	partition := 0
 	settings := defaultTestPublishSettings
-	settings.BufferedByteLimit = 20
+	settings.BufferedByteLimit = 15
 
 	msg1 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'1'}, 10)}
 	msg2 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'2'}, 10)}
@@ -651,7 +651,7 @@ func TestPartitionPublisherBufferRefill(t *testing.T) {
 	topic := TopicPath{Project: "123456", Zone: "us-central1-b", TopicID: "my-topic"}
 	partition := 0
 	settings := defaultTestPublishSettings
-	settings.BufferedByteLimit = 20
+	settings.BufferedByteLimit = 15
 
 	msg1 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'1'}, 10)}
 	msg2 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'2'}, 10)}
@@ -679,6 +679,10 @@ func TestPartitionPublisherBufferRefill(t *testing.T) {
 	// received. `availableBufferBytes` should be refilled.
 	result2 := pub.Publish(msg2)
 	validatePubResult(ctx, t, result2, "0:1")
+
+	if pub.availableBufferBytes != settings.BufferedByteLimit {
+		t.Errorf("availableBufferBytes: %d, want: %d", pub.availableBufferBytes, settings.BufferedByteLimit)
+	}
 }
 
 func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {

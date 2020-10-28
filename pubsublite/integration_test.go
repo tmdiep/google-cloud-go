@@ -350,5 +350,17 @@ func TestCommitter(t *testing.T) {
 	committer := newCommitter(ctx, cursorClient, subscription, partition, nil, acks)
 	committer.Start()
 
+	onAcked := func(a *ackReceiver) {
+		acks.Pop()
+	}
+	ack1 := newAckReceiver(4, 1000, onAcked)
+	acks.Push(ack1)
+	ack2 := newAckReceiver(6, 1000, onAcked)
+	acks.Push(ack2)
+
+	time.Sleep(2 * time.Second)
+	ack1.Ack()
+	time.Sleep(2 * time.Second)
+	ack2.Ack()
 	time.Sleep(5 * time.Second)
 }

@@ -142,15 +142,15 @@ const (
 //
 // The life of a successfully published message is as follows:
 // - Publish() receives the message from the user.
-// - If a series of preconditions pass, it is added to `msgBundler`, which
-//   performs batching as per the user-configured PublishSettings.
-// - handleBatch() receives message batches from the bundler.
+// - It is added to `msgBundler`, which performs batching in accordance with
+//   user-configured PublishSettings.
+// - handleBatch() receives new message batches from the bundler.
 // - The batch is added to `publishQueue` and sent to the gRPC stream, if
 //   connected. If the stream is currently reconnecting, the entire
 //   `publishQueue` is resent to the stream immediately after it has
 //   reconnected.
-// - onResponse() receives the cursor offset of the first message of the front
-//   batch of `publishQueue`. It assigns the cursor offsets for each message and
+// - onResponse() receives the first cursor offset for the front batch in
+//   `publishQueue`. It assigns the cursor offsets for each message and
 //   releases the publish result to the user.
 //
 // See comments for initiateShutdown() for error scenarios.
@@ -313,8 +313,8 @@ func (p *partitionPublisher) updateStatus(targetStatus publisherStatus, err erro
 		// same values.
 		event := serviceEvent(targetStatus)
 
-		// Call back in a goroutine to prevent deadlocks if the parent is holding
-		// a locked mutex.
+		// Notify in a goroutine to prevent deadlocks if the parent is holding a
+		// locked mutex.
 		go p.onEvent(p, event, p.finalErr)
 	}
 	return true
