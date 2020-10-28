@@ -31,9 +31,9 @@ import (
 )
 
 var (
-	errInvalidInitalPubResponse = errors.New("pubsublite: first response from server was not an initial response")
-	errInvalidMsgPubResponse    = errors.New("pubsublite: received invalid publish response from server")
-	errPublishQueueEmpty        = errors.New("pubsublite: received publish response from server with no batches in flight")
+	errInvalidInitialPubResponse = errors.New("pubsublite: first response from server was not an initial response for publish")
+	errInvalidMsgPubResponse     = errors.New("pubsublite: received invalid publish response from server")
+	errPublishQueueEmpty         = errors.New("pubsublite: received publish response from server with no batches in flight")
 )
 
 // publishMetadata holds the results of a published message. It implements the
@@ -123,6 +123,9 @@ func (b *publishBatch) toPublishRequest() *pb.PublishRequest {
 type publisherStatus int
 
 const (
+	// Note: partitionPublisher.updateStatus assumes these have the same numeric
+	// values as serviceEvent. Refactor if this changes.
+
 	// Publisher has not been started.
 	publisherUninitialized publisherStatus = 0
 	// Publisher is active and accepting messages. Note that the underlying stream
@@ -156,12 +159,12 @@ const (
 // methods are private implementation.
 type partitionPublisher struct {
 	// Immutable after creation.
-	ctx            context.Context
-	pubClient      *vkit.PublisherClient
-	topic          TopicPath
-	partition      int
-	initialReq     *pb.PublishRequest
-	onStatusChange serviceEventFunc
+	ctx        context.Context
+	pubClient  *vkit.PublisherClient
+	topic      TopicPath
+	partition  int
+	initialReq *pb.PublishRequest
+	onEvent    serviceEventFunc
 
 	// Guards access to fields below.
 	mu sync.Mutex
@@ -180,7 +183,7 @@ type partitionPublisher struct {
 	availableBufferBytes  int
 }
 
-func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic TopicPath, partition int, onStatusChange serviceEventFunc) *partitionPublisher {
+func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic TopicPath, partition int, onEvent serviceEventFunc) *partitionPublisher {
 	publisher := &partitionPublisher{
 		ctx:       ctx,
 		pubClient: pubClient,
@@ -194,7 +197,7 @@ func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient,
 				},
 			},
 		},
-		onStatusChange:       onStatusChange,
+		onEvent:              onEvent,
 		publishQueue:         list.New(),
 		availableBufferBytes: settings.BufferedByteLimit,
 	}
@@ -288,7 +291,7 @@ func (p *partitionPublisher) initialRequest() interface{} {
 func (p *partitionPublisher) validateInitialResponse(response interface{}) error {
 	pubResponse, _ := response.(*pb.PublishResponse)
 	if pubResponse.GetInitialResponse() == nil {
-		return errInvalidInitalPubResponse
+		return errInvalidInitialPubResponse
 	}
 	return nil
 }
@@ -305,23 +308,14 @@ func (p *partitionPublisher) updateStatus(targetStatus publisherStatus, err erro
 		// Prevent nil clobbering an original error.
 		p.finalErr = err
 	}
-	if p.onStatusChange != nil {
-		// Translate publisher status to service events.
-		var event serviceEvent
-		switch targetStatus {
-		case publisherActive:
-			event = serviceStarted
-		case publisherFlushing:
-			event = serviceTerminating
-		case publisherTerminated:
-			event = serviceTerminated
-		}
+	if p.onEvent != nil {
+		// Translate publisher status to service events. They currently have the
+		// same values.
+		event := serviceEvent(targetStatus)
 
-		if event > 0 {
-			// Call back in a goroutine to prevent deadlocks if the parent is holding
-			// a locked mutex.
-			go p.onStatusChange(p, event, p.finalErr)
-		}
+		// Call back in a goroutine to prevent deadlocks if the parent is holding
+		// a locked mutex.
+		go p.onEvent(p, event, p.finalErr)
 	}
 	return true
 }
@@ -501,8 +495,7 @@ func newPublisherClient(ctx context.Context, region string, opts ...option.Clien
 	if err := validateRegion(region); err != nil {
 		return nil, err
 	}
-	options := defaultClientOptions(region)
-	options = append(options, opts...)
+	options := append(defaultClientOptions(region), opts...)
 	return vkit.NewPublisherClient(ctx, options...)
 }
 

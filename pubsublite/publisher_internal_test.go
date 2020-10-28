@@ -386,7 +386,7 @@ func TestPartitionPublisherInvalidInitialResponse(t *testing.T) {
 
 	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
 
-	wantErr := errInvalidInitalPubResponse
+	wantErr := errInvalidInitialPubResponse
 	if gotErr := pubStartError(pub, started, terminated); !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Start() got err: (%v), want: (%v)", gotErr, wantErr)
 	}

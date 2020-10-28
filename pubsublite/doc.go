@@ -13,12 +13,12 @@
 
 /*
 Package pubsublite provides an interface for publishing and receiving messages
-using Google Pub/Sub Lite.
+using Cloud Pub/Sub Lite.
 
-More information about Google Pub/Sub Lite is available at
+More information about Cloud Pub/Sub Lite is available at
 https://cloud.google.com/pubsub/lite.
 
-This library is under development and will not provdie a delightful user
+This library is under development and will not provide a delightful user
 experience until v1.0.0 has been released.
 */
 package pubsublite // import "cloud.google.com/go/pubsublite"

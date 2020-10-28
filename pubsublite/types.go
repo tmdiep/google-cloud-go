@@ -27,7 +27,7 @@ type LocationPath struct {
 
 	// A Google Cloud zone, for example "us-central1-a".
 	// See https://cloud.google.com/pubsub/lite/docs/locations for the list of
-	// zones where Google Pub/Sub Lite is available.
+	// zones where Cloud Pub/Sub Lite is available.
 	Zone string
 }
 
@@ -35,7 +35,7 @@ func (l LocationPath) String() string {
 	return fmt.Sprintf("projects/%s/locations/%s", l.Project, l.Zone)
 }
 
-// TopicPath stores the full path of a Google Pub/Sub Lite topic.
+// TopicPath stores the full path of a Cloud Pub/Sub Lite topic.
 // See https://cloud.google.com/pubsub/lite/docs/topics for more information.
 type TopicPath struct {
 	// A Google Cloud project. The project ID (e.g. "my-project") or the project
@@ -44,10 +44,10 @@ type TopicPath struct {
 
 	// A Google Cloud zone, for example "us-central1-a".
 	// See https://cloud.google.com/pubsub/lite/docs/locations for the list of
-	// zones where Google Pub/Sub Lite is available.
+	// zones where Cloud Pub/Sub Lite is available.
 	Zone string
 
-	// The ID of the Google Pub/Sub Lite topic, for example "my-topic-name".
+	// The ID of the Cloud Pub/Sub Lite topic, for example "my-topic-name".
 	// See https://cloud.google.com/pubsub/docs/admin#resource_names for more
 	// information.
 	TopicID string
@@ -63,7 +63,7 @@ func (t TopicPath) location() LocationPath {
 
 var topicPathRE = regexp.MustCompile(`^projects/([^/]+)/locations/([^/]+)/topics/([^/]+)$`)
 
-// parseTopicPath parses the full path of a Google Pub/Sub Lite topic, which
+// parseTopicPath parses the full path of a Cloud Pub/Sub Lite topic, which
 // should have the format: `projects/{project}/locations/{zone}/topics/{id}`.
 func parseTopicPath(input string) (TopicPath, error) {
 	parts := topicPathRE.FindStringSubmatch(input)
@@ -73,7 +73,7 @@ func parseTopicPath(input string) (TopicPath, error) {
 	return TopicPath{Project: parts[1], Zone: parts[2], TopicID: parts[3]}, nil
 }
 
-// SubscriptionPath stores the full path of a Google Pub/Sub Lite subscription.
+// SubscriptionPath stores the full path of a Cloud Pub/Sub Lite subscription.
 // See https://cloud.google.com/pubsub/lite/docs/subscriptions for more
 // information.
 type SubscriptionPath struct {
@@ -83,10 +83,10 @@ type SubscriptionPath struct {
 
 	// A Google Cloud zone. An example zone is "us-central1-a".
 	// See https://cloud.google.com/pubsub/lite/docs/locations for the list of
-	// zones where Google Pub/Sub Lite is available.
+	// zones where Cloud Pub/Sub Lite is available.
 	Zone string
 
-	// The ID of the Google Pub/Sub Lite subscription, for example
+	// The ID of the Cloud Pub/Sub Lite subscription, for example
 	// "my-subscription-name".
 	// See https://cloud.google.com/pubsub/docs/admin#resource_names for more
 	// information.
@@ -103,7 +103,7 @@ func (s SubscriptionPath) location() LocationPath {
 
 var subsPathRE = regexp.MustCompile(`^projects/([^/]+)/locations/([^/]+)/subscriptions/([^/]+)$`)
 
-// parseSubscriptionPath parses the full path of a Google Pub/Sub Lite
+// parseSubscriptionPath parses the full path of a Cloud Pub/Sub Lite
 // subscription, which should have the format:
 // `projects/{project}/locations/{zone}/subscriptions/{id}`.
 func parseSubscriptionPath(input string) (SubscriptionPath, error) {

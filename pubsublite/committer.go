@@ -15,15 +15,28 @@ package pubsublite
 
 import (
 	"container/list"
+	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"sync"
+	"time"
+
+	"google.golang.org/api/option"
+	"google.golang.org/grpc"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 var (
-	errOutOfOrderMessages = errors.New("pubsublite: messages are out of order")
+	errOutOfOrderMessages           = errors.New("pubsublite: messages are out of order")
+	errInvalidInitialCommitResponse = errors.New("pubsublite: first response from server was not an initial response for streaming commit")
+)
+
+const (
+	// Represents an uninitialized cursor offset.
+	nilCursorOffset int64 = -1
 )
 
 // ackedFunc is invoked when a message has been acked by the user.
@@ -38,6 +51,7 @@ type ackHandler struct {
 	Offset int64
 	// MsgSize is released to the flow controller once the message has been acked.
 	MsgSize int64
+
 	// Guards access to fields below.
 	mu    sync.Mutex
 	acked bool
@@ -90,7 +104,7 @@ type ackTracker struct {
 
 func newAckTracker() *ackTracker {
 	return &ackTracker{
-		ackedPrefixOffset: -1,
+		ackedPrefixOffset: nilCursorOffset,
 		outstandingAcks:   list.New(),
 	}
 }
@@ -106,15 +120,7 @@ func (at *ackTracker) Clear() {
 		ack.Clear()
 	}
 	at.outstandingAcks.Init()
-	at.ackedPrefixOffset = -1
-}
-
-// AckedPrefix indicates that all message offsets before and including this
-// prefix have been acked by the user.
-func (at *ackTracker) AckedPrefix() int64 {
-	at.mu.Lock()
-	defer at.mu.Unlock()
-	return at.ackedPrefixOffset
+	at.ackedPrefixOffset = nilCursorOffset
 }
 
 // Push adds an outstanding ack to the tracker.
@@ -122,7 +128,7 @@ func (at *ackTracker) Push(ack *ackHandler) error {
 	at.mu.Lock()
 	defer at.mu.Unlock()
 
-	// These errors should not occurr unless there is a bug in the client library.
+	// These errors should not occur unless there is a bug in the client library.
 	if ack.Offset <= at.ackedPrefixOffset {
 		return errOutOfOrderMessages
 	}
@@ -137,8 +143,8 @@ func (at *ackTracker) Push(ack *ackHandler) error {
 	return nil
 }
 
-// Pop processes outstanding acks, updates and returns AckedPrefix().
-func (at *ackTracker) Pop() int64 {
+// Pop processes outstanding acks and updates `ackedPrefixOffset`.
+func (at *ackTracker) Pop() {
 	at.mu.Lock()
 	defer at.mu.Unlock()
 
@@ -151,7 +157,19 @@ func (at *ackTracker) Pop() int64 {
 		at.outstandingAcks.Remove(elem)
 		ack.Clear()
 	}
-	return at.ackedPrefixOffset
+}
+
+// CommitOffset returns the cursor offset that should be committed. May return
+// nilCursorOffset if no messages have been acked thus far.
+func (at *ackTracker) CommitOffset() int64 {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+
+	if at.ackedPrefixOffset == nilCursorOffset {
+		return nilCursorOffset
+	}
+	// Convert from last acked to first unacked.
+	return at.ackedPrefixOffset + 1
 }
 
 type committer struct {
@@ -160,7 +178,7 @@ type committer struct {
 	subscription SubscriptionPath
 	partition    int
 	initialReq   *pb.StreamingCommitCursorRequest
-	//onStatusChange publisherStatusChangeFunc
+	onEvent      serviceEventFunc
 
 	// Guards access to fields below.
 	mu sync.Mutex
@@ -170,4 +188,69 @@ type committer struct {
 	finalErr error
 
 	acks *ackTracker
+
+	// Last offset sent to the server. May not be acknowledged.
+	lastSentOffset int64
+	// Last offset for which the server acknowledged the commit.
+	lastConfirmedOffset int64
+}
+
+func newCursorClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.CursorClient, error) {
+	if err := validateRegion(region); err != nil {
+		return nil, err
+	}
+	options := append(defaultClientOptions(region), opts...)
+	return vkit.NewCursorClient(ctx, options...)
+}
+
+func newCommitter(ctx context.Context, cursor *vkit.CursorClient, subs SubscriptionPath, partition int, onEvent serviceEventFunc, acks *ackTracker) *committer {
+	commit := &committer{
+		cursorClient: cursor,
+		subscription: subs,
+		partition:    partition,
+		initialReq: &pb.StreamingCommitCursorRequest{
+			Request: &pb.StreamingCommitCursorRequest_Initial{
+				Initial: &pb.InitialCommitCursorRequest{
+					Subscription: subs.String(),
+					Partition:    int64(partition),
+				},
+			},
+		},
+		onEvent:             onEvent,
+		acks:                acks,
+		lastSentOffset:      nilCursorOffset,
+		lastConfirmedOffset: nilCursorOffset,
+	}
+	// TODO: set timeout from settings
+	commit.stream = newRetryableStream(ctx, commit, time.Minute, reflect.TypeOf(pb.StreamingCommitCursorResponse{}))
+	return commit
+}
+
+func (c *committer) Start() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stream.Start()
+}
+
+func (c *committer) newStream(ctx context.Context) (grpc.ClientStream, error) {
+	return c.cursorClient.StreamingCommitCursor(ctx)
+}
+
+func (c *committer) initialRequest() interface{} {
+	return c.initialReq
+}
+
+func (c *committer) validateInitialResponse(response interface{}) error {
+	commitResponse, _ := response.(*pb.StreamingCommitCursorResponse)
+	if commitResponse.GetInitial() == nil {
+		return errInvalidInitialCommitResponse
+	}
+	return nil
+}
+
+func (c *committer) onStreamStatusChange(status streamStatus) {
+	fmt.Printf("Committer.onStreamStatusChange(%d), err=%v\n", status, c.stream.Error())
+}
+
+func (c *committer) onResponse(response interface{}) {
 }

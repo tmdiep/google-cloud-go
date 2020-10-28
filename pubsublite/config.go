@@ -29,7 +29,7 @@ import (
 // storage).
 const InfiniteRetention = time.Duration(-1)
 
-// TopicConfig describes the properties of a Google Pub/Sub Lite topic.
+// TopicConfig describes the properties of a Cloud Pub/Sub Lite topic.
 // See https://cloud.google.com/pubsub/lite/docs/topics for more information
 // about how topics are configured.
 type TopicConfig struct {
@@ -189,7 +189,7 @@ const (
 	DeliverAfterStored = DeliveryRequirement(pb.Subscription_DeliveryConfig_DELIVER_AFTER_STORED)
 )
 
-// SubscriptionConfig describes the properties of a Google Pub/Sub Lite
+// SubscriptionConfig describes the properties of a Cloud Pub/Sub Lite
 // subscription, which is attached to a topic.
 // See https://cloud.google.com/pubsub/lite/docs/subscriptions for more
 // information about how subscriptions are configured.

@@ -329,3 +329,26 @@ func TestSimplePublish(t *testing.T) {
 		fmt.Printf("Published a message with a message ID: %s\n", id)
 	}
 }
+
+func TestCommitter(t *testing.T) {
+	initIntegrationTest(t)
+
+	ctx := context.Background()
+	proj := testutil.ProjID()
+	zone := "us-central1-b"
+	region, _ := ZoneToRegion(zone)
+	resourceID := "go-publish-test"
+	subscription := SubscriptionPath{Project: proj, Zone: zone, SubscriptionID: resourceID}
+	partition := 0
+
+	cursorClient, err := newCursorClient(ctx, region)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	acks := newAckTracker()
+	committer := newCommitter(ctx, cursorClient, subscription, partition, nil, acks)
+	committer.Start()
+
+	time.Sleep(5 * time.Second)
+}
