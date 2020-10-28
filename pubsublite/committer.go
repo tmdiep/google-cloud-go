@@ -41,7 +41,7 @@ type ackHandler struct {
 	onAck ackedFunc
 }
 
-func newAckHandler(offset, msgSize int64, onAck ackedFun) *ackHandler {
+func newAckHandler(offset, msgSize int64, onAck ackedFunc) *ackHandler {
 	return &ackHandler{Offset: offset, MsgSize: msgSize, onAck: onAck}
 }
 
@@ -104,7 +104,7 @@ func (at *ackTracker) Push(ack *ackHandler) error {
 	defer at.mu.Unlock()
 
 	// These errors should not occurr unless there is a bug in the client library.
-	if ack.Offset <= ackedPrefixOffset {
+	if ack.Offset <= at.ackedPrefixOffset {
 		return errOutOfOrderMessages
 	}
 	if elem := at.outstandingAcks.Back(); elem != nil {
@@ -124,13 +124,13 @@ func (at *ackTracker) Pop() int64 {
 	defer at.mu.Unlock()
 
 	for elem := at.outstandingAcks.Front(); elem != nil; elem = elem.Next() {
-		ackHandler, _ := elem.Value.(*ackHandler)
-		if !ackTracker.Acked() {
+		ack, _ := elem.Value.(*ackHandler)
+		if !ack.Acked() {
 			break
 		}
-		at.ackedPrefixOffset = ackHandler.Offset
+		at.ackedPrefixOffset = ack.Offset
 		at.outstandingAcks.Remove(elem)
-		ackHandler.Clear()
+		ack.Clear()
 	}
 	return at.ackedPrefixOffset
 }
