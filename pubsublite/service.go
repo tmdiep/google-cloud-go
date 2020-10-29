@@ -17,16 +17,6 @@ import (
 	"sync"
 )
 
-// service is the interface that must be implemented by services (essentially
-// gRPC client stream wrappers) that can be dependencies of a compositeService.
-type service interface {
-	Start()
-	Stop()
-	// Allows compositeService.onServiceStatusChange to work for multiple layers
-	// of embedding.
-	handle() *abstractService
-}
-
 // serviceStatus specifies the current status of the service. The order of the
 // values reflects the lifecycle of services. Note that some statuses may be
 // skipped.
@@ -44,6 +34,17 @@ const (
 	// Service has terminated. No new data is accepted.
 	serviceTerminated serviceStatus = 3
 )
+
+// service is the interface that must be implemented by services (essentially
+// gRPC client stream wrappers) that can be dependencies of a compositeService.
+type service interface {
+	Start()
+	Stop()
+	// Allows compositeService.onServiceStatusChange to work for multiple layers
+	// of embedding.
+	handle() *abstractService
+	setOnStatusChange(serviceStatusChangeFunc)
+}
 
 // serviceStatusChangeFunc notifies the parent of service status changes.
 // `serviceTerminating` and `serviceTerminated` have an associated error. This
@@ -67,13 +68,14 @@ func (as *abstractService) Error() error {
 	return as.err
 }
 
-// Virtual constructor.
-func (as *abstractService) init(onStatusChange serviceStatusChangeFunc) {
-	as.onStatusChange = onStatusChange
-}
-
 func (as *abstractService) handle() *abstractService {
 	return as
+}
+
+func (as *abstractService) setOnStatusChange(onStatusChange serviceStatusChangeFunc) {
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	as.onStatusChange = onStatusChange
 }
 
 func (as *abstractService) unsafeCheckServiceStatus() error {
@@ -88,7 +90,7 @@ func (as *abstractService) unsafeCheckServiceStatus() error {
 }
 
 // unsafeUpdateStatus assumes the service is already holding a mutex when
-// called.
+// called, as it often needs to be atomic with other operations.
 func (as *abstractService) unsafeUpdateStatus(targetStatus serviceStatus, err error) bool {
 	if as.status >= targetStatus {
 		// Already at the same or later stage of the service lifecycle.
@@ -152,14 +154,15 @@ func (cs *compositeService) WaitStopped() error {
 	return cs.Error()
 }
 
-func (cs *compositeService) init(onStatusChange serviceStatusChangeFunc) {
+// init must be called after creation of the derived struct.
+func (cs *compositeService) init() {
 	cs.waitStarted = make(chan struct{})
 	cs.waitTerminated = make(chan struct{})
-	cs.abstractService.init(onStatusChange)
 }
 
-func (cs *compositeService) unsafeAddService(service service) {
-	cs.dependencies = append(cs.dependencies, &serviceHolder{service: service})
+func (cs *compositeService) unsafeAddService(s service) {
+	s.setOnStatusChange(cs.onServiceStatusChange)
+	cs.dependencies = append(cs.dependencies, &serviceHolder{service: s})
 }
 
 func (cs *compositeService) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {

@@ -347,7 +347,7 @@ func TestCommitter(t *testing.T) {
 	}
 
 	acks := newAckTracker()
-	committer := newCommitter(ctx, cursorClient, subscription, partition, nil, acks)
+	committer := newCommitter(ctx, cursorClient, subscription, partition, acks)
 	committer.Start()
 
 	onAcked := func(a *ackReceiver) {

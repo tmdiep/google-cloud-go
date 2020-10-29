@@ -101,7 +101,6 @@ func (b *publishBatch) ToPublishRequest() *pb.PublishRequest {
 // methods are private implementation.
 type partitionPublisher struct {
 	// Immutable after creation.
-	ctx        context.Context
 	pubClient  *vkit.PublisherClient
 	topic      TopicPath
 	partition  int
@@ -122,9 +121,8 @@ type partitionPublisher struct {
 	abstractService
 }
 
-func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic TopicPath, partition int, onStatusChange serviceStatusChangeFunc) *partitionPublisher {
+func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic TopicPath, partition int) *partitionPublisher {
 	publisher := &partitionPublisher{
-		ctx:       ctx,
 		pubClient: pubClient,
 		topic:     topic,
 		partition: partition,
@@ -155,7 +153,6 @@ func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient,
 
 	publisher.msgBundler = msgBundler
 	publisher.stream = newRetryableStream(ctx, publisher, settings.Timeout, reflect.TypeOf(pb.PublishResponse{}))
-	publisher.init(onStatusChange)
 	return publisher
 }
 
@@ -393,14 +390,6 @@ type routingPublisher struct {
 	compositeService
 }
 
-func newPublisherClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.PublisherClient, error) {
-	if err := validateRegion(region); err != nil {
-		return nil, err
-	}
-	options := append(defaultClientOptions(region), opts...)
-	return vkit.NewPublisherClient(ctx, options...)
-}
-
 func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) (*routingPublisher, error) {
 	region, err := ZoneToRegion(topic.Zone)
 	if err != nil {
@@ -424,7 +413,7 @@ func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings 
 		msgRouter:  msgRouter,
 		publishers: make(map[int]*partitionPublisher),
 	}
-	pub.init(nil)
+	pub.init()
 	return pub, nil
 }
 
@@ -466,7 +455,7 @@ func (rp *routingPublisher) initPublishers() bool {
 
 	var publishers []*partitionPublisher
 	for i := 0; i < partitionCount; i++ {
-		pub := newPartitionPublisher(rp.ctx, rp.pubClient, rp.settings, rp.topic, i, rp.onServiceStatusChange)
+		pub := newPartitionPublisher(rp.ctx, rp.pubClient, rp.settings, rp.topic, i)
 		publishers = append(publishers, pub)
 		rp.publishers[i] = pub
 		rp.unsafeAddService(pub)

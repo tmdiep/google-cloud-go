@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	vkit "cloud.google.com/go/pubsublite/apiv1"
 	gax "github.com/googleapis/gax-go/v2"
 )
 
@@ -114,6 +115,46 @@ func defaultClientOptions(region string) []option.ClientOption {
 	return []option.ClientOption{
 		internaloption.WithDefaultEndpoint(region + pubsubLiteDefaultEndpoint),
 	}
+}
+
+func newAdminClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.AdminClient, error) {
+	if err := validateRegion(region); err != nil {
+		return nil, err
+	}
+	options := append(defaultClientOptions(region), opts...)
+	return vkit.NewAdminClient(ctx, options...)
+}
+
+func newPublisherClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.PublisherClient, error) {
+	if err := validateRegion(region); err != nil {
+		return nil, err
+	}
+	options := append(defaultClientOptions(region), opts...)
+	return vkit.NewPublisherClient(ctx, options...)
+}
+
+func newSubscriberClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.SubscriberClient, error) {
+	if err := validateRegion(region); err != nil {
+		return nil, err
+	}
+	options := append(defaultClientOptions(region), opts...)
+	return vkit.NewSubscriberClient(ctx, options...)
+}
+
+func newCursorClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.CursorClient, error) {
+	if err := validateRegion(region); err != nil {
+		return nil, err
+	}
+	options := append(defaultClientOptions(region), opts...)
+	return vkit.NewCursorClient(ctx, options...)
+}
+
+func newPartitionAssignmentClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.PartitionAssignmentClient, error) {
+	if err := validateRegion(region); err != nil {
+		return nil, err
+	}
+	options := append(defaultClientOptions(region), opts...)
+	return vkit.NewPartitionAssignmentClient(ctx, options...)
 }
 
 func addTopicRoutingMetadata(ctx context.Context, topic TopicPath, partition int) context.Context {

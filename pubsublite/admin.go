@@ -37,8 +37,7 @@ func NewAdminClient(ctx context.Context, region string, opts ...option.ClientOpt
 	if err := validateRegion(region); err != nil {
 		return nil, err
 	}
-	options := append(defaultClientOptions(region), opts...)
-	admin, err := vkit.NewAdminClient(ctx, options...)
+	admin, err := newAdminClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err
 	}

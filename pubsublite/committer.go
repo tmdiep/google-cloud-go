@@ -20,7 +20,6 @@ import (
 	"reflect"
 	"time"
 
-	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
@@ -52,15 +51,7 @@ type committer struct {
 	abstractService
 }
 
-func newCursorClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.CursorClient, error) {
-	if err := validateRegion(region); err != nil {
-		return nil, err
-	}
-	options := append(defaultClientOptions(region), opts...)
-	return vkit.NewCursorClient(ctx, options...)
-}
-
-func newCommitter(ctx context.Context, cursor *vkit.CursorClient, subs SubscriptionPath, partition int, onStatusChange serviceStatusChangeFunc, acks *ackTracker) *committer {
+func newCommitter(ctx context.Context, cursor *vkit.CursorClient, subs SubscriptionPath, partition int, acks *ackTracker) *committer {
 	commit := &committer{
 		cursorClient: cursor,
 		subscription: subs,
@@ -79,7 +70,6 @@ func newCommitter(ctx context.Context, cursor *vkit.CursorClient, subs Subscript
 	}
 	// TODO: the timeout should be from ReceiveSettings.
 	commit.stream = newRetryableStream(ctx, commit, time.Minute, reflect.TypeOf(pb.StreamingCommitCursorResponse{}))
-	commit.init(onStatusChange)
 	return commit
 }
 
