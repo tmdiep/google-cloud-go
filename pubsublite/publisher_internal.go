@@ -210,7 +210,7 @@ func (p *partitionPublisher) Publish(msg *pb.PubSubMessage, onResult publishResu
 }
 
 func (p *partitionPublisher) newStream(ctx context.Context) (grpc.ClientStream, error) {
-	return p.pubClient.Publish(addRoutingMetadataToContext(ctx, p.topic, p.partition))
+	return p.pubClient.Publish(addTopicRoutingMetadata(ctx, p.topic, p.partition))
 }
 
 func (p *partitionPublisher) initialRequest() interface{} {

@@ -186,6 +186,8 @@ func (cs *compositeService) unsafeUpdateStatus(targetStatus serviceStatus, err e
 }
 
 func (cs *compositeService) onServiceStatusChange(handle *abstractService, status serviceStatus, err error) {
+	//fmt.Printf("receiving %d, %v\n", status, err)
+
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
@@ -194,7 +196,9 @@ func (cs *compositeService) onServiceStatusChange(handle *abstractService, statu
 
 	for _, s := range cs.dependencies {
 		if s.service.handle() == handle {
-			s.lastStatus = status
+			if status > s.lastStatus {
+				s.lastStatus = status
+			}
 		} else if status >= serviceTerminating && s.lastStatus < serviceTerminating {
 			// If a single service terminates, stop them all, but allow the others to
 			// flush pending data.

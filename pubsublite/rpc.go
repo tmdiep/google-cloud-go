@@ -116,10 +116,18 @@ func defaultClientOptions(region string) []option.ClientOption {
 	}
 }
 
-func addRoutingMetadataToContext(ctx context.Context, topic TopicPath, partition int) context.Context {
+func addTopicRoutingMetadata(ctx context.Context, topic TopicPath, partition int) context.Context {
 	md, _ := metadata.FromOutgoingContext(ctx)
 	md = md.Copy()
 	val := fmt.Sprintf("partition=%d&topic=%s", partition, url.QueryEscape(topic.String()))
+	md[routingMetadataHeader] = append(md[routingMetadataHeader], val)
+	return metadata.NewOutgoingContext(ctx, md)
+}
+
+func addSubscriptionRoutingMetadata(ctx context.Context, subs SubscriptionPath, partition int) context.Context {
+	md, _ := metadata.FromOutgoingContext(ctx)
+	md = md.Copy()
+	val := fmt.Sprintf("partition=%d&subscription=%s", partition, url.QueryEscape(subs.String()))
 	md[routingMetadataHeader] = append(md[routingMetadataHeader], val)
 	return metadata.NewOutgoingContext(ctx, md)
 }

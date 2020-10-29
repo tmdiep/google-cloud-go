@@ -689,18 +689,8 @@ func TestPartitionPublisherBufferRefill(t *testing.T) {
 	pub.Publish(msg1, result1.set)
 	result1.validateResult(partition, 0)
 
-	// The second message is sent after the response for the first has been
-	// received. `availableBufferBytes` should be refilled.
-	if pub.availableBufferBytes != settings.BufferedByteLimit {
-		t.Errorf("availableBufferBytes: %d, want: %d", pub.availableBufferBytes, settings.BufferedByteLimit)
-	}
-
 	pub.Publish(msg2, result2.set)
 	result2.validateResult(partition, 1)
-
-	if pub.availableBufferBytes != settings.BufferedByteLimit {
-		t.Errorf("availableBufferBytes: %d, want: %d", pub.availableBufferBytes, settings.BufferedByteLimit)
-	}
 }
 
 func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
@@ -931,7 +921,6 @@ func TestRoutingPublisherStartOnce(t *testing.T) {
 			t.Errorf("Start() got err: (%v)", gotErr)
 		}
 	})
-
 }
 
 func TestRoutingPublisherPartitionCountFail(t *testing.T) {
@@ -1039,8 +1028,8 @@ func TestRoutingPublisherMultiPartitionRoundRobin(t *testing.T) {
 	result3.validateResult(0, 34)
 	result4.validateResult(1, 42)
 
-	if pub.Error() != nil {
-		t.Errorf("routingPublisher.Error() got: (%v), want: <nil>", pub.Error())
+	if err := pub.WaitStopped(); err != nil {
+		t.Errorf("routingPublisher.Error() got: (%v), want: <nil>", err)
 	}
 }
 
@@ -1085,8 +1074,8 @@ func TestRoutingPublisherShutdown(t *testing.T) {
 	result1.validateResult(0, 34)
 	result2.validateError(serverErr)
 
-	if !test.ErrorEqual(pub.Error(), serverErr) {
-		t.Errorf("routingPublisher.Error() got: (%v), want: (%v)", pub.Error(), serverErr)
+	if gotErr := pub.WaitStopped(); !test.ErrorEqual(gotErr, serverErr) {
+		t.Errorf("routingPublisher.Error() got: (%v), want: (%v)", gotErr, serverErr)
 	}
 }
 
@@ -1127,8 +1116,7 @@ func TestRoutingPublisherPublishAfterStop(t *testing.T) {
 	result1.validateError(ErrServiceStopped)
 	result2.validateError(ErrServiceStopped)
 
-	pub.WaitStopped()
-	if pub.Error() != nil {
-		t.Errorf("routingPublisher.Error() got: (%v), want: <nil>", pub.Error())
+	if err := pub.WaitStopped(); err != nil {
+		t.Errorf("routingPublisher.Error() got: (%v), want: <nil>", err)
 	}
 }
