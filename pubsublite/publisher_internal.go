@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"sync"
 
 	"github.com/golang/protobuf/proto"
 	"google.golang.org/api/option"
@@ -108,9 +107,7 @@ type partitionPublisher struct {
 	partition  int
 	initialReq *pb.PublishRequest
 
-	// Guards access to fields below.
-	mu sync.Mutex
-
+	// Fields below must be guarded with mutex.
 	stream *retryableStream
 
 	// Used to batch messages.
@@ -157,8 +154,8 @@ func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient,
 	msgBundler.BufferedByteLimit = settings.BufferedByteLimit * 10
 
 	publisher.msgBundler = msgBundler
-	publisher.onStatusChange = onStatusChange
 	publisher.stream = newRetryableStream(ctx, publisher, settings.Timeout, reflect.TypeOf(pb.PublishResponse{}))
+	publisher.init(onStatusChange)
 	return publisher
 }
 
@@ -183,11 +180,10 @@ func (p *partitionPublisher) Publish(msg *pb.PubSubMessage, onResult publishResu
 
 	processMessage := func() error {
 		msgSize := proto.Size(msg)
+		err := p.unsafeCheckServiceStatus()
 		switch {
-		case p.status == serviceUninitialized:
-			return ErrServiceUninitialized
-		case p.status > serviceActive:
-			return ErrServiceStopped
+		case err != nil:
+			return err
 		case msgSize > MaxPublishMessageBytes:
 			return fmt.Errorf("pubsublite: serialized message size is %d bytes, maximum allowed size is MaxPublishMessageBytes (%d)", msgSize, MaxPublishMessageBytes)
 		case msgSize > p.availableBufferBytes:
@@ -211,12 +207,6 @@ func (p *partitionPublisher) Publish(msg *pb.PubSubMessage, onResult publishResu
 		onResult(nil, err)
 	}
 	return
-}
-
-func (p *partitionPublisher) Error() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.finalErr
 }
 
 func (p *partitionPublisher) newStream(ctx context.Context) (grpc.ClientStream, error) {
@@ -246,7 +236,7 @@ func (p *partitionPublisher) onStreamStatusChange(status streamStatus) {
 		p.enableSendToStream = false
 
 	case streamConnected:
-		p.unsafeUpdateStatus(p, serviceActive, nil)
+		p.unsafeUpdateStatus(serviceActive, nil)
 
 		// To ensure messages are sent in order, we should send everything in
 		// publishQueue to the stream immediately after reconnecting, before any new
@@ -341,10 +331,8 @@ func (p *partitionPublisher) onResponse(response interface{}) {
 //   - An inconsistency is detected in the server's publish responses. Assume
 //     there is a bug on the server and terminate the publisher, as correct
 //     processing of messages cannot be guaranteed.
-//
-// Must be called with partitionPublisher.mu held.
 func (p *partitionPublisher) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
-	if !p.unsafeUpdateStatus(p, targetStatus, err) {
+	if !p.unsafeUpdateStatus(targetStatus, err) {
 		return
 	}
 
@@ -427,7 +415,7 @@ func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings 
 		return nil, err
 	}
 
-	return &routingPublisher{
+	pub := &routingPublisher{
 		ctx:        ctx,
 		pubClient:  pubClient,
 		admin:      admin,
@@ -435,7 +423,9 @@ func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings 
 		settings:   settings,
 		msgRouter:  msgRouter,
 		publishers: make(map[int]*partitionPublisher),
-	}, nil
+	}
+	pub.init(nil)
+	return pub, nil
 }
 
 // No-op if already successfully started.
@@ -448,7 +438,6 @@ func (rp *routingPublisher) Start() {
 func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onResult publishResultFunc) {
 	pub, err := rp.routeToPublisher(msg)
 	if err != nil {
-		rp.Stop()
 		onResult(nil, err)
 		return
 	}
@@ -459,18 +448,19 @@ func (rp *routingPublisher) initPublishers() bool {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 
-	if len(rp.publishers) > 0 {
+	if len(rp.publishers) > 0 || rp.status == serviceTerminated {
 		// Already started.
 		return false
 	}
 
 	partitionCount, err := rp.admin.TopicPartitions(rp.ctx, rp.topic)
 	if err != nil {
-		rp.finalErr = err
+		rp.unsafeUpdateStatus(serviceTerminated, err)
 		return false
 	}
 	if partitionCount <= 0 {
-		rp.finalErr = fmt.Errorf("pubsublite: topic has invalid number of partitions %d", partitionCount)
+		err := fmt.Errorf("pubsublite: topic has invalid number of partitions %d", partitionCount)
+		rp.unsafeUpdateStatus(serviceTerminated, err)
 		return false
 	}
 
@@ -490,15 +480,13 @@ func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*partitionP
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 
-	if len(rp.publishers) == 0 {
-		return nil, ErrServiceUninitialized
-	}
-
 	partition := rp.msgRouter.Route(msg.GetKey())
 	pub, ok := rp.publishers[partition]
 	if !ok {
 		// Should not occur. This indicates a bug in the client.
-		return nil, fmt.Errorf("pubsublite: publisher not found for partition %d", partition)
+		err := fmt.Errorf("pubsublite: publisher not found for partition %d", partition)
+		rp.unsafeInitiateShutdown(serviceTerminating, err)
+		return nil, err
 	}
 	return pub, nil
 }

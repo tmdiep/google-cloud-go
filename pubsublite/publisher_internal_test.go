@@ -42,7 +42,7 @@ func newTestPartitionPublisher(t *testing.T, topic TopicPath, partition int, set
 
 	started = make(chan struct{})
 	terminated = make(chan struct{})
-	onPubStatusChange := func(s service, status serviceStatus, err error) {
+	onPubStatusChange := func(unused *abstractService, status serviceStatus, err error) {
 		if status == serviceActive {
 			close(started)
 		}
@@ -954,6 +954,9 @@ func TestRoutingPublisherPartitionCountFail(t *testing.T) {
 	if gotLen, wantLen := len(pub.publishers), 0; gotLen != wantLen {
 		t.Errorf("len(publishers) got %d, want %d", gotLen, wantLen)
 	}
+	// Ensure that the publisher does not attempt to restart. The mock server does
+	// not expect more RPCs.
+	pub.Start()
 }
 
 func TestRoutingPublisherPartitionCountInvalid(t *testing.T) {
@@ -976,6 +979,9 @@ func TestRoutingPublisherPartitionCountInvalid(t *testing.T) {
 	if gotLen, wantLen := len(pub.publishers), 0; gotLen != wantLen {
 		t.Errorf("len(publishers) got %d, want %d", gotLen, wantLen)
 	}
+	// Ensure that the publisher does not attempt to restart. The mock server does
+	// not expect more RPCs.
+	pub.Start()
 }
 
 func TestRoutingPublisherMultiPartitionRoundRobin(t *testing.T) {
@@ -1057,8 +1063,9 @@ func TestRoutingPublisherShutdown(t *testing.T) {
 	stream1.Push(msgPubReq(msg1), msgPubResp(34), nil)
 	mockServer.AddPublishStream(topic.String(), 0, stream1)
 
-	// Partition 1. Fails due to permanent error, which will shutdown partition-0
-	// publisher, but it should be allowed to flush its pending messages.
+	// Partition 1. Fails due to permanent error, which will also shut down
+	// partition-0 publisher, but it should be allowed to flush its pending
+	// messages.
 	stream2 := test.NewRPCVerifier(t)
 	stream2.Push(initPubReq(topic, 1), initPubResp(), nil)
 	stream2.Push(msgPubReq(msg2), nil, serverErr)
@@ -1080,5 +1087,48 @@ func TestRoutingPublisherShutdown(t *testing.T) {
 
 	if !test.ErrorEqual(pub.Error(), serverErr) {
 		t.Errorf("routingPublisher.Error() got: (%v), want: (%v)", pub.Error(), serverErr)
+	}
+}
+
+func TestRoutingPublisherPublishAfterStop(t *testing.T) {
+	topic := TopicPath{Project: "123456", Zone: "us-central1-b", TopicID: "my-topic"}
+	numPartitions := 2
+	msg1 := &pb.PubSubMessage{Data: []byte{'1'}}
+	msg2 := &pb.PubSubMessage{Data: []byte{'2'}}
+
+	rpc := test.NewRPCVerifier(t)
+	rpc.Push(topicPartitionsReq(topic), topicPartitionsResp(numPartitions), nil)
+
+	mockServer.OnTestStart(rpc)
+	defer mockServer.OnTestEnd()
+
+	// Partition 0.
+	stream1 := test.NewRPCVerifier(t)
+	stream1.Push(initPubReq(topic, 0), initPubResp(), nil)
+	mockServer.AddPublishStream(topic.String(), 0, stream1)
+
+	// Partition 1.
+	stream2 := test.NewRPCVerifier(t)
+	stream2.Push(initPubReq(topic, 1), initPubResp(), nil)
+	mockServer.AddPublishStream(topic.String(), 1, stream2)
+
+	pub := newTestRoutingPublisher(t, topic, defaultTestPublishSettings, 0)
+	if err := pub.WaitStarted(); err != nil {
+		t.Errorf("Start() got err: (%v)", err)
+	}
+
+	result1 := newPublishResultReceiver(t)
+	result2 := newPublishResultReceiver(t)
+
+	pub.Stop()
+	pub.Publish(msg1, result1.set)
+	pub.Publish(msg2, result2.set)
+
+	result1.validateError(ErrServiceStopped)
+	result2.validateError(ErrServiceStopped)
+
+	pub.WaitStopped()
+	if pub.Error() != nil {
+		t.Errorf("routingPublisher.Error() got: (%v), want: <nil>", pub.Error())
 	}
 }

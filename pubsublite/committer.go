@@ -253,9 +253,7 @@ type committer struct {
 	partition    int
 	initialReq   *pb.StreamingCommitCursorRequest
 
-	// Guards access to fields below.
-	mu sync.Mutex
-
+	// Fields below must be guarded with mutex.
 	stream *retryableStream
 
 	pollCommitsTicker *time.Ticker
@@ -291,8 +289,8 @@ func newCommitter(ctx context.Context, cursor *vkit.CursorClient, subs Subscript
 		cursorTracker:     newCommittedCursorTracker(acks),
 	}
 	// TODO: the timeout should be from ReceiveSettings.
-	commit.onStatusChange = onStatusChange
 	commit.stream = newRetryableStream(ctx, commit, time.Minute, reflect.TypeOf(pb.StreamingCommitCursorResponse{}))
+	commit.init(onStatusChange)
 	return commit
 }
 
@@ -332,7 +330,7 @@ func (c *committer) onStreamStatusChange(status streamStatus) {
 
 	switch status {
 	case streamConnected:
-		c.unsafeUpdateStatus(c, serviceActive, nil)
+		c.unsafeUpdateStatus(serviceActive, nil)
 		c.unsafeCommitOffsetToStream()
 		c.pollCommitsTicker.Reset(commitCursorPeriod)
 
@@ -351,7 +349,6 @@ func (c *committer) commitOffsetToStream() {
 	c.unsafeCommitOffsetToStream()
 }
 
-// unsafeCommitOffsetToStream should be called with committer.mu held.
 func (c *committer) unsafeCommitOffsetToStream() {
 	nextOffset := c.cursorTracker.NextOffset()
 	if nextOffset == nilCursorOffset {
@@ -409,9 +406,8 @@ func (c *committer) pollCommits() {
 	}
 }
 
-// Must be called with committer.mu held.
 func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
-	if !c.unsafeUpdateStatus(c, targetStatus, err) {
+	if !c.unsafeUpdateStatus(targetStatus, err) {
 		return
 	}
 
@@ -430,7 +426,6 @@ func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error
 	c.stream.Stop()
 }
 
-// unsafeCheckDone must be called with committer.mu held.
 func (c *committer) unsafeCheckDone() {
 	if c.status == serviceTerminating && c.cursorTracker.Done() {
 		c.stream.Stop()
