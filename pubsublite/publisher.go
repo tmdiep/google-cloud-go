@@ -19,35 +19,50 @@ import (
 	"time"
 
 	"google.golang.org/api/option"
-
-	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 // A PublishResult holds the result from a call to Publish.
-type PublishResult interface {
-	// Ready returns a channel that is closed when the result is ready. When the
-	// Ready channel is closed, Get is guaranteed not to block.
-	Ready() <-chan struct{}
-
-	// Get returns the server-generated message ID and/or error result of a
-	// Publish call. Get blocks until the Publish call completes or the context is
-	// done.
-	Get(ctx context.Context) (serverID string, err error)
+type PublishResult struct {
+	ready    chan struct{}
+	serverID string
+	err      error
 }
 
-// publisher is an internal implementation of a Pub/Sub Lite publisher.
-// PublisherClient provides a facade to match the Google Cloud Pub/Sub (pubsub)
-// module.
-type publisher interface {
-	Start() error
-	Stop()
-	Publish(msg *pb.PubSubMessage) *publishMetadata
+// Ready returns a channel that is closed when the result is ready. When the
+// Ready channel is closed, Get is guaranteed not to block.
+func (r *PublishResult) Ready() <-chan struct{} { return r.ready }
+
+// Get returns the server-generated message ID and/or error result of a Publish
+// call. Get blocks until the Publish call completes or the context is done.
+func (r *PublishResult) Get(ctx context.Context) (serverID string, err error) {
+	// If the result is already ready, return it even if the context is done.
+	select {
+	case <-r.Ready():
+		return r.serverID, r.err
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-r.Ready():
+		return r.serverID, r.err
+	}
+}
+
+func (r *PublishResult) set(pm *publishMetadata, err error) {
+	r.serverID = pm.String()
+	r.err = err
+	close(r.ready)
+}
+
+func newPublishResult() *PublishResult {
+	return &PublishResult{ready: make(chan struct{})}
 }
 
 // PublisherClient is a Cloud Pub/Sub Lite client to publish messages to a given
 // topic.
 type PublisherClient struct {
-	pub publisher
+	pub *routingPublisher
 }
 
 // NewPublisherClient creates a new Cloud Pub/Sub Lite client to publish
@@ -74,12 +89,15 @@ func NewPublisherClient(ctx context.Context, settings PublishSettings, topic Top
 //
 // Once Stop() has been called, future calls to Publish will immediately return
 // a PublishResult with an error.
-func (p *PublisherClient) Publish(ctx context.Context, msg *Message) PublishResult {
+func (p *PublisherClient) Publish(ctx context.Context, msg *Message) (result *PublishResult) {
+	result = newPublishResult()
 	msgpb, err := msg.toProto()
 	if err != nil {
-		return newPublishMetadataWithError(err)
+		result.set(nil, err)
+		return
 	}
-	return p.pub.Publish(msgpb)
+	p.pub.Publish(msgpb, result.set)
+	return
 }
 
 // Stop sends all remaining published messages and closes publish streams.

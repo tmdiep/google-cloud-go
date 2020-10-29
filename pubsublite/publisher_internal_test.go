@@ -129,38 +129,71 @@ func msgPubResp(cursor int64) *pb.PublishResponse {
 	}
 }
 
-func contextWithTimeout() context.Context {
-	ctx, _ := context.WithTimeout(context.Background(), publisherWaitTimeout)
-	return ctx
+type publishResultReceiver struct {
+	done   chan struct{}
+	t      *testing.T
+	got    *publishMetadata
+	gotErr error
 }
 
-func validatePubResult(ctx context.Context, t *testing.T, result *publishMetadata, wantID string) {
-	gotID, err := result.Get(ctx)
-	if err != nil {
-		t.Errorf("Publish() error: (%v), want ID: %q", err, wantID)
-	} else if gotID != wantID {
-		t.Errorf("Publish() got ID: %q, want ID: %q", gotID, wantID)
+func newPublishResultReceiver(t *testing.T) *publishResultReceiver {
+	return &publishResultReceiver{
+		t:    t,
+		done: make(chan struct{}),
 	}
 }
 
-func validatePubError(ctx context.Context, t *testing.T, result *publishMetadata, wantErr error) {
-	_, gotErr := result.Get(ctx)
-	if !test.ErrorEqual(gotErr, wantErr) {
-		t.Errorf("Publish() error: (%v), want: (%v)", gotErr, wantErr)
+func (r *publishResultReceiver) set(pm *publishMetadata, err error) {
+	r.got = pm
+	r.gotErr = err
+	close(r.done)
+}
+
+func (r *publishResultReceiver) wait() bool {
+	select {
+	case <-time.After(publisherWaitTimeout):
+		r.t.Errorf("Publish result not available within %v", publisherWaitTimeout)
+		return false
+	case <-r.done:
+		return true
 	}
 }
 
-func validatePubErrorCode(ctx context.Context, t *testing.T, result *publishMetadata, wantCode codes.Code) {
-	_, gotErr := result.Get(ctx)
-	if !test.ErrorHasCode(gotErr, wantCode) {
-		t.Errorf("Publish() error: (%v), want code: %v", gotErr, wantCode)
+func (r *publishResultReceiver) validateResult(wantPartition int, wantOffset int64) {
+	if !r.wait() {
+		return
+	}
+	if r.gotErr != nil {
+		r.t.Errorf("Publish() error: (%v), want: partition=%d,offset=%d", r.gotErr, wantPartition, wantOffset)
+	} else if r.got.partition != wantPartition || r.got.offset != wantOffset {
+		r.t.Errorf("Publish() got: partition=%d,offset=%d, want: partition=%d,offset=%d", r.got.partition, r.got.offset, wantPartition, wantOffset)
 	}
 }
 
-func validatePubErrorMsg(ctx context.Context, t *testing.T, result *publishMetadata, wantStr string) {
-	_, gotErr := result.Get(ctx)
-	if !test.ErrorHasMsg(gotErr, wantStr) {
-		t.Errorf("Publish() error: (%v), want msg: %q", gotErr, wantStr)
+func (r *publishResultReceiver) validateError(wantErr error) {
+	if !r.wait() {
+		return
+	}
+	if !test.ErrorEqual(r.gotErr, wantErr) {
+		r.t.Errorf("Publish() error: (%v), want: (%v)", r.gotErr, wantErr)
+	}
+}
+
+func (r *publishResultReceiver) validateErrorCode(wantCode codes.Code) {
+	if !r.wait() {
+		return
+	}
+	if !test.ErrorHasCode(r.gotErr, wantCode) {
+		r.t.Errorf("Publish() error: (%v), want code: %v", r.gotErr, wantCode)
+	}
+}
+
+func (r *publishResultReceiver) validateErrorMsg(wantStr string) {
+	if !r.wait() {
+		return
+	}
+	if !test.ErrorHasMsg(r.gotErr, wantStr) {
+		r.t.Errorf("Publish() error: (%v), want msg: %q", r.gotErr, wantStr)
 	}
 }
 
@@ -420,28 +453,35 @@ func TestPartitionPublisherBatching(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result1 := pub.Publish(msg1)
-	result2 := pub.Publish(msg2)
-	result3 := pub.Publish(msg3)
-	result4 := pub.Publish(msg4)
+	result1 := newPublishResultReceiver(t)
+	result2 := newPublishResultReceiver(t)
+	result3 := newPublishResultReceiver(t)
+	result4 := newPublishResultReceiver(t)
+	result5 := newPublishResultReceiver(t)
+	result6 := newPublishResultReceiver(t)
+	result7 := newPublishResultReceiver(t)
+
+	pub.Publish(msg1, result1.set)
+	pub.Publish(msg2, result2.set)
+	pub.Publish(msg3, result3.set)
+	pub.Publish(msg4, result4.set)
 	// Bundler invokes at most 1 handler and may add a message to the end of the
 	// last bundle if the hard limits (BundleByteLimit) aren't reached. Pause to
 	// handle previous bundles.
 	time.Sleep(20 * time.Millisecond)
-	result5 := pub.Publish(msg5)
-	result6 := pub.Publish(msg6)
-	result7 := pub.Publish(msg7)
+	pub.Publish(msg5, result5.set)
+	pub.Publish(msg6, result6.set)
+	pub.Publish(msg7, result7.set)
 	// Stop flushes pending messages.
 	pub.Stop()
 
-	ctx := contextWithTimeout()
-	validatePubResult(ctx, t, result1, "0:0")
-	validatePubResult(ctx, t, result2, "0:1")
-	validatePubResult(ctx, t, result3, "0:2")
-	validatePubResult(ctx, t, result4, "0:3")
-	validatePubResult(ctx, t, result5, "0:45")
-	validatePubResult(ctx, t, result6, "0:46")
-	validatePubResult(ctx, t, result7, "0:47")
+	result1.validateResult(partition, 0)
+	result2.validateResult(partition, 1)
+	result3.validateResult(partition, 2)
+	result4.validateResult(partition, 3)
+	result5.validateResult(partition, 45)
+	result6.validateResult(partition, 46)
+	result7.validateResult(partition, 47)
 
 	if gotErr := pubFinalError(t, pub, terminated); gotErr != nil {
 		t.Errorf("Publisher final err: (%v), want: <nil>", gotErr)
@@ -475,13 +515,15 @@ func TestPartitionPublisherBatchingDelay(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result1 := pub.Publish(msg1)
-	time.Sleep(settings.DelayThreshold * 2)
-	result2 := pub.Publish(msg2)
+	result1 := newPublishResultReceiver(t)
+	result2 := newPublishResultReceiver(t)
 
-	ctx := contextWithTimeout()
-	validatePubResult(ctx, t, result1, "0:0")
-	validatePubResult(ctx, t, result2, "0:1")
+	pub.Publish(msg1, result1.set)
+	time.Sleep(settings.DelayThreshold * 2)
+	pub.Publish(msg2, result2.set)
+
+	result1.validateResult(partition, 0)
+	result2.validateResult(partition, 1)
 }
 
 func TestPartitionPublisherResendMessages(t *testing.T) {
@@ -515,14 +557,17 @@ func TestPartitionPublisherResendMessages(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	ctx := contextWithTimeout()
-	result1 := pub.Publish(msg1)
-	result2 := pub.Publish(msg2)
-	validatePubResult(ctx, t, result1, "0:0")
-	validatePubResult(ctx, t, result2, "0:1")
+	result1 := newPublishResultReceiver(t)
+	result2 := newPublishResultReceiver(t)
+	result3 := newPublishResultReceiver(t)
 
-	result3 := pub.Publish(msg3)
-	validatePubResult(ctx, t, result3, "0:2")
+	pub.Publish(msg1, result1.set)
+	pub.Publish(msg2, result2.set)
+	result1.validateResult(partition, 0)
+	result2.validateResult(partition, 1)
+
+	pub.Publish(msg3, result3.set)
+	result3.validateResult(partition, 2)
 }
 
 func TestPartitionPublisherPublishPermanentError(t *testing.T) {
@@ -548,16 +593,19 @@ func TestPartitionPublisherPublishPermanentError(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	ctx := contextWithTimeout()
-	result1 := pub.Publish(msg1)
-	result2 := pub.Publish(msg2)
-	validatePubError(ctx, t, result1, permError)
-	validatePubError(ctx, t, result2, permError)
+	result1 := newPublishResultReceiver(t)
+	result2 := newPublishResultReceiver(t)
+	result3 := newPublishResultReceiver(t)
+
+	pub.Publish(msg1, result1.set)
+	pub.Publish(msg2, result2.set)
+	result1.validateError(permError)
+	result2.validateError(permError)
 
 	// This message arrives after the publisher has already stopped, so its error
 	// message is ErrServiceStopped.
-	result3 := pub.Publish(msg3)
-	validatePubError(ctx, t, result3, ErrServiceStopped)
+	pub.Publish(msg3, result3.set)
+	result3.validateError(ErrServiceStopped)
 
 	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorEqual(gotErr, permError) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, permError)
@@ -587,21 +635,24 @@ func TestPartitionPublisherBufferOverflow(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	ctx := contextWithTimeout()
-	result1 := pub.Publish(msg1)
+	result1 := newPublishResultReceiver(t)
+	result2 := newPublishResultReceiver(t)
+	result3 := newPublishResultReceiver(t)
+
+	pub.Publish(msg1, result1.set)
 	// Overflow is detected, which terminates the publisher, but previous messages
 	// are flushed.
-	result2 := pub.Publish(msg2)
+	pub.Publish(msg2, result2.set)
 	// Delay the server response for the first publish to ensure it is allowed to
 	// complete.
 	close(block)
 	// This message arrives after the publisher has already stopped, so its error
 	// message is ErrServiceStopped.
-	result3 := pub.Publish(msg3)
+	pub.Publish(msg3, result3.set)
 
-	validatePubResult(ctx, t, result1, "0:0")
-	validatePubError(ctx, t, result2, ErrOverflow)
-	validatePubError(ctx, t, result3, ErrServiceStopped)
+	result1.validateResult(partition, 0)
+	result2.validateError(ErrOverflow)
+	result3.validateError(ErrServiceStopped)
 
 	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorEqual(gotErr, ErrOverflow) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, ErrOverflow)
@@ -632,14 +683,16 @@ func TestPartitionPublisherBufferRefill(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	ctx := contextWithTimeout()
-	result1 := pub.Publish(msg1)
-	validatePubResult(ctx, t, result1, "0:0")
+	result1 := newPublishResultReceiver(t)
+	result2 := newPublishResultReceiver(t)
+
+	pub.Publish(msg1, result1.set)
+	result1.validateResult(partition, 0)
 
 	// The second message is sent after the response for the first has been
 	// received. `availableBufferBytes` should be refilled.
-	result2 := pub.Publish(msg2)
-	validatePubResult(ctx, t, result2, "0:1")
+	pub.Publish(msg2, result2.set)
+	result2.validateResult(partition, 1)
 
 	if pub.availableBufferBytes != settings.BufferedByteLimit {
 		t.Errorf("availableBufferBytes: %d, want: %d", pub.availableBufferBytes, settings.BufferedByteLimit)
@@ -667,21 +720,24 @@ func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	ctx := contextWithTimeout()
-	result1 := pub.Publish(msg1)
+	result1 := newPublishResultReceiver(t)
+	result2 := newPublishResultReceiver(t)
+	result3 := newPublishResultReceiver(t)
+
+	pub.Publish(msg1, result1.set)
 	// Fails due to over msg size limit, which terminates the publisher, but
 	// pending messages are flushed.
-	result2 := pub.Publish(msg2)
+	pub.Publish(msg2, result2.set)
 	// Delay the server response for the first publish to ensure it is allowed to
 	// complete.
 	close(block)
 	// This message arrives after the publisher has already stopped.
-	result3 := pub.Publish(msg3)
+	pub.Publish(msg3, result3.set)
 
 	wantErrMsg := "maximum allowed size is MaxPublishMessageBytes"
-	validatePubResult(ctx, t, result1, "0:0")
-	validatePubErrorMsg(ctx, t, result2, wantErrMsg)
-	validatePubError(ctx, t, result3, ErrServiceStopped)
+	result1.validateResult(partition, 0)
+	result2.validateErrorMsg(wantErrMsg)
+	result3.validateError(ErrServiceStopped)
 
 	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorHasMsg(gotErr, wantErrMsg) {
 		t.Errorf("Publisher final err: (%v), want msg: %v", gotErr, wantErrMsg)
@@ -713,17 +769,20 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	ctx := contextWithTimeout()
-	result1 := pub.Publish(msg1)
-	result2 := pub.Publish(msg2)
-	result3 := pub.Publish(msg3)
+	result1 := newPublishResultReceiver(t)
+	result2 := newPublishResultReceiver(t)
+	result3 := newPublishResultReceiver(t)
+
+	pub.Publish(msg1, result1.set)
+	pub.Publish(msg2, result2.set)
+	pub.Publish(msg3, result3.set)
 	close(block)
 
-	validatePubResult(ctx, t, result1, "0:4")
+	result1.validateResult(partition, 4)
 
 	wantMsg := "server returned publish response with inconsistent start offset"
-	validatePubErrorMsg(ctx, t, result2, wantMsg)
-	validatePubErrorMsg(ctx, t, result3, wantMsg)
+	result2.validateErrorMsg(wantMsg)
+	result3.validateErrorMsg(wantMsg)
 	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorHasMsg(gotErr, wantMsg) {
 		t.Errorf("Publisher final err: (%v), want msg: %q", gotErr, wantMsg)
 	}
@@ -749,10 +808,11 @@ func TestPartitionPublisherInvalidServerPublishResponse(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result := pub.Publish(msg)
+	result := newPublishResultReceiver(t)
+	pub.Publish(msg, result.set)
 
 	wantErr := errInvalidMsgPubResponse
-	validatePubError(contextWithTimeout(), t, result, wantErr)
+	result.validateError(wantErr)
 	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, wantErr)
 	}
@@ -783,23 +843,27 @@ func TestPartitionPublisherFlushMessages(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result1 := pub.Publish(msg1)
-	result2 := pub.Publish(msg2)
-	result3 := pub.Publish(msg3)
+	result1 := newPublishResultReceiver(t)
+	result2 := newPublishResultReceiver(t)
+	result3 := newPublishResultReceiver(t)
+	result4 := newPublishResultReceiver(t)
+
+	pub.Publish(msg1, result1.set)
+	pub.Publish(msg2, result2.set)
+	pub.Publish(msg3, result3.set)
 	pub.Stop()
 	close(block)
-	result4 := pub.Publish(msg4)
+	pub.Publish(msg4, result4.set)
 
-	ctx := contextWithTimeout()
 	// First 2 messages should be allowed to complete.
-	validatePubResult(ctx, t, result1, "0:5")
-	validatePubResult(ctx, t, result2, "0:6")
+	result1.validateResult(partition, 5)
+	result2.validateResult(partition, 6)
 	// Third message failed with a server error, which should result in the
 	// publisher terminating with an error.
-	validatePubError(ctx, t, result3, finalErr)
+	result3.validateError(finalErr)
 	// Fourth message was sent after the user called Stop(), so should fail
 	// immediately with ErrServiceStopped.
-	validatePubError(ctx, t, result4, ErrServiceStopped)
+	result4.validateError(ErrServiceStopped)
 
 	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorEqual(gotErr, finalErr) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, finalErr)

@@ -305,7 +305,7 @@ func TestSimplePublish(t *testing.T) {
 	settings.ByteThreshold = 100
 	publisher := publisherClient(ctx, t, settings, topic)
 
-	var results []PublishResult
+	var results []*PublishResult
 	results = append(results, publisher.Publish(ctx, &Message{
 		Data:        bytes.Repeat([]byte{'a'}, 50),
 		OrderingKey: []byte("hello"),

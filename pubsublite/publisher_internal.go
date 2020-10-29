@@ -36,65 +36,28 @@ var (
 	errPublishQueueEmpty         = errors.New("pubsublite: received publish response from server with no batches in flight")
 )
 
-// publishMetadata holds the results of a published message. It implements the
-// public PublishResult interface.
+// publishMetadata holds the results of a published message.
 type publishMetadata struct {
-	ready     chan struct{}
 	partition int
 	offset    int64
 	err       error
 }
 
-func newPublishMetadata() *publishMetadata {
-	return &publishMetadata{ready: make(chan struct{})}
-}
-
-func newPublishMetadataWithError(err error) *publishMetadata {
-	pm := newPublishMetadata()
-	pm.error(err)
-	return pm
-}
-
-func (pm *publishMetadata) Ready() <-chan struct{} { return pm.ready }
-
-func (pm *publishMetadata) Get(ctx context.Context) (serverID string, err error) {
-	// If the result is already ready, return it even if the context is done.
-	select {
-	case <-pm.ready:
-		return pm.id(), pm.err
-	default:
-	}
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case <-pm.ready:
-		return pm.id(), pm.err
-	}
-}
-
-func (pm *publishMetadata) id() string {
+func (pm *publishMetadata) String() string {
 	if pm.err != nil {
 		return ""
 	}
 	return fmt.Sprintf("%d:%d", pm.partition, pm.offset)
 }
 
-func (pm *publishMetadata) set(partition int, offset int64) {
-	pm.partition = partition
-	pm.offset = offset
-	close(pm.ready)
-}
-
-func (pm *publishMetadata) error(err error) {
-	pm.err = err
-	close(pm.ready)
-}
+// publishResultFunc receives the result of a publish.
+type publishResultFunc func(*publishMetadata, error)
 
 // messageHolder stores a message to be published, with associated metadata.
 type messageHolder struct {
-	msg    *pb.PubSubMessage
-	result *publishMetadata
-	size   int
+	msg      *pb.PubSubMessage
+	size     int
+	onResult publishResultFunc
 }
 
 // publishBatch holds messages that are published in the same
@@ -103,7 +66,7 @@ type publishBatch struct {
 	msgHolders []*messageHolder
 }
 
-func (b *publishBatch) toPublishRequest() *pb.PublishRequest {
+func (b *publishBatch) ToPublishRequest() *pb.PublishRequest {
 	msgs := make([]*pb.PubSubMessage, len(b.msgHolders))
 	for i, holder := range b.msgHolders {
 		msgs[i] = holder.msg
@@ -214,11 +177,9 @@ func (p *partitionPublisher) Stop() {
 }
 
 // Publish publishes a pub/sub message.
-func (p *partitionPublisher) Publish(msg *pb.PubSubMessage) (result *publishMetadata) {
+func (p *partitionPublisher) Publish(msg *pb.PubSubMessage, onResult publishResultFunc) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	result = newPublishMetadata()
 
 	processMessage := func() error {
 		msgSize := proto.Size(msg)
@@ -233,7 +194,7 @@ func (p *partitionPublisher) Publish(msg *pb.PubSubMessage) (result *publishMeta
 			return ErrOverflow
 		}
 
-		holder := &messageHolder{msg: msg, result: result, size: msgSize}
+		holder := &messageHolder{msg: msg, size: msgSize, onResult: onResult}
 		if err := p.msgBundler.Add(holder, msgSize); err != nil {
 			// As we've already checked the size of the message and overflow, the
 			// bundler should not return an error.
@@ -246,8 +207,8 @@ func (p *partitionPublisher) Publish(msg *pb.PubSubMessage) (result *publishMeta
 	// If the new message cannot be published, flush pending messages and then
 	// terminate the stream.
 	if err := processMessage(); err != nil {
-		result.error(err)
 		p.unsafeInitiateShutdown(serviceTerminating, err)
+		onResult(nil, err)
 	}
 	return
 }
@@ -296,7 +257,7 @@ func (p *partitionPublisher) onStreamStatusChange(status streamStatus) {
 				// If an error occurs during send, the gRPC stream will close and the
 				// retryableStream will transition to `streamReconnecting` or
 				// `streamTerminated`.
-				if !p.stream.Send(batch.toPublishRequest()) {
+				if !p.stream.Send(batch.ToPublishRequest()) {
 					reenableSend = false
 					break
 				}
@@ -325,7 +286,7 @@ func (p *partitionPublisher) handleBatch(messages []*messageHolder) {
 	if p.enableSendToStream {
 		// Note: if the stream is reconnecting, the entire publish queue will be
 		// sent to the stream in order once the connection has been established.
-		p.stream.Send(batch.toPublishRequest())
+		p.stream.Send(batch.ToPublishRequest())
 	}
 }
 
@@ -349,7 +310,8 @@ func (p *partitionPublisher) onResponse(response interface{}) {
 
 		batch, _ := frontElem.Value.(*publishBatch)
 		for i, msgHolder := range batch.msgHolders {
-			msgHolder.result.set(p.partition, firstOffset+int64(i))
+			pm := &publishMetadata{partition: p.partition, offset: firstOffset + int64(i)}
+			msgHolder.onResult(pm, nil)
 			p.availableBufferBytes += msgHolder.size
 		}
 
@@ -413,7 +375,7 @@ func (p *partitionPublisher) unsafeInitiateShutdown(targetStatus serviceStatus, 
 	for elem := p.publishQueue.Front(); elem != nil; elem = elem.Next() {
 		if batch, ok := elem.Value.(*publishBatch); ok {
 			for _, msgHolder := range batch.msgHolders {
-				msgHolder.result.error(err)
+				msgHolder.onResult(nil, err)
 			}
 		}
 	}
@@ -486,13 +448,14 @@ func (rp *routingPublisher) Start() error {
 	return rp.compositeService.Start()
 }
 
-func (rp *routingPublisher) Publish(msg *pb.PubSubMessage) *publishMetadata {
+func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onResult publishResultFunc) {
 	pub, err := rp.routeToPublisher(msg)
 	if err != nil {
 		rp.Stop()
-		return newPublishMetadataWithError(err)
+		onResult(nil, err)
+		return
 	}
-	return pub.Publish(msg)
+	pub.Publish(msg, onResult)
 }
 
 func (rp *routingPublisher) initPublishers() (bool, error) {
