@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"google.golang.org/api/option"
+
+	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 // A PublishResult holds the result from a call to Publish.
@@ -62,7 +64,8 @@ func newPublishResult() *PublishResult {
 // PublisherClient is a Cloud Pub/Sub Lite client to publish messages to a given
 // topic.
 type PublisherClient struct {
-	pub *routingPublisher
+	settings PublishSettings
+	pub      *routingPublisher
 }
 
 // NewPublisherClient creates a new Cloud Pub/Sub Lite client to publish
@@ -75,10 +78,11 @@ func NewPublisherClient(ctx context.Context, settings PublishSettings, topic Top
 	if err != nil {
 		return nil, err
 	}
-	if err := pub.Start(); err != nil {
+	pub.Start()
+	if err := pub.WaitStarted(); err != nil {
 		return nil, err
 	}
-	return &PublisherClient{pub: pub}, nil
+	return &PublisherClient{settings: settings, pub: pub}, nil
 }
 
 // Publish publishes `msg` to the topic asynchronously. Messages are batched and
@@ -91,7 +95,7 @@ func NewPublisherClient(ctx context.Context, settings PublishSettings, topic Top
 // a PublishResult with an error.
 func (p *PublisherClient) Publish(ctx context.Context, msg *Message) (result *PublishResult) {
 	result = newPublishResult()
-	msgpb, err := msg.toProto()
+	msgpb, err := p.transformMessage(msg)
 	if err != nil {
 		result.set(nil, err)
 		return
@@ -105,4 +109,16 @@ func (p *PublisherClient) Publish(ctx context.Context, msg *Message) (result *Pu
 // sent.
 func (p *PublisherClient) Stop() {
 	p.pub.Stop()
+	p.pub.WaitStopped()
+}
+
+func (p *PublisherClient) transformMessage(msg *Message) (*pb.PubSubMessage, error) {
+	if p.settings.MessageTransformer != nil {
+		return p.settings.MessageTransformer(msg)
+	}
+	keyExtractor := p.settings.KeyExtractor
+	if keyExtractor == nil {
+		keyExtractor = extractOrderingKey
+	}
+	return transformPublishedMessage(msg, keyExtractor)
 }

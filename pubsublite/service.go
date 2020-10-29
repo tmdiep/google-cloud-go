@@ -96,21 +96,30 @@ type compositeService struct {
 	finalErr     error
 }
 
-// Start up dependencies and wait for them to finish.
-func (cs *compositeService) Start() error {
+// Start up dependencies.
+func (cs *compositeService) Start() {
 	for _, s := range cs.services() {
 		s.service.Start()
 	}
+}
+
+// WaitStarted waits for all dependencies to start.
+func (cs *compositeService) WaitStarted() error {
 	cs.waitStarted.Wait()
 	return cs.Error()
 }
 
-// Stop all dependencies and wait for them to terminate.
+// Stop all dependencies.
 func (cs *compositeService) Stop() {
 	for _, s := range cs.services() {
 		s.service.Stop()
 	}
+}
+
+// WaitStopped waits for all dependencies to stop.
+func (cs *compositeService) WaitStopped() error {
 	cs.waitTerminated.Wait()
+	return cs.Error()
 }
 
 // Error is the first error encountered, which caused all services to stop.

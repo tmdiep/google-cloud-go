@@ -39,14 +39,16 @@ func (f *fakeMsgRouter) Route(orderingKey []byte) int {
 	return f.partitionCount * f.multiplier
 }
 
-func TestMessageToProto(t *testing.T) {
+func TestTransformPublishedMessage(t *testing.T) {
 	for _, tc := range []struct {
-		desc string
-		msg  *Message
-		want *pb.PubSubMessage
+		desc         string
+		keyExtractor KeyExtractorFunc
+		msg          *Message
+		want         *pb.PubSubMessage
 	}{
 		{
-			desc: "valid: minimal",
+			desc:         "valid: minimal",
+			keyExtractor: extractOrderingKey,
 			msg: &Message{
 				Data: []byte("Hello world"),
 			},
@@ -55,25 +57,36 @@ func TestMessageToProto(t *testing.T) {
 			},
 		},
 		{
-			desc: "valid: filled",
+			desc: "valid: override key extractor",
+			keyExtractor: func(msg *Message) []byte {
+				return msg.Data
+			},
+			msg: &Message{
+				Data:        []byte("Hello world"),
+				OrderingKey: "IGNORED",
+			},
+			want: &pb.PubSubMessage{
+				Data: []byte("Hello world"),
+				Key:  []byte("Hello world"),
+			},
+		},
+		{
+			desc:         "valid: filled",
+			keyExtractor: extractOrderingKey,
 			msg: &Message{
 				Data: []byte("foo"),
 				Attributes: map[string]AttributeValues{
-					"attr1": [][]byte{
-						[]byte("val1"),
-						[]byte("val2"),
-					},
+					"attr": []string{"val1", "val2"},
 				},
 				EventTime:   time.Unix(1555593697, 154358*1000),
-				OrderingKey: []byte("order"),
+				OrderingKey: "order",
 			},
 			want: &pb.PubSubMessage{
 				Data: []byte("foo"),
 				Attributes: map[string]*pb.AttributeValues{
-					"attr1": {
+					"attr": {
 						Values: [][]byte{
-							[]byte("val1"),
-							[]byte("val2"),
+							[]byte("val1"), []byte("val2"),
 						},
 					},
 				},
@@ -86,7 +99,7 @@ func TestMessageToProto(t *testing.T) {
 		},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
-			got, err := tc.msg.toProto()
+			got, err := transformPublishedMessage(tc.msg, tc.keyExtractor)
 			if err != nil {
 				t.Errorf("toProto() err = %v", err)
 			} else if !proto.Equal(got, tc.want) {

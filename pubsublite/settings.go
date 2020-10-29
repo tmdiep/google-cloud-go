@@ -64,6 +64,13 @@ type PublishSettings struct {
 	// throughput capacity can cause the buffers to overflow. For more
 	// information, see https://cloud.google.com/pubsub/lite/docs/topics.
 	BufferedByteLimit int
+
+	// Optional function that extracts an ordering key from a Message. The default
+	// implementation extracts the key from Message.OrderingKey.
+	KeyExtractor KeyExtractorFunc
+
+	// Optional function that transforms a Message to a PubSubMessage API proto.
+	MessageTransformer PublishMessageTransformerFunc
 }
 
 // DefaultPublishSettings holds the default values for PublishSettings.

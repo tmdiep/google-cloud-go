@@ -439,13 +439,10 @@ func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings 
 }
 
 // No-op if already successfully started.
-func (rp *routingPublisher) Start() error {
-	start, err := rp.initPublishers()
-	if !start {
-		// Note: error is nil if already started.
-		return err
+func (rp *routingPublisher) Start() {
+	if rp.initPublishers() {
+		rp.compositeService.Start()
 	}
-	return rp.compositeService.Start()
 }
 
 func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onResult publishResultFunc) {
@@ -458,21 +455,23 @@ func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onResult publishResul
 	pub.Publish(msg, onResult)
 }
 
-func (rp *routingPublisher) initPublishers() (bool, error) {
+func (rp *routingPublisher) initPublishers() bool {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 
 	if len(rp.publishers) > 0 {
 		// Already started.
-		return false, nil
+		return false
 	}
 
 	partitionCount, err := rp.admin.TopicPartitions(rp.ctx, rp.topic)
 	if err != nil {
-		return false, err
+		rp.finalErr = err
+		return false
 	}
 	if partitionCount <= 0 {
-		return false, fmt.Errorf("pubsublite: topic has invalid number of partitions %d", partitionCount)
+		rp.finalErr = fmt.Errorf("pubsublite: topic has invalid number of partitions %d", partitionCount)
+		return false
 	}
 
 	var publishers []*partitionPublisher
@@ -484,7 +483,7 @@ func (rp *routingPublisher) initPublishers() (bool, error) {
 	}
 
 	rp.msgRouter.SetPartitionCount(partitionCount)
-	return true, nil
+	return true
 }
 
 func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*partitionPublisher, error) {

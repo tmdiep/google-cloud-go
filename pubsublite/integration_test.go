@@ -308,15 +308,15 @@ func TestSimplePublish(t *testing.T) {
 	var results []*PublishResult
 	results = append(results, publisher.Publish(ctx, &Message{
 		Data:        bytes.Repeat([]byte{'a'}, 50),
-		OrderingKey: []byte("hello"),
+		OrderingKey: "hello",
 	}))
 	results = append(results, publisher.Publish(ctx, &Message{
 		Data:        bytes.Repeat([]byte{'b'}, 50),
-		OrderingKey: []byte("world"),
+		OrderingKey: "world",
 	}))
 	results = append(results, publisher.Publish(ctx, &Message{
 		Data:        bytes.Repeat([]byte{'c'}, 50),
-		OrderingKey: []byte("hello"),
+		OrderingKey: "hello",
 	}))
 
 	publisher.Stop()
