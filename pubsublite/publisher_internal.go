@@ -391,6 +391,9 @@ type routingPublisher struct {
 }
 
 func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) (*routingPublisher, error) {
+	if err := validatePublishSettings(settings); err != nil {
+		return nil, err
+	}
 	region, err := ZoneToRegion(topic.Zone)
 	if err != nil {
 		return nil, err
@@ -453,12 +456,10 @@ func (rp *routingPublisher) initPublishers() bool {
 		return false
 	}
 
-	var publishers []*partitionPublisher
 	for i := 0; i < partitionCount; i++ {
 		pub := newPartitionPublisher(rp.ctx, rp.pubClient, rp.settings, rp.topic, i)
-		publishers = append(publishers, pub)
 		rp.publishers[i] = pub
-		rp.unsafeAddService(pub)
+		rp.unsafeAddServices(pub)
 	}
 
 	rp.msgRouter.SetPartitionCount(partitionCount)

@@ -14,7 +14,9 @@
 package pubsublite
 
 import (
+	"fmt"
 	"sync"
+	"time"
 )
 
 // serviceStatus specifies the current status of the service. The order of the
@@ -43,7 +45,7 @@ type service interface {
 	// Allows compositeService.onServiceStatusChange to work for multiple layers
 	// of embedding.
 	handle() *abstractService
-	setOnStatusChange(serviceStatusChangeFunc)
+	addOnStatusChange(serviceStatusChangeFunc)
 }
 
 // serviceStatusChangeFunc notifies the parent of service status changes.
@@ -56,7 +58,7 @@ type serviceStatusChangeFunc func(*abstractService, serviceStatus, error)
 type abstractService struct {
 	mu sync.Mutex
 
-	onStatusChange serviceStatusChangeFunc
+	onStatusChange []serviceStatusChangeFunc
 	status         serviceStatus
 	// The error that cause the service to terminate.
 	err error
@@ -72,10 +74,10 @@ func (as *abstractService) handle() *abstractService {
 	return as
 }
 
-func (as *abstractService) setOnStatusChange(onStatusChange serviceStatusChangeFunc) {
+func (as *abstractService) addOnStatusChange(onStatusChange serviceStatusChangeFunc) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
-	as.onStatusChange = onStatusChange
+	as.onStatusChange = append(as.onStatusChange, onStatusChange)
 }
 
 func (as *abstractService) unsafeCheckServiceStatus() error {
@@ -105,7 +107,9 @@ func (as *abstractService) unsafeUpdateStatus(targetStatus serviceStatus, err er
 	if as.onStatusChange != nil {
 		// Notify in a goroutine to prevent deadlocks if the parent is holding a
 		// locked mutex.
-		go as.onStatusChange(as.handle(), targetStatus, as.err)
+		for _, onStatusChange := range as.onStatusChange {
+			go onStatusChange(as.handle(), targetStatus, as.err)
+		}
 	}
 	return true
 }
@@ -160,9 +164,11 @@ func (cs *compositeService) init() {
 	cs.waitTerminated = make(chan struct{})
 }
 
-func (cs *compositeService) unsafeAddService(s service) {
-	s.setOnStatusChange(cs.onServiceStatusChange)
-	cs.dependencies = append(cs.dependencies, &serviceHolder{service: s})
+func (cs *compositeService) unsafeAddServices(services ...service) {
+	for _, s := range services {
+		s.addOnStatusChange(cs.onServiceStatusChange)
+		cs.dependencies = append(cs.dependencies, &serviceHolder{service: s})
+	}
 }
 
 func (cs *compositeService) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
@@ -222,5 +228,46 @@ func (cs *compositeService) onServiceStatusChange(handle *abstractService, statu
 		cs.unsafeUpdateStatus(serviceTerminating, err)
 	case numStarted == len(cs.dependencies):
 		cs.unsafeUpdateStatus(serviceActive, err)
+	}
+}
+
+type periodicTask struct {
+	period time.Duration
+	ticker *time.Ticker
+	stop   chan struct{}
+	task   func()
+}
+
+func (pt *periodicTask) Start(period time.Duration, task func()) {
+	pt.ticker = time.NewTicker(period)
+	pt.stop = make(chan struct{})
+	pt.task = task
+	go pt.poll()
+}
+
+func (pt *periodicTask) Resume() {
+	pt.ticker.Reset(pt.period)
+}
+
+func (pt *periodicTask) Pause() {
+	pt.ticker.Stop()
+}
+
+// Stop permanently stops the periodic task.
+func (pt *periodicTask) Stop() {
+	close(pt.stop)
+}
+
+func (pt *periodicTask) poll() {
+	fmt.Printf("Started: %v\n", time.Now())
+	for {
+		select {
+		case <-pt.stop:
+			fmt.Printf("Stopped: %v\n", time.Now())
+			// Ends the goroutine.
+			return
+		case <-pt.ticker.C:
+			pt.task()
+		}
 	}
 }

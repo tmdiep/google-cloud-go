@@ -26,16 +26,16 @@ var errOutOfOrderMessages = errors.New("pubsublite: messages are out of order")
 const nilCursorOffset int64 = -1
 
 // ackedFunc is invoked when a message has been acked by the user.
-type ackedFunc func(*ackReceiver)
+type ackedFunc func(*ackReplyConsumer)
 
-// ackReceiver is used for handling message acks. It is attached to a Message
-// and also stored within the subscriber client for tracking until the message
-// has been acked by the server.
-type ackReceiver struct {
+// ackReplyConsumer is used for handling message acks. It is attached to a
+// Message and also stored within the subscriber client for tracking until the
+// message has been acked by the server.
+type ackReplyConsumer struct {
 	// The message offset.
 	Offset int64
 	// Bytes released to the flow controller once the message has been acked.
-	MsgSize int64
+	MsgBytes int64
 
 	// Guards access to fields below.
 	mu    sync.Mutex
@@ -43,36 +43,36 @@ type ackReceiver struct {
 	onAck ackedFunc
 }
 
-func newAckReceiver(offset, msgSize int64, onAck ackedFunc) *ackReceiver {
-	return &ackReceiver{Offset: offset, MsgSize: msgSize, onAck: onAck}
+func newAckReplyConsumer(offset, msgBytes int64, onAck ackedFunc) *ackReplyConsumer {
+	return &ackReplyConsumer{Offset: offset, MsgBytes: msgBytes, onAck: onAck}
 }
 
-func (ah *ackReceiver) Ack() {
-	ah.mu.Lock()
-	defer ah.mu.Unlock()
+func (ar *ackReplyConsumer) Ack() {
+	ar.mu.Lock()
+	defer ar.mu.Unlock()
 
-	if ah.acked {
+	if ar.acked {
 		return
 	}
-	ah.acked = true
-	if ah.onAck != nil {
+	ar.acked = true
+	if ar.onAck != nil {
 		// Don't block the user's goroutine with potentially expensive ack
 		// processing.
-		go ah.onAck(ah)
+		go ar.onAck(ar)
 	}
 }
 
-func (ah *ackReceiver) IsAcked() bool {
-	ah.mu.Lock()
-	defer ah.mu.Unlock()
-	return ah.acked
+func (ar *ackReplyConsumer) IsAcked() bool {
+	ar.mu.Lock()
+	defer ar.mu.Unlock()
+	return ar.acked
 }
 
 // Clear onAck when the ack is obsolete.
-func (ah *ackReceiver) Clear() {
-	ah.mu.Lock()
-	defer ah.mu.Unlock()
-	ah.onAck = nil
+func (ar *ackReplyConsumer) Clear() {
+	ar.mu.Lock()
+	defer ar.mu.Unlock()
+	ar.onAck = nil
 }
 
 // ackTracker manages outstanding message acks, i.e. messages that have been
@@ -85,7 +85,7 @@ type ackTracker struct {
 	// All offsets before and including this prefix have been acked by the user.
 	ackedPrefixOffset int64
 	// Outstanding message acks, strictly ordered by increasing message offsets.
-	outstandingAcks *list.List // Value = *ackReceiver
+	outstandingAcks *list.List // Value = *ackReplyConsumer
 }
 
 func newAckTracker() *ackTracker {
@@ -103,7 +103,7 @@ func (at *ackTracker) Reset() {
 	defer at.mu.Unlock()
 
 	for elem := at.outstandingAcks.Front(); elem != nil; elem = elem.Next() {
-		ack, _ := elem.Value.(*ackReceiver)
+		ack, _ := elem.Value.(*ackReplyConsumer)
 		ack.Clear()
 	}
 	at.outstandingAcks.Init()
@@ -111,7 +111,7 @@ func (at *ackTracker) Reset() {
 }
 
 // Push adds an outstanding ack to the tracker.
-func (at *ackTracker) Push(ack *ackReceiver) error {
+func (at *ackTracker) Push(ack *ackReplyConsumer) error {
 	at.mu.Lock()
 	defer at.mu.Unlock()
 
@@ -120,7 +120,7 @@ func (at *ackTracker) Push(ack *ackReceiver) error {
 		return errOutOfOrderMessages
 	}
 	if elem := at.outstandingAcks.Back(); elem != nil {
-		lastOutstandingAck, _ := elem.Value.(*ackReceiver)
+		lastOutstandingAck, _ := elem.Value.(*ackReplyConsumer)
 		if ack.Offset <= lastOutstandingAck.Offset {
 			return errOutOfOrderMessages
 		}
@@ -136,7 +136,7 @@ func (at *ackTracker) Pop() {
 	defer at.mu.Unlock()
 
 	for elem := at.outstandingAcks.Front(); elem != nil; elem = elem.Next() {
-		ack, _ := elem.Value.(*ackReceiver)
+		ack, _ := elem.Value.(*ackReplyConsumer)
 		if !ack.IsAcked() {
 			break
 		}
@@ -221,11 +221,20 @@ func (ct *committedCursorTracker) AcknowledgeOffsets(numAcked int64) error {
 		ct.lastConfirmedOffset = extractOffsetFromElem(front)
 		ct.pendingOffsets.Remove(front)
 	}
-	fmt.Printf("Last confirmed offset: %d\n", ct.lastConfirmedOffset)
+	fmt.Printf("LastConfirmedOffset: %d\n", ct.lastConfirmedOffset)
 	return nil
 }
 
 // Done when there are no more unacknowledged offsets.
 func (ct *committedCursorTracker) Done() bool {
 	return ct.pendingOffsets.Len() == 0
+}
+
+// It is only used by the subscriber.
+type subscriberOffsetTracker struct {
+	nextOffset int64
+}
+
+func newSubscriberOffsetTracker() *subscriberOffsetTracker {
+	return &subscriberOffsetTracker{nextOffset: nilCursorOffset}
 }

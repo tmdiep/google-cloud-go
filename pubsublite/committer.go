@@ -44,14 +44,13 @@ type committer struct {
 	// Fields below must be guarded with mutex.
 	stream *retryableStream
 
-	pollCommitsTicker *time.Ticker
-	stopPolling       chan struct{}
-	cursorTracker     *committedCursorTracker
+	cursorTracker *committedCursorTracker
+	pollCommits   periodicTask
 
 	abstractService
 }
 
-func newCommitter(ctx context.Context, cursor *vkit.CursorClient, subs SubscriptionPath, partition int, acks *ackTracker) *committer {
+func newCommitter(ctx context.Context, cursor *vkit.CursorClient, settings ReceiveSettings, subs SubscriptionPath, partition int, acks *ackTracker) *committer {
 	commit := &committer{
 		cursorClient: cursor,
 		subscription: subs,
@@ -64,12 +63,9 @@ func newCommitter(ctx context.Context, cursor *vkit.CursorClient, subs Subscript
 				},
 			},
 		},
-		pollCommitsTicker: time.NewTicker(commitCursorPeriod),
-		stopPolling:       make(chan struct{}),
-		cursorTracker:     newCommittedCursorTracker(acks),
+		cursorTracker: newCommittedCursorTracker(acks),
 	}
-	// TODO: the timeout should be from ReceiveSettings.
-	commit.stream = newRetryableStream(ctx, commit, time.Minute, reflect.TypeOf(pb.StreamingCommitCursorResponse{}))
+	commit.stream = newRetryableStream(ctx, commit, settings.Timeout, reflect.TypeOf(pb.StreamingCommitCursorResponse{}))
 	return commit
 }
 
@@ -78,7 +74,7 @@ func (c *committer) Start() {
 	defer c.mu.Unlock()
 
 	c.stream.Start()
-	go c.pollCommits()
+	c.pollCommits.Start(commitCursorPeriod, c.commitOffsetToStream)
 }
 
 func (c *committer) Stop() {
@@ -111,11 +107,11 @@ func (c *committer) onStreamStatusChange(status streamStatus) {
 	case streamConnected:
 		c.unsafeUpdateStatus(serviceActive, nil)
 		c.unsafeCommitOffsetToStream()
-		c.pollCommitsTicker.Reset(commitCursorPeriod)
+		c.pollCommits.Resume()
 
 	case streamReconnecting:
 		c.cursorTracker.ClearPending()
-		c.pollCommitsTicker.Stop()
+		c.pollCommits.Pause()
 
 	case streamTerminated:
 		c.unsafeInitiateShutdown(serviceTerminated, c.stream.Error())
@@ -142,13 +138,11 @@ func (c *committer) unsafeCommitOffsetToStream() {
 		},
 	}
 	if c.stream.Send(req) {
-		fmt.Printf("Committed: %v\n", req)
 		c.cursorTracker.AddPending(nextOffset)
 	}
 }
 
 func (c *committer) onResponse(response interface{}) {
-	fmt.Printf("Response: %v\n", response)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -170,28 +164,13 @@ func (c *committer) onResponse(response interface{}) {
 	}
 }
 
-// pollCommits executes in a goroutine to periodically commit cursors to the
-// stream.
-func (c *committer) pollCommits() {
-	fmt.Printf("Started: %v\n", time.Now())
-	for {
-		select {
-		case <-c.stopPolling:
-			fmt.Printf("Stopped: %v\n", time.Now())
-			return
-		case <-c.pollCommitsTicker.C:
-			c.commitOffsetToStream()
-		}
-	}
-}
-
 func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
 	if !c.unsafeUpdateStatus(targetStatus, err) {
 		return
 	}
 
 	// Stop pollCommits to prevent more in-flight commits added to the stream.
-	c.pollCommitsTicker.Stop()
+	c.pollCommits.Pause()
 
 	if targetStatus == serviceTerminating {
 		// Try sending final commit to the stream.
@@ -201,7 +180,7 @@ func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error
 	}
 
 	// Otherwise immediately terminate the stream.
-	close(c.stopPolling)
+	c.pollCommits.Stop()
 	c.stream.Stop()
 }
 

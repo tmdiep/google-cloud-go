@@ -14,7 +14,6 @@
 package pubsublite
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"math/rand"
@@ -28,6 +27,7 @@ import (
 	"google.golang.org/api/option"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
+	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 const gibi = 1 << 30
@@ -291,7 +291,7 @@ func TestResourceAdminOperations(t *testing.T) {
 	}
 }
 
-func TestSimplePublish(t *testing.T) {
+func TestPublish(t *testing.T) {
 	initIntegrationTest(t)
 
 	ctx := context.Background()
@@ -301,23 +301,14 @@ func TestSimplePublish(t *testing.T) {
 	topic := TopicPath{Project: proj, Zone: zone, TopicID: resourceID}
 
 	settings := DefaultPublishSettings
-	settings.CountThreshold = 2
-	settings.ByteThreshold = 100
 	publisher := publisherClient(ctx, t, settings, topic)
 
 	var results []*PublishResult
-	results = append(results, publisher.Publish(ctx, &Message{
-		Data:        bytes.Repeat([]byte{'a'}, 50),
-		OrderingKey: "hello",
-	}))
-	results = append(results, publisher.Publish(ctx, &Message{
-		Data:        bytes.Repeat([]byte{'b'}, 50),
-		OrderingKey: "world",
-	}))
-	results = append(results, publisher.Publish(ctx, &Message{
-		Data:        bytes.Repeat([]byte{'c'}, 50),
-		OrderingKey: "hello",
-	}))
+	for i := 0; i < 20; i++ {
+		results = append(results, publisher.Publish(ctx, &Message{
+			Data: []byte(fmt.Sprintf("%d", i)),
+		}))
+	}
 
 	publisher.Stop()
 
@@ -330,7 +321,7 @@ func TestSimplePublish(t *testing.T) {
 	}
 }
 
-func TestCommitter(t *testing.T) {
+func TestSubscribe(t *testing.T) {
 	initIntegrationTest(t)
 
 	ctx := context.Background()
@@ -341,28 +332,58 @@ func TestCommitter(t *testing.T) {
 	subscription := SubscriptionPath{Project: proj, Zone: zone, SubscriptionID: resourceID}
 	partition := 0
 
+	subsClient, err := newSubscriberClient(ctx, region)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cursorClient, err := newCursorClient(ctx, region)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	acks := newAckTracker()
-	committer := newCommitter(ctx, cursorClient, subscription, partition, acks)
-	committer.Start()
+	settings := DefaultReceiveSettings
+	settings.MaxOutstandingMessages = 20
+	subscriber := newPartitionSubscriber(ctx, subsClient, cursorClient, settings, subscription, partition)
 
-	onAcked := func(a *ackReceiver) {
-		acks.Pop()
+	subscriber.Start()
+	if err := subscriber.WaitStarted(); err != nil {
+		t.Fatalf("Start() error = %v", err)
 	}
-	ack1 := newAckReceiver(10, 1000, onAcked)
-	acks.Push(ack1)
-	ack2 := newAckReceiver(50, 1000, onAcked)
-	acks.Push(ack2)
 
-	time.Sleep(2 * time.Second)
-	ack1.Ack()
-	time.Sleep(2 * time.Second)
-	ack2.Ack()
-	time.Sleep(2 * time.Second)
-	committer.Stop()
-	time.Sleep(2 * time.Second)
+	receive := func(msg *pb.SequencedMessage, ack *ackReplyConsumer) {
+		fmt.Printf("Got msg: %v\n", msg)
+		ack.Ack()
+	}
+	subscriber.Receive(receive)
+
+	time.Sleep(5 * time.Second)
+
+	subscriber.Stop()
+	subscriber.WaitStopped()
+
+	/*
+		cursorClient, err := newCursorClient(ctx, region)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		acks := newAckTracker()
+		committer := newCommitter(ctx, cursorClient, subscription, partition, acks)
+		committer.Start()
+
+		onAcked := func(a *ackReceiver) {
+			acks.Pop()
+		}
+		ack1 := newAckReceiver(10, 1000, onAcked)
+		acks.Push(ack1)
+		ack2 := newAckReceiver(50, 1000, onAcked)
+		acks.Push(ack2)
+
+		time.Sleep(2 * time.Second)
+		ack1.Ack()
+		time.Sleep(2 * time.Second)
+		ack2.Ack()
+		time.Sleep(2 * time.Second)
+		committer.Stop()
+		time.Sleep(2 * time.Second)*/
 }

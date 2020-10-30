@@ -108,3 +108,35 @@ func validatePublishSettings(settings PublishSettings) error {
 	}
 	return nil
 }
+
+// ReceiveSettings configure the Receive method.
+type ReceiveSettings struct {
+	// MaxOutstandingMessages is the maximum number of unprocessed messages
+	// (unacknowledged but not yet expired). If MaxOutstandingMessages is 0, it
+	// will be treated as if it were DefaultReceiveSettings.MaxOutstandingMessages.
+	// If the value is negative, then there will be no limit on the number of
+	// unprocessed messages.
+	MaxOutstandingMessages int
+
+	// MaxOutstandingBytes is the maximum size of unprocessed messages
+	// (unacknowledged but not yet expired). If MaxOutstandingBytes is 0, it will
+	// be treated as if it were DefaultReceiveSettings.MaxOutstandingBytes. If
+	// the value is negative, then there will be no limit on the number of bytes
+	// for unprocessed messages.
+	MaxOutstandingBytes int
+
+	// The maximum time that the client will attempt to establish a subscribe
+	// stream connection to the server. Must be > 0.
+	//
+	// The timeout is exceeded, the publisher will terminate with the last error
+	// that occurred while trying to reconnect. Note that if the timeout duration
+	// is long, ErrOverflow may occur first.
+	Timeout time.Duration
+}
+
+// DefaultReceiveSettings holds the default values for ReceiveSettings.
+var DefaultReceiveSettings = ReceiveSettings{
+	MaxOutstandingMessages: 1000,
+	MaxOutstandingBytes:    1e9,
+	Timeout:                60 * time.Second,
+}

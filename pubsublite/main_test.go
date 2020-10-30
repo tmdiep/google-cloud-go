@@ -30,7 +30,9 @@ var (
 	mockServer test.MockServer
 	clientOpts []option.ClientOption
 
+	// Intended for unit tests.
 	defaultTestPublishSettings PublishSettings
+	defaultTestReceiveSettings ReceiveSettings
 )
 
 func TestMain(m *testing.M) {
@@ -41,6 +43,9 @@ func TestMain(m *testing.M) {
 	defaultTestPublishSettings.CountThreshold = 1
 	// Send messages with minimal delay to speed up tests.
 	defaultTestPublishSettings.DelayThreshold = time.Millisecond
+	defaultTestPublishSettings.Timeout = 5 * time.Second
+
+	defaultTestReceiveSettings = DefaultReceiveSettings
 
 	testServer, err := test.NewServer()
 	if err != nil {

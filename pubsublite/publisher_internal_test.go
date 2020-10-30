@@ -51,7 +51,7 @@ func newTestPartitionPublisher(t *testing.T, topic TopicPath, partition int, set
 		}
 	}
 	pub = newPartitionPublisher(ctx, pubClient, settings, topic, partition)
-	pub.setOnStatusChange(onPubStatusChange)
+	pub.addOnStatusChange(onPubStatusChange)
 	pub.Start()
 	return
 }

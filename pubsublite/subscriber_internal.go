@@ -16,9 +16,7 @@ package pubsublite
 import (
 	"context"
 	"errors"
-	"fmt"
 	"reflect"
-	"time"
 
 	"google.golang.org/grpc"
 
@@ -28,23 +26,29 @@ import (
 
 var (
 	errInvalidInitialSubscribeResponse = errors.New("pubsublite: first response from server was not an initial response for subscribe")
+	errDuplicateReceive                = errors.New("pubsublite: already called Receive for subscriber")
 )
 
-type subscriber struct {
+type wireMessagesReceiverFunc func([]*pb.SequencedMessage)
+
+// wireSubscriber directly wraps the subscribe stream.
+type wireSubscriber struct {
 	// Immutable after creation.
 	subsClient   *vkit.SubscriberClient
 	subscription SubscriptionPath
 	partition    int
 	initialReq   *pb.SubscribeRequest
+	receiver     wireMessagesReceiverFunc
 
 	// Fields below must be guarded with mutex.
-	stream *retryableStream
+	stream        *retryableStream
+	offsetTracker *subscriberOffsetTracker
 
 	abstractService
 }
 
-func newSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, subs SubscriptionPath, partition int) *subscriber {
-	subscriber := &subscriber{
+func newWireSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, settings ReceiveSettings, subs SubscriptionPath, partition int, receiver wireMessagesReceiverFunc) *wireSubscriber {
+	subscriber := &wireSubscriber{
 		subsClient:   subsClient,
 		subscription: subs,
 		partition:    partition,
@@ -56,33 +60,34 @@ func newSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, subs 
 				},
 			},
 		},
+		receiver:      receiver,
+		offsetTracker: newSubscriberOffsetTracker(),
 	}
-	// TODO: the timeout should be from ReceiveSettings.
-	subscriber.stream = newRetryableStream(ctx, subscriber, time.Minute, reflect.TypeOf(pb.SubscribeResponse{}))
+	subscriber.stream = newRetryableStream(ctx, subscriber, settings.Timeout, reflect.TypeOf(pb.SubscribeResponse{}))
 	return subscriber
 }
 
-func (s *subscriber) Start() {
+func (s *wireSubscriber) Start() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stream.Start()
 }
 
-func (s *subscriber) Stop() {
+func (s *wireSubscriber) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unsafeInitiateShutdown(serviceTerminating, nil)
 }
 
-func (s *subscriber) newStream(ctx context.Context) (grpc.ClientStream, error) {
+func (s *wireSubscriber) newStream(ctx context.Context) (grpc.ClientStream, error) {
 	return s.subsClient.Subscribe(addSubscriptionRoutingMetadata(ctx, s.subscription, s.partition))
 }
 
-func (s *subscriber) initialRequest() interface{} {
+func (s *wireSubscriber) initialRequest() interface{} {
 	return s.initialReq
 }
 
-func (s *subscriber) validateInitialResponse(response interface{}) error {
+func (s *wireSubscriber) validateInitialResponse(response interface{}) error {
 	subscribeResponse, _ := response.(*pb.SubscribeResponse)
 	if subscribeResponse.GetInitial() == nil {
 		return errInvalidInitialSubscribeResponse
@@ -90,7 +95,20 @@ func (s *subscriber) validateInitialResponse(response interface{}) error {
 	return nil
 }
 
-func (s *subscriber) onStreamStatusChange(status streamStatus) {
+func (s *wireSubscriber) AllowFlow(allowMessages, allowBytes int64) {
+	// TODO: Batch flow control tokens.
+	req := &pb.SubscribeRequest{
+		Request: &pb.SubscribeRequest_FlowControl{
+			FlowControl: &pb.FlowControlRequest{
+				AllowedMessages: allowMessages,
+				AllowedBytes:    allowBytes,
+			},
+		},
+	}
+	s.stream.Send(req)
+}
+
+func (s *wireSubscriber) onStreamStatusChange(status streamStatus) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -105,12 +123,22 @@ func (s *subscriber) onStreamStatusChange(status streamStatus) {
 	}
 }
 
-func (s *subscriber) onResponse(response interface{}) {
-	fmt.Printf("Response: %v\n", response)
+func (s *wireSubscriber) onResponse(response interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	processResponse := func() error {
+		subscribeResponse, _ := response.(*pb.SubscribeResponse)
+		if subscribeResponse.GetMessages() != nil {
+			// TODO: goroutine? Needs to be sync
+			// Handle zero messages
+			// Subtract from flow control
+			// Update current msg offset
+			msgs := subscribeResponse.GetMessages().Messages
+			if len(msgs) > 0 {
+				s.receiver(msgs)
+			}
+		}
 		return nil
 	}
 	if err := processResponse(); err != nil {
@@ -118,7 +146,7 @@ func (s *subscriber) onResponse(response interface{}) {
 	}
 }
 
-func (s *subscriber) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
+func (s *wireSubscriber) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
 	if !s.unsafeUpdateStatus(targetStatus, err) {
 		return
 	}
@@ -127,30 +155,67 @@ func (s *subscriber) unsafeInitiateShutdown(targetStatus serviceStatus, err erro
 	s.stream.Stop()
 }
 
-type partitionSubscriber struct {
-	// Have their own mutexes.
-	subscriber *subscriber
-	committer  *committer
+type messageReceiverFunc func(*pb.SequencedMessage, *ackReplyConsumer)
 
-	acks *ackTracker
+type partitionSubscriber struct {
+	settings ReceiveSettings
+
+	// Have their own mutexes.
+	subscriber *wireSubscriber
+	committer  *committer
+	acks       *ackTracker
+
+	receiver messageReceiverFunc
 
 	compositeService
 }
 
-func newPartitionSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, cursorClient *vkit.CursorClient, subscription SubscriptionPath, partition int) *partitionSubscriber {
+func newPartitionSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, cursorClient *vkit.CursorClient, settings ReceiveSettings, subscription SubscriptionPath, partition int) *partitionSubscriber {
 	acks := newAckTracker()
-	subs := newSubscriber(ctx, subsClient, subscription, partition)
-	commit := newCommitter(ctx, cursorClient, subscription, partition, acks)
-	partitionSubs := &partitionSubscriber{
-		subscriber: subs,
-		committer:  commit,
-		acks:       acks,
+	commit := newCommitter(ctx, cursorClient, settings, subscription, partition, acks)
+	ps := &partitionSubscriber{
+		settings:  settings,
+		committer: commit,
+		acks:      acks,
 	}
-	partitionSubs.init()
-	partitionSubs.unsafeAddService(subs)
-	partitionSubs.unsafeAddService(commit)
-	return partitionSubs
+	subs := newWireSubscriber(ctx, subsClient, settings, subscription, partition, ps.onMessages)
+	ps.subscriber = subs
+	ps.init()
+	ps.unsafeAddServices(subs, commit)
+	return ps
 }
+
+func (ps *partitionSubscriber) Receive(receiver messageReceiverFunc) error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	if err := ps.unsafeCheckServiceStatus(); err != nil {
+		return err
+	}
+	if ps.receiver != nil {
+		return errDuplicateReceive
+	}
+
+	ps.receiver = receiver
+	ps.subscriber.AllowFlow(int64(ps.settings.MaxOutstandingMessages), int64(ps.settings.MaxOutstandingBytes))
+	return nil
+}
+
+func (ps *partitionSubscriber) onMessages(messages []*pb.SequencedMessage) {
+	// Package the message to send upstream
+	for _, msg := range messages {
+		ack := newAckReplyConsumer(msg.GetCursor().GetOffset(), msg.GetSizeBytes(), ps.onAck)
+		ps.acks.Push(ack)
+		ps.receiver(msg, ack)
+	}
+}
+
+func (ps *partitionSubscriber) onAck(ar *ackReplyConsumer) {
+	ps.acks.Pop()
+	ps.subscriber.AllowFlow(1, ar.MsgBytes)
+}
+
+// TODO: pause receiving
 
 // When message received from stream:
 // - create ack receivers
