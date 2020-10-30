@@ -32,104 +32,6 @@ const (
 	publisherWaitTimeout = 30 * time.Second
 )
 
-func newTestPartitionPublisher(t *testing.T, topic TopicPath, partition int, settings PublishSettings) (pub *partitionPublisher, started chan struct{}, terminated chan struct{}) {
-	ctx := context.Background()
-	region, _ := ZoneToRegion(topic.Zone)
-	pubClient, err := newPublisherClient(ctx, region, clientOpts...)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	started = make(chan struct{})
-	terminated = make(chan struct{})
-	onPubStatusChange := func(unused *abstractService, status serviceStatus, err error) {
-		if status == serviceActive {
-			close(started)
-		}
-		if status == serviceTerminated {
-			close(terminated)
-		}
-	}
-	pub = newPartitionPublisher(ctx, pubClient, settings, topic, partition)
-	pub.addOnStatusChange(onPubStatusChange)
-	pub.Start()
-	return
-}
-
-func pubStartError(pub *partitionPublisher, started, terminated chan struct{}) error {
-	select {
-	case <-time.After(publisherWaitTimeout):
-		return fmt.Errorf("publisher did not start within %v", publisherWaitTimeout)
-	case <-terminated:
-		return pub.Error()
-	case <-started:
-		return pub.Error()
-	}
-}
-
-func pubFinalError(t *testing.T, pub *partitionPublisher, terminated chan struct{}) error {
-	select {
-	case <-time.After(publisherWaitTimeout):
-		return fmt.Errorf("publisher did not terminate within %v", publisherWaitTimeout)
-	case <-terminated:
-		if gotStatus, wantStatus := pub.stream.Status(), streamTerminated; gotStatus != wantStatus {
-			t.Errorf("Stream status: %v, want: %v", gotStatus, wantStatus)
-		}
-		if pub.stream.currentStream() != nil {
-			t.Error("gRPC stream should be nil")
-		}
-		return pub.Error()
-	}
-}
-
-func stopPublisher(t *testing.T, pub *partitionPublisher, terminated chan struct{}) {
-	pub.Stop()
-	if gotErr := pubFinalError(t, pub, terminated); gotErr != nil {
-		t.Errorf("Publisher final err: (%v), want: <nil>", gotErr)
-	}
-}
-
-func initPubReq(topic TopicPath, partition int) *pb.PublishRequest {
-	return &pb.PublishRequest{
-		RequestType: &pb.PublishRequest_InitialRequest{
-			InitialRequest: &pb.InitialPublishRequest{
-				Topic:     topic.String(),
-				Partition: int64(partition),
-			},
-		},
-	}
-}
-
-func initPubResp() *pb.PublishResponse {
-	return &pb.PublishResponse{
-		ResponseType: &pb.PublishResponse_InitialResponse{
-			InitialResponse: &pb.InitialPublishResponse{},
-		},
-	}
-}
-
-func msgPubReq(msgs ...*pb.PubSubMessage) *pb.PublishRequest {
-	return &pb.PublishRequest{
-		RequestType: &pb.PublishRequest_MessagePublishRequest{
-			MessagePublishRequest: &pb.MessagePublishRequest{
-				Messages: msgs,
-			},
-		},
-	}
-}
-
-func msgPubResp(cursor int64) *pb.PublishResponse {
-	return &pb.PublishResponse{
-		ResponseType: &pb.PublishResponse_MessageResponse{
-			MessageResponse: &pb.MessagePublishResponse{
-				StartCursor: &pb.Cursor{
-					Offset: cursor,
-				},
-			},
-		},
-	}
-}
-
 type publishResultReceiver struct {
 	done   chan struct{}
 	t      *testing.T
@@ -198,6 +100,123 @@ func (r *publishResultReceiver) validateErrorMsg(wantStr string) {
 	}
 }
 
+// testPartitionPublisher wraps a singlePartitionPublisher for ease of testing.
+type testPartitionPublisher struct {
+	t          *testing.T
+	pub        *singlePartitionPublisher
+	started    chan struct{}
+	terminated chan struct{}
+}
+
+func newTestPartitionPublisher(t *testing.T, topic TopicPath, partition int, settings PublishSettings) *testPartitionPublisher {
+	ctx := context.Background()
+	region, _ := ZoneToRegion(topic.Zone)
+	pubClient, err := newPublisherClient(ctx, region, clientOpts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tp := &testPartitionPublisher{
+		t:          t,
+		started:    make(chan struct{}),
+		terminated: make(chan struct{}),
+	}
+	pub := newSinglePartitionPublisher(ctx, pubClient, settings, topic, partition)
+	pub.addOnStatusChange(tp.onStatusChange)
+	pub.Start()
+	tp.pub = pub
+	return tp
+}
+
+func (tp *testPartitionPublisher) publish(msg *pb.PubSubMessage) *publishResultReceiver {
+	result := newPublishResultReceiver(tp.t)
+	tp.pub.Publish(msg, result.set)
+	return result
+}
+
+func (tp *testPartitionPublisher) onStatusChange(unused *abstractService, status serviceStatus, err error) {
+	if status == serviceActive {
+		close(tp.started)
+	}
+	if status == serviceTerminated {
+		close(tp.terminated)
+	}
+}
+
+func (tp *testPartitionPublisher) startError() error {
+	select {
+	case <-time.After(publisherWaitTimeout):
+		return fmt.Errorf("Publisher did not start within %v", publisherWaitTimeout)
+	case <-tp.terminated:
+		return tp.pub.Error()
+	case <-tp.started:
+		return tp.pub.Error()
+	}
+}
+
+func (tp *testPartitionPublisher) finalError() error {
+	select {
+	case <-time.After(publisherWaitTimeout):
+		return fmt.Errorf("Publisher did not terminate within %v", publisherWaitTimeout)
+	case <-tp.terminated:
+		if gotStatus, wantStatus := tp.pub.stream.Status(), streamTerminated; gotStatus != wantStatus {
+			tp.t.Errorf("Publisher retryableStream status: %v, want: %v", gotStatus, wantStatus)
+		}
+		if tp.pub.stream.currentStream() != nil {
+			tp.t.Error("Publisher gRPC stream should be nil")
+		}
+		return tp.pub.Error()
+	}
+}
+
+func (tp *testPartitionPublisher) stopVerifyFinalError() {
+	tp.pub.Stop()
+	if gotErr := tp.finalError(); gotErr != nil {
+		tp.t.Errorf("Publisher final err: (%v), want: <nil>", gotErr)
+	}
+}
+
+func initPubReq(topic TopicPath, partition int) *pb.PublishRequest {
+	return &pb.PublishRequest{
+		RequestType: &pb.PublishRequest_InitialRequest{
+			InitialRequest: &pb.InitialPublishRequest{
+				Topic:     topic.String(),
+				Partition: int64(partition),
+			},
+		},
+	}
+}
+
+func initPubResp() *pb.PublishResponse {
+	return &pb.PublishResponse{
+		ResponseType: &pb.PublishResponse_InitialResponse{
+			InitialResponse: &pb.InitialPublishResponse{},
+		},
+	}
+}
+
+func msgPubReq(msgs ...*pb.PubSubMessage) *pb.PublishRequest {
+	return &pb.PublishRequest{
+		RequestType: &pb.PublishRequest_MessagePublishRequest{
+			MessagePublishRequest: &pb.MessagePublishRequest{
+				Messages: msgs,
+			},
+		},
+	}
+}
+
+func msgPubResp(cursor int64) *pb.PublishResponse {
+	return &pb.PublishResponse{
+		ResponseType: &pb.PublishResponse_MessageResponse{
+			MessageResponse: &pb.MessagePublishResponse{
+				StartCursor: &pb.Cursor{
+					Offset: cursor,
+				},
+			},
+		},
+	}
+}
+
 func TestPartitionPublisherStartOnce(t *testing.T) {
 	topic := TopicPath{Project: "123456", Zone: "us-central1-b", TopicID: "my-topic"}
 	partition := 0
@@ -209,16 +228,16 @@ func TestPartitionPublisherStartOnce(t *testing.T) {
 	stream.Push(initPubReq(topic, partition), initPubResp(), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
-	defer stopPublisher(t, pub, terminated)
+	pub := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	defer pub.stopVerifyFinalError()
 
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
 	// Ensure that new streams are not opened if the publisher is started twice.
 	// Note: only 1 stream verifier was added to the mock server above.
-	pub.Start()
+	pub.pub.Start()
 }
 
 func TestPartitionPublisherStartStop(t *testing.T) {
@@ -232,21 +251,21 @@ func TestPartitionPublisherStartStop(t *testing.T) {
 	block := stream.PushWithBlock(initPubReq(topic, partition), initPubResp(), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	pub := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
 
 	time.Sleep(10 * time.Millisecond)
-	pub.Stop()
+	pub.pub.Stop()
 	time.Sleep(10 * time.Millisecond)
 	close(block)
 
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v), want: <nil>", gotErr)
 	}
 	// pubFinalError also verifies that the gRPC stream is nil.
-	if gotErr := pubFinalError(t, pub, terminated); gotErr != nil {
+	if gotErr := pub.finalError(); gotErr != nil {
 		t.Errorf("Publisher final err: (%v), want: <nil>", gotErr)
 	}
-	if gotErr := pub.stream.Error(); gotErr != nil {
+	if gotErr := pub.pub.stream.Error(); gotErr != nil {
 		t.Errorf("Stream final err: (%v), want: <nil>", gotErr)
 	}
 }
@@ -264,21 +283,21 @@ func TestPartitionPublisherStopAbortsRetries(t *testing.T) {
 	block := stream.PushWithBlock(initPubReq(topic, partition), initPubResp(), status.Error(codes.Unavailable, ""))
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	pub := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
 
 	time.Sleep(10 * time.Millisecond)
-	pub.Stop()
+	pub.pub.Stop()
 	time.Sleep(10 * time.Millisecond)
 	close(block)
 
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v), want: <nil>", gotErr)
 	}
 	// pubFinalError also verifies that the gRPC stream is nil.
-	if gotErr := pubFinalError(t, pub, terminated); gotErr != nil {
+	if gotErr := pub.finalError(); gotErr != nil {
 		t.Errorf("Publisher final err: (%v), want: <nil>", gotErr)
 	}
-	if gotErr := pub.stream.Error(); gotErr != nil {
+	if gotErr := pub.pub.stream.Error(); gotErr != nil {
 		t.Errorf("Stream final err: (%v), want: <nil>", gotErr)
 	}
 }
@@ -304,10 +323,10 @@ func TestPartitionPublisherConnectRetries(t *testing.T) {
 	stream3.Push(initPubReq(topic, partition), initPubResp(), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream3)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
-	defer stopPublisher(t, pub, terminated)
+	pub := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	defer pub.stopVerifyFinalError()
 
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 }
@@ -326,12 +345,12 @@ func TestPartitionPublisherConnectPermanentFailure(t *testing.T) {
 	stream.Push(initPubReq(topic, partition), nil, permErr)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	pub := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
 
-	if gotErr := pubStartError(pub, started, terminated); !test.ErrorEqual(gotErr, permErr) {
+	if gotErr := pub.startError(); !test.ErrorEqual(gotErr, permErr) {
 		t.Errorf("Start() got err: (%v), want: (%v)", gotErr, permErr)
 	}
-	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorEqual(gotErr, permErr) {
+	if gotErr := pub.finalError(); !test.ErrorEqual(gotErr, permErr) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, permErr)
 	}
 }
@@ -351,17 +370,17 @@ func TestPartitionPublisherConnectTimeout(t *testing.T) {
 	block := stream.PushWithBlock(initPubReq(topic, partition), nil, wantErr)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, settings)
+	pub := newTestPartitionPublisher(t, topic, partition, settings)
 
-	// Send the server response well after settings.Timeout to simulate a timeout.
-	// The publisher fails to start.
+	// Send the initial server response well after settings.Timeout to simulate a
+	// timeout. The publisher fails to start.
 	time.Sleep(50 * time.Millisecond)
 	close(block)
 
-	if gotErr := pubStartError(pub, started, terminated); !test.ErrorEqual(gotErr, wantErr) {
+	if gotErr := pub.startError(); !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Start() got err: (%v), want: (%v)", gotErr, wantErr)
 	}
-	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorEqual(gotErr, wantErr) {
+	if gotErr := pub.finalError(); !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, wantErr)
 	}
 }
@@ -379,13 +398,13 @@ func TestPartitionPublisherInvalidInitialResponse(t *testing.T) {
 	stream.Push(initPubReq(topic, partition), msgPubResp(0), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	pub := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
 
 	wantErr := errInvalidInitialPubResponse
-	if gotErr := pubStartError(pub, started, terminated); !test.ErrorEqual(gotErr, wantErr) {
+	if gotErr := pub.startError(); !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Start() got err: (%v), want: (%v)", gotErr, wantErr)
 	}
-	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorEqual(gotErr, wantErr) {
+	if gotErr := pub.finalError(); !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, wantErr)
 	}
 }
@@ -405,15 +424,15 @@ func TestPartitionPublisherSpuriousPublishResponse(t *testing.T) {
 	block := stream.PushWithBlock(nil, msgPubResp(0), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	pub := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
 	// Send after startup to ensure the test is deterministic.
 	close(block)
 
-	if gotErr, wantErr := pubFinalError(t, pub, terminated), errPublishQueueEmpty; !test.ErrorEqual(gotErr, wantErr) {
+	if gotErr, wantErr := pub.finalError(), errPublishQueueEmpty; !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, wantErr)
 	}
 }
@@ -449,32 +468,24 @@ func TestPartitionPublisherBatching(t *testing.T) {
 	stream.Push(msgPubReq(msg5, msg6, msg7), msgPubResp(45), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, settings)
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	pub := newTestPartitionPublisher(t, topic, partition, settings)
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result1 := newPublishResultReceiver(t)
-	result2 := newPublishResultReceiver(t)
-	result3 := newPublishResultReceiver(t)
-	result4 := newPublishResultReceiver(t)
-	result5 := newPublishResultReceiver(t)
-	result6 := newPublishResultReceiver(t)
-	result7 := newPublishResultReceiver(t)
-
-	pub.Publish(msg1, result1.set)
-	pub.Publish(msg2, result2.set)
-	pub.Publish(msg3, result3.set)
-	pub.Publish(msg4, result4.set)
+	result1 := pub.publish(msg1)
+	result2 := pub.publish(msg2)
+	result3 := pub.publish(msg3)
+	result4 := pub.publish(msg4)
 	// Bundler invokes at most 1 handler and may add a message to the end of the
 	// last bundle if the hard limits (BundleByteLimit) aren't reached. Pause to
 	// handle previous bundles.
 	time.Sleep(20 * time.Millisecond)
-	pub.Publish(msg5, result5.set)
-	pub.Publish(msg6, result6.set)
-	pub.Publish(msg7, result7.set)
+	result5 := pub.publish(msg5)
+	result6 := pub.publish(msg6)
+	result7 := pub.publish(msg7)
 	// Stop flushes pending messages.
-	pub.Stop()
+	pub.pub.Stop()
 
 	result1.validateResult(partition, 0)
 	result2.validateResult(partition, 1)
@@ -484,7 +495,7 @@ func TestPartitionPublisherBatching(t *testing.T) {
 	result6.validateResult(partition, 46)
 	result7.validateResult(partition, 47)
 
-	if gotErr := pubFinalError(t, pub, terminated); gotErr != nil {
+	if gotErr := pub.finalError(); gotErr != nil {
 		t.Errorf("Publisher final err: (%v), want: <nil>", gotErr)
 	}
 }
@@ -510,18 +521,15 @@ func TestPartitionPublisherBatchingDelay(t *testing.T) {
 	stream.Push(msgPubReq(msg2), msgPubResp(1), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, settings)
-	defer stopPublisher(t, pub, terminated)
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	pub := newTestPartitionPublisher(t, topic, partition, settings)
+	defer pub.stopVerifyFinalError()
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result1 := newPublishResultReceiver(t)
-	result2 := newPublishResultReceiver(t)
-
-	pub.Publish(msg1, result1.set)
+	result1 := pub.publish(msg1)
 	time.Sleep(settings.DelayThreshold * 2)
-	pub.Publish(msg2, result2.set)
+	result2 := pub.publish(msg2)
 
 	result1.validateResult(partition, 0)
 	result2.validateResult(partition, 1)
@@ -552,22 +560,18 @@ func TestPartitionPublisherResendMessages(t *testing.T) {
 	stream2.Push(msgPubReq(msg3), msgPubResp(2), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream2)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
-	defer stopPublisher(t, pub, terminated)
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	pub := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	defer pub.stopVerifyFinalError()
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result1 := newPublishResultReceiver(t)
-	result2 := newPublishResultReceiver(t)
-	result3 := newPublishResultReceiver(t)
-
-	pub.Publish(msg1, result1.set)
-	pub.Publish(msg2, result2.set)
+	result1 := pub.publish(msg1)
+	result2 := pub.publish(msg2)
 	result1.validateResult(partition, 0)
 	result2.validateResult(partition, 1)
 
-	pub.Publish(msg3, result3.set)
+	result3 := pub.publish(msg3)
 	result3.validateResult(partition, 2)
 }
 
@@ -589,26 +593,22 @@ func TestPartitionPublisherPublishPermanentError(t *testing.T) {
 	stream.Push(msgPubReq(msg1), nil, permError)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	pub := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result1 := newPublishResultReceiver(t)
-	result2 := newPublishResultReceiver(t)
-	result3 := newPublishResultReceiver(t)
-
-	pub.Publish(msg1, result1.set)
-	pub.Publish(msg2, result2.set)
+	result1 := pub.publish(msg1)
+	result2 := pub.publish(msg2)
 	result1.validateError(permError)
 	result2.validateError(permError)
 
 	// This message arrives after the publisher has already stopped, so its error
 	// message is ErrServiceStopped.
-	pub.Publish(msg3, result3.set)
+	result3 := pub.publish(msg3)
 	result3.validateError(ErrServiceStopped)
 
-	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorEqual(gotErr, permError) {
+	if gotErr := pub.finalError(); !test.ErrorEqual(gotErr, permError) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, permError)
 	}
 }
@@ -631,31 +631,27 @@ func TestPartitionPublisherBufferOverflow(t *testing.T) {
 	block := stream.PushWithBlock(msgPubReq(msg1), msgPubResp(0), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, settings)
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	pub := newTestPartitionPublisher(t, topic, partition, settings)
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result1 := newPublishResultReceiver(t)
-	result2 := newPublishResultReceiver(t)
-	result3 := newPublishResultReceiver(t)
-
-	pub.Publish(msg1, result1.set)
+	result1 := pub.publish(msg1)
 	// Overflow is detected, which terminates the publisher, but previous messages
 	// are flushed.
-	pub.Publish(msg2, result2.set)
+	result2 := pub.publish(msg2)
 	// Delay the server response for the first publish to ensure it is allowed to
 	// complete.
 	close(block)
 	// This message arrives after the publisher has already stopped, so its error
 	// message is ErrServiceStopped.
-	pub.Publish(msg3, result3.set)
+	result3 := pub.publish(msg3)
 
 	result1.validateResult(partition, 0)
 	result2.validateError(ErrOverflow)
 	result3.validateError(ErrServiceStopped)
 
-	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorEqual(gotErr, ErrOverflow) {
+	if gotErr := pub.finalError(); !test.ErrorEqual(gotErr, ErrOverflow) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, ErrOverflow)
 	}
 }
@@ -678,19 +674,16 @@ func TestPartitionPublisherBufferRefill(t *testing.T) {
 	stream.Push(msgPubReq(msg2), msgPubResp(1), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, settings)
-	defer stopPublisher(t, pub, terminated)
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	pub := newTestPartitionPublisher(t, topic, partition, settings)
+	defer pub.stopVerifyFinalError()
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result1 := newPublishResultReceiver(t)
-	result2 := newPublishResultReceiver(t)
-
-	pub.Publish(msg1, result1.set)
+	result1 := pub.publish(msg1)
 	result1.validateResult(partition, 0)
 
-	pub.Publish(msg2, result2.set)
+	result2 := pub.publish(msg2)
 	result2.validateResult(partition, 1)
 }
 
@@ -710,31 +703,27 @@ func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
 	block := stream.PushWithBlock(msgPubReq(msg1), msgPubResp(0), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	pub := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result1 := newPublishResultReceiver(t)
-	result2 := newPublishResultReceiver(t)
-	result3 := newPublishResultReceiver(t)
-
-	pub.Publish(msg1, result1.set)
+	result1 := pub.publish(msg1)
 	// Fails due to over msg size limit, which terminates the publisher, but
 	// pending messages are flushed.
-	pub.Publish(msg2, result2.set)
+	result2 := pub.publish(msg2)
 	// Delay the server response for the first publish to ensure it is allowed to
 	// complete.
 	close(block)
 	// This message arrives after the publisher has already stopped.
-	pub.Publish(msg3, result3.set)
+	result3 := pub.publish(msg3)
 
 	wantErrMsg := "maximum allowed size is MaxPublishMessageBytes"
 	result1.validateResult(partition, 0)
 	result2.validateErrorMsg(wantErrMsg)
 	result3.validateError(ErrServiceStopped)
 
-	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorHasMsg(gotErr, wantErrMsg) {
+	if gotErr := pub.finalError(); !test.ErrorHasMsg(gotErr, wantErrMsg) {
 		t.Errorf("Publisher final err: (%v), want msg: %v", gotErr, wantErrMsg)
 	}
 }
@@ -759,18 +748,14 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 	stream.Push(msgPubReq(msg3), msgPubResp(5), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	pub := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result1 := newPublishResultReceiver(t)
-	result2 := newPublishResultReceiver(t)
-	result3 := newPublishResultReceiver(t)
-
-	pub.Publish(msg1, result1.set)
-	pub.Publish(msg2, result2.set)
-	pub.Publish(msg3, result3.set)
+	result1 := pub.publish(msg1)
+	result2 := pub.publish(msg2)
+	result3 := pub.publish(msg3)
 	close(block)
 
 	result1.validateResult(partition, 4)
@@ -778,7 +763,7 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 	wantMsg := "server returned publish response with inconsistent start offset"
 	result2.validateErrorMsg(wantMsg)
 	result3.validateErrorMsg(wantMsg)
-	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorHasMsg(gotErr, wantMsg) {
+	if gotErr := pub.finalError(); !test.ErrorHasMsg(gotErr, wantMsg) {
 		t.Errorf("Publisher final err: (%v), want msg: %q", gotErr, wantMsg)
 	}
 }
@@ -798,17 +783,16 @@ func TestPartitionPublisherInvalidServerPublishResponse(t *testing.T) {
 	stream.Push(msgPubReq(msg), initPubResp(), nil)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	pub := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result := newPublishResultReceiver(t)
-	pub.Publish(msg, result.set)
+	result := pub.publish(msg)
 
 	wantErr := errInvalidMsgPubResponse
 	result.validateError(wantErr)
-	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorEqual(gotErr, wantErr) {
+	if gotErr := pub.finalError(); !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, wantErr)
 	}
 }
@@ -833,22 +817,17 @@ func TestPartitionPublisherFlushMessages(t *testing.T) {
 	stream.Push(msgPubReq(msg3), nil, finalErr)
 	mockServer.AddPublishStream(topic.String(), partition, stream)
 
-	pub, started, terminated := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
-	if gotErr := pubStartError(pub, started, terminated); gotErr != nil {
+	pub := newTestPartitionPublisher(t, topic, partition, defaultTestPublishSettings)
+	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	result1 := newPublishResultReceiver(t)
-	result2 := newPublishResultReceiver(t)
-	result3 := newPublishResultReceiver(t)
-	result4 := newPublishResultReceiver(t)
-
-	pub.Publish(msg1, result1.set)
-	pub.Publish(msg2, result2.set)
-	pub.Publish(msg3, result3.set)
-	pub.Stop()
+	result1 := pub.publish(msg1)
+	result2 := pub.publish(msg2)
+	result3 := pub.publish(msg3)
+	pub.pub.Stop()
 	close(block)
-	pub.Publish(msg4, result4.set)
+	result4 := pub.publish(msg4)
 
 	// First 2 messages should be allowed to complete.
 	result1.validateResult(partition, 5)
@@ -860,7 +839,7 @@ func TestPartitionPublisherFlushMessages(t *testing.T) {
 	// immediately with ErrServiceStopped.
 	result4.validateError(ErrServiceStopped)
 
-	if gotErr := pubFinalError(t, pub, terminated); !test.ErrorEqual(gotErr, finalErr) {
+	if gotErr := pub.finalError(); !test.ErrorEqual(gotErr, finalErr) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, finalErr)
 	}
 }

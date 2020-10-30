@@ -343,7 +343,7 @@ func TestSubscribe(t *testing.T) {
 
 	settings := DefaultReceiveSettings
 	settings.MaxOutstandingMessages = 20
-	subscriber := newPartitionSubscriber(ctx, subsClient, cursorClient, settings, subscription, partition)
+	subscriber := newSinglePartitionSubscriber(ctx, subsClient, cursorClient, settings, subscription, partition)
 
 	subscriber.Start()
 	if err := subscriber.WaitStarted(); err != nil {
@@ -360,30 +360,4 @@ func TestSubscribe(t *testing.T) {
 
 	subscriber.Stop()
 	subscriber.WaitStopped()
-
-	/*
-		cursorClient, err := newCursorClient(ctx, region)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		acks := newAckTracker()
-		committer := newCommitter(ctx, cursorClient, subscription, partition, acks)
-		committer.Start()
-
-		onAcked := func(a *ackReceiver) {
-			acks.Pop()
-		}
-		ack1 := newAckReceiver(10, 1000, onAcked)
-		acks.Push(ack1)
-		ack2 := newAckReceiver(50, 1000, onAcked)
-		acks.Push(ack2)
-
-		time.Sleep(2 * time.Second)
-		ack1.Ack()
-		time.Sleep(2 * time.Second)
-		ack2.Ack()
-		time.Sleep(2 * time.Second)
-		committer.Stop()
-		time.Sleep(2 * time.Second)*/
 }

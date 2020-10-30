@@ -15,7 +15,6 @@ package pubsublite
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"reflect"
 	"sync"
@@ -131,7 +130,6 @@ func (rs *retryableStream) Send(request interface{}) (sent bool) {
 
 	if rs.stream != nil {
 		err := rs.stream.SendMsg(request)
-		fmt.Printf("Send: %v %v\n", request, err)
 		// Note: if SendMsg returns an error, the stream is aborted.
 		switch {
 		case err == nil:
@@ -302,7 +300,6 @@ func (rs *retryableStream) listen(recvStream grpc.ClientStream) {
 	for {
 		response := reflect.New(rs.responseType).Interface()
 		err := recvStream.RecvMsg(response)
-		fmt.Printf("Recv: %v %v\n", response, err)
 
 		// If the current stream has changed while listening, any errors or messages
 		// received now are obsolete. Discard and end the goroutine. Assume the

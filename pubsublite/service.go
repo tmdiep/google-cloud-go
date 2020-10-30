@@ -246,6 +246,7 @@ func (pt *periodicTask) Start(period time.Duration, task func()) {
 }
 
 func (pt *periodicTask) Resume() {
+	pt.task()
 	pt.ticker.Reset(pt.period)
 }
 

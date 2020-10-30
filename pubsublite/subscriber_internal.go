@@ -25,7 +25,9 @@ import (
 )
 
 var (
+	errServerNoMessages                = errors.New("pubsublite: server delivered no messages")
 	errInvalidInitialSubscribeResponse = errors.New("pubsublite: first response from server was not an initial response for subscribe")
+	errInvalidSubscribeResponse        = errors.New("pubsublite: received invalid subscribe response from server")
 	errDuplicateReceive                = errors.New("pubsublite: already called Receive for subscriber")
 )
 
@@ -115,6 +117,13 @@ func (s *wireSubscriber) onStreamStatusChange(status streamStatus) {
 	switch status {
 	case streamConnected:
 		s.unsafeUpdateStatus(serviceActive, nil)
+		if seekReq := s.offsetTracker.RequestForRestart(); seekReq != nil {
+			req := &pb.SubscribeRequest{
+				Request: &pb.SubscribeRequest_Seek{Seek: seekReq},
+			}
+			s.stream.Send(req)
+		}
+		// Else allow flow?? Needs to go through flow controller
 
 	case streamReconnecting:
 
@@ -123,41 +132,59 @@ func (s *wireSubscriber) onStreamStatusChange(status streamStatus) {
 	}
 }
 
+// Subscriber
+// - Owns flow controller
+// - Allow flow, batch and periodically send flow control tokern
+// - Manage stream reconnection - seek when reconnecting
+
 func (s *wireSubscriber) onResponse(response interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	processResponse := func() error {
 		subscribeResponse, _ := response.(*pb.SubscribeResponse)
-		if subscribeResponse.GetMessages() != nil {
-			// TODO: goroutine? Needs to be sync
-			// Handle zero messages
-			// Subtract from flow control
-			// Update current msg offset
-			msgs := subscribeResponse.GetMessages().Messages
-			if len(msgs) > 0 {
-				s.receiver(msgs)
-			}
+		switch {
+		case subscribeResponse.GetMessages() != nil:
+			return s.onMessageResponse(subscribeResponse.GetMessages())
+		case subscribeResponse.GetSeek() != nil:
+			return s.onSeekResponse(subscribeResponse.GetSeek())
+		default:
+			return errInvalidSubscribeResponse
 		}
-		return nil
 	}
 	if err := processResponse(); err != nil {
 		s.unsafeInitiateShutdown(serviceTerminated, err)
 	}
 }
 
+func (s *wireSubscriber) onMessageResponse(response *pb.MessageResponse) error {
+	// TODO: Subtract from flow control
+	if len(response.Messages) == 0 {
+		return errServerNoMessages
+	}
+	if err := s.offsetTracker.Update(response.Messages); err != nil {
+		return err
+	}
+	s.receiver(response.Messages)
+	return nil
+}
+
+func (s *wireSubscriber) onSeekResponse(response *pb.SeekResponse) error {
+	// TODO: Send flow control for restart
+	return nil
+}
+
 func (s *wireSubscriber) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
 	if !s.unsafeUpdateStatus(targetStatus, err) {
 		return
 	}
-
-	// Otherwise immediately terminate the stream.
+	// No data to send. Immediately terminate the stream.
 	s.stream.Stop()
 }
 
 type messageReceiverFunc func(*pb.SequencedMessage, *ackReplyConsumer)
 
-type partitionSubscriber struct {
+type singlePartitionSubscriber struct {
 	settings ReceiveSettings
 
 	// Have their own mutexes.
@@ -170,10 +197,10 @@ type partitionSubscriber struct {
 	compositeService
 }
 
-func newPartitionSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, cursorClient *vkit.CursorClient, settings ReceiveSettings, subscription SubscriptionPath, partition int) *partitionSubscriber {
+func newSinglePartitionSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, cursorClient *vkit.CursorClient, settings ReceiveSettings, subscription SubscriptionPath, partition int) *singlePartitionSubscriber {
 	acks := newAckTracker()
 	commit := newCommitter(ctx, cursorClient, settings, subscription, partition, acks)
-	ps := &partitionSubscriber{
+	ps := &singlePartitionSubscriber{
 		settings:  settings,
 		committer: commit,
 		acks:      acks,
@@ -185,7 +212,7 @@ func newPartitionSubscriber(ctx context.Context, subsClient *vkit.SubscriberClie
 	return ps
 }
 
-func (ps *partitionSubscriber) Receive(receiver messageReceiverFunc) error {
+func (ps *singlePartitionSubscriber) Receive(receiver messageReceiverFunc) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -201,33 +228,18 @@ func (ps *partitionSubscriber) Receive(receiver messageReceiverFunc) error {
 	return nil
 }
 
-func (ps *partitionSubscriber) onMessages(messages []*pb.SequencedMessage) {
+func (ps *singlePartitionSubscriber) onMessages(messages []*pb.SequencedMessage) {
 	// Package the message to send upstream
 	for _, msg := range messages {
 		ack := newAckReplyConsumer(msg.GetCursor().GetOffset(), msg.GetSizeBytes(), ps.onAck)
-		ps.acks.Push(ack)
+		ps.acks.Push(ack) // TODO: handle error
 		ps.receiver(msg, ack)
 	}
 }
 
-func (ps *partitionSubscriber) onAck(ar *ackReplyConsumer) {
+func (ps *singlePartitionSubscriber) onAck(ar *ackReplyConsumer) {
 	ps.acks.Pop()
 	ps.subscriber.AllowFlow(1, ar.MsgBytes)
 }
 
-// TODO: pause receiving
-
-// When message received from stream:
-// - create ack receivers
-// - add ack recv to ack tracker
-// - forward msg, ack receiver to next layer up
-
-// When acked
-// - pop the ack tracker,
-// - refill flow controller
-
-// Subscriber
-// - Owns flow controller
-// - Allow flow, batch and periodically send flow control tokers
-// - Manage stream reconnection
-// - Owns receive offset
+// TODO: cancel receiving

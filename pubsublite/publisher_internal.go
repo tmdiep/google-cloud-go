@@ -80,7 +80,7 @@ func (b *publishBatch) ToPublishRequest() *pb.PublishRequest {
 	}
 }
 
-// partitionPublisher publishes messages to a single topic partition.
+// singlePartitionPublisher publishes messages to a single topic partition.
 //
 // The life of a successfully published message is as follows:
 // - Publish() receives the message from the user.
@@ -99,7 +99,7 @@ func (b *publishBatch) ToPublishRequest() *pb.PublishRequest {
 //
 // Capitalized methods are safe to call from multiple goroutines. All other
 // methods are private implementation.
-type partitionPublisher struct {
+type singlePartitionPublisher struct {
 	// Immutable after creation.
 	pubClient  *vkit.PublisherClient
 	topic      TopicPath
@@ -121,8 +121,8 @@ type partitionPublisher struct {
 	abstractService
 }
 
-func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic TopicPath, partition int) *partitionPublisher {
-	publisher := &partitionPublisher{
+func newSinglePartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic TopicPath, partition int) *singlePartitionPublisher {
+	publisher := &singlePartitionPublisher{
 		pubClient: pubClient,
 		topic:     topic,
 		partition: partition,
@@ -157,64 +157,64 @@ func newPartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient,
 }
 
 // Start attempts to establish a publish stream connection.
-func (p *partitionPublisher) Start() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.stream.Start()
+func (pp *singlePartitionPublisher) Start() {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+	pp.stream.Start()
 }
 
 // Stop initiates shutdown of the publisher. All pending messages are flushed.
-func (p *partitionPublisher) Stop() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.unsafeInitiateShutdown(serviceTerminating, nil)
+func (pp *singlePartitionPublisher) Stop() {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+	pp.unsafeInitiateShutdown(serviceTerminating, nil)
 }
 
 // Publish publishes a pub/sub message.
-func (p *partitionPublisher) Publish(msg *pb.PubSubMessage, onResult publishResultFunc) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (pp *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onResult publishResultFunc) {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
 
 	processMessage := func() error {
 		msgSize := proto.Size(msg)
-		err := p.unsafeCheckServiceStatus()
+		err := pp.unsafeCheckServiceStatus()
 		switch {
 		case err != nil:
 			return err
 		case msgSize > MaxPublishMessageBytes:
 			return fmt.Errorf("pubsublite: serialized message size is %d bytes, maximum allowed size is MaxPublishMessageBytes (%d)", msgSize, MaxPublishMessageBytes)
-		case msgSize > p.availableBufferBytes:
+		case msgSize > pp.availableBufferBytes:
 			return ErrOverflow
 		}
 
 		holder := &messageHolder{msg: msg, size: msgSize, onResult: onResult}
-		if err := p.msgBundler.Add(holder, msgSize); err != nil {
+		if err := pp.msgBundler.Add(holder, msgSize); err != nil {
 			// As we've already checked the size of the message and overflow, the
 			// bundler should not return an error.
 			return fmt.Errorf("pubsublite: failed to batch message: %v", err)
 		}
-		p.availableBufferBytes -= msgSize
+		pp.availableBufferBytes -= msgSize
 		return nil
 	}
 
 	// If the new message cannot be published, flush pending messages and then
 	// terminate the stream.
 	if err := processMessage(); err != nil {
-		p.unsafeInitiateShutdown(serviceTerminating, err)
+		pp.unsafeInitiateShutdown(serviceTerminating, err)
 		onResult(nil, err)
 	}
 	return
 }
 
-func (p *partitionPublisher) newStream(ctx context.Context) (grpc.ClientStream, error) {
-	return p.pubClient.Publish(addTopicRoutingMetadata(ctx, p.topic, p.partition))
+func (pp *singlePartitionPublisher) newStream(ctx context.Context) (grpc.ClientStream, error) {
+	return pp.pubClient.Publish(addTopicRoutingMetadata(ctx, pp.topic, pp.partition))
 }
 
-func (p *partitionPublisher) initialRequest() interface{} {
-	return p.initialReq
+func (pp *singlePartitionPublisher) initialRequest() interface{} {
+	return pp.initialReq
 }
 
-func (p *partitionPublisher) validateInitialResponse(response interface{}) error {
+func (pp *singlePartitionPublisher) validateInitialResponse(response interface{}) error {
 	pubResponse, _ := response.(*pb.PublishResponse)
 	if pubResponse.GetInitialResponse() == nil {
 		return errInvalidInitialPubResponse
@@ -222,93 +222,93 @@ func (p *partitionPublisher) validateInitialResponse(response interface{}) error
 	return nil
 }
 
-func (p *partitionPublisher) onStreamStatusChange(status streamStatus) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (pp *singlePartitionPublisher) onStreamStatusChange(status streamStatus) {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
 
 	switch status {
 	case streamReconnecting:
 		// This prevents handleBatch() from sending any new batches to the stream
 		// before we've had a chance to send the queued batches below.
-		p.enableSendToStream = false
+		pp.enableSendToStream = false
 
 	case streamConnected:
-		p.unsafeUpdateStatus(serviceActive, nil)
+		pp.unsafeUpdateStatus(serviceActive, nil)
 
 		// To ensure messages are sent in order, we should send everything in
 		// publishQueue to the stream immediately after reconnecting, before any new
 		// batches.
 		reenableSend := true
-		for elem := p.publishQueue.Front(); elem != nil; elem = elem.Next() {
+		for elem := pp.publishQueue.Front(); elem != nil; elem = elem.Next() {
 			if batch, ok := elem.Value.(*publishBatch); ok {
 				// If an error occurs during send, the gRPC stream will close and the
 				// retryableStream will transition to `streamReconnecting` or
 				// `streamTerminated`.
-				if !p.stream.Send(batch.ToPublishRequest()) {
+				if !pp.stream.Send(batch.ToPublishRequest()) {
 					reenableSend = false
 					break
 				}
 			}
 		}
-		p.enableSendToStream = reenableSend
+		pp.enableSendToStream = reenableSend
 
 	case streamTerminated:
-		p.unsafeInitiateShutdown(serviceTerminated, p.stream.Error())
+		pp.unsafeInitiateShutdown(serviceTerminated, pp.stream.Error())
 	}
 }
 
 // handleBatch is the bundler's handler func.
-func (p *partitionPublisher) handleBatch(messages []*messageHolder) {
+func (pp *singlePartitionPublisher) handleBatch(messages []*messageHolder) {
 	if len(messages) == 0 {
 		// This should not occur.
 		return
 	}
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
 
 	batch := &publishBatch{msgHolders: messages}
-	p.publishQueue.PushBack(batch)
+	pp.publishQueue.PushBack(batch)
 
-	if p.enableSendToStream {
+	if pp.enableSendToStream {
 		// Note: if the stream is reconnecting, the entire publish queue will be
 		// sent to the stream in order once the connection has been established.
-		p.stream.Send(batch.ToPublishRequest())
+		pp.stream.Send(batch.ToPublishRequest())
 	}
 }
 
-func (p *partitionPublisher) onResponse(response interface{}) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (pp *singlePartitionPublisher) onResponse(response interface{}) {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
 
 	processResponse := func() error {
 		pubResponse, _ := response.(*pb.PublishResponse)
 		if pubResponse.GetMessageResponse() == nil {
 			return errInvalidMsgPubResponse
 		}
-		frontElem := p.publishQueue.Front()
+		frontElem := pp.publishQueue.Front()
 		if frontElem == nil {
 			return errPublishQueueEmpty
 		}
 		firstOffset := pubResponse.GetMessageResponse().GetStartCursor().GetOffset()
-		if firstOffset < p.minExpectedNextOffset {
-			return fmt.Errorf("pubsublite: server returned publish response with inconsistent start offset = %d, expected >= %d", firstOffset, p.minExpectedNextOffset)
+		if firstOffset < pp.minExpectedNextOffset {
+			return fmt.Errorf("pubsublite: server returned publish response with inconsistent start offset = %d, expected >= %d", firstOffset, pp.minExpectedNextOffset)
 		}
 
 		batch, _ := frontElem.Value.(*publishBatch)
 		for i, msgHolder := range batch.msgHolders {
-			pm := &publishMetadata{partition: p.partition, offset: firstOffset + int64(i)}
+			pm := &publishMetadata{partition: pp.partition, offset: firstOffset + int64(i)}
 			msgHolder.onResult(pm, nil)
-			p.availableBufferBytes += msgHolder.size
+			pp.availableBufferBytes += msgHolder.size
 		}
 
-		p.minExpectedNextOffset = firstOffset + int64(len(batch.msgHolders))
-		p.publishQueue.Remove(frontElem)
-		p.unsafeCheckDone()
+		pp.minExpectedNextOffset = firstOffset + int64(len(batch.msgHolders))
+		pp.publishQueue.Remove(frontElem)
+		pp.unsafeCheckDone()
 		return nil
 	}
 	if err := processResponse(); err != nil {
-		p.unsafeInitiateShutdown(serviceTerminated, err)
+		pp.unsafeInitiateShutdown(serviceTerminated, err)
 	}
 }
 
@@ -328,51 +328,51 @@ func (p *partitionPublisher) onResponse(response interface{}) {
 //   - An inconsistency is detected in the server's publish responses. Assume
 //     there is a bug on the server and terminate the publisher, as correct
 //     processing of messages cannot be guaranteed.
-func (p *partitionPublisher) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
-	if !p.unsafeUpdateStatus(targetStatus, err) {
+func (pp *singlePartitionPublisher) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
+	if !pp.unsafeUpdateStatus(targetStatus, err) {
 		return
 	}
 
 	// Close the stream if this is an immediate shutdown. Otherwise leave it open
 	// to send pending messages.
 	if targetStatus == serviceTerminated {
-		p.enableSendToStream = false
-		p.stream.Stop()
+		pp.enableSendToStream = false
+		pp.stream.Stop()
 	}
 
 	// msgBundler.Flush invokes handleBatch() in a goroutine and blocks.
 	// handleBatch() also acquires the mutex, so it cannot be held here.
 	// Updating the publisher status above prevents any new messages from being
 	// added to the bundler after flush.
-	p.mu.Unlock()
-	p.msgBundler.Flush()
-	p.mu.Lock()
+	pp.mu.Unlock()
+	pp.msgBundler.Flush()
+	pp.mu.Lock()
 
 	// If flushing pending messages, close the stream if there's nothing left to
 	// publish.
 	if targetStatus == serviceTerminating {
-		p.unsafeCheckDone()
+		pp.unsafeCheckDone()
 		return
 	}
 
 	// Otherwise set the error message for all pending messages and clear the
 	// publish queue.
-	for elem := p.publishQueue.Front(); elem != nil; elem = elem.Next() {
+	for elem := pp.publishQueue.Front(); elem != nil; elem = elem.Next() {
 		if batch, ok := elem.Value.(*publishBatch); ok {
 			for _, msgHolder := range batch.msgHolders {
 				msgHolder.onResult(nil, err)
 			}
 		}
 	}
-	p.publishQueue.Init()
+	pp.publishQueue.Init()
 }
 
-// unsafeCheckDone must be called with partitionPublisher.mu held.
-func (p *partitionPublisher) unsafeCheckDone() {
+// unsafeCheckDone must be called with singlePartitionPublisher.mu held.
+func (pp *singlePartitionPublisher) unsafeCheckDone() {
 	// If a shutdown was in progress, close the stream once all queued messages
 	// have been published.
-	if p.status == serviceTerminating && p.publishQueue.Len() == 0 {
-		p.stream.Stop()
+	if pp.status == serviceTerminating && pp.publishQueue.Len() == 0 {
+		pp.stream.Stop()
 	}
 }
 
@@ -385,7 +385,7 @@ type routingPublisher struct {
 	settings  PublishSettings
 
 	msgRouter  messageRouter
-	publishers map[int]*partitionPublisher
+	publishers map[int]*singlePartitionPublisher
 
 	compositeService
 }
@@ -414,7 +414,7 @@ func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings 
 		topic:      topic,
 		settings:   settings,
 		msgRouter:  msgRouter,
-		publishers: make(map[int]*partitionPublisher),
+		publishers: make(map[int]*singlePartitionPublisher),
 	}
 	pub.init()
 	return pub, nil
@@ -457,7 +457,7 @@ func (rp *routingPublisher) initPublishers() bool {
 	}
 
 	for i := 0; i < partitionCount; i++ {
-		pub := newPartitionPublisher(rp.ctx, rp.pubClient, rp.settings, rp.topic, i)
+		pub := newSinglePartitionPublisher(rp.ctx, rp.pubClient, rp.settings, rp.topic, i)
 		rp.publishers[i] = pub
 		rp.unsafeAddServices(pub)
 	}
@@ -466,7 +466,7 @@ func (rp *routingPublisher) initPublishers() bool {
 	return true
 }
 
-func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*partitionPublisher, error) {
+func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*singlePartitionPublisher, error) {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 

@@ -18,9 +18,17 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
-var errOutOfOrderMessages = errors.New("pubsublite: messages are out of order")
+var (
+	errServerOutOfOrderMessages     = errors.New("pubsublite: server delivered messages out of order")
+	errOutOfOrderMessages           = errors.New("pubsublite: messages are out of order")
+	errTokenCounterDeltaNegative    = errors.New("pubsublite: flow control delta must not be negative")
+	errTokenCounterBytesNegative    = errors.New("pubsublite: received messages that account for more bytes than were requested")
+	errTokenCounterMessagesNegative = errors.New("pubsublite: received more messages than were requested")
+)
 
 // Represents an uninitialized cursor offset.
 const nilCursorOffset int64 = -1
@@ -230,11 +238,93 @@ func (ct *committedCursorTracker) Done() bool {
 	return ct.pendingOffsets.Len() == 0
 }
 
-// It is only used by the subscriber.
+// subscriberOffsetTracker tracks the offset of the last message received from
+// the server and ensures messages are delivered in order. It is only used by
+// the wireSubscriber.
 type subscriberOffsetTracker struct {
-	nextOffset int64
+	lastOffset int64
 }
 
 func newSubscriberOffsetTracker() *subscriberOffsetTracker {
-	return &subscriberOffsetTracker{nextOffset: nilCursorOffset}
+	return &subscriberOffsetTracker{lastOffset: nilCursorOffset}
+}
+
+// Returns the seek request to send when a new subscribe stream reconnects. May
+// be nil.
+func (ot *subscriberOffsetTracker) RequestForRestart() *pb.SeekRequest {
+	if ot.lastOffset == nilCursorOffset {
+		return nil
+	}
+	return &pb.SeekRequest{
+		Target: &pb.SeekRequest_Cursor{
+			Cursor: &pb.Cursor{Offset: ot.lastOffset + 1},
+		},
+	}
+}
+
+func (ot *subscriberOffsetTracker) Update(msgs []*pb.SequencedMessage) error {
+	last := ot.lastOffset
+	for i, msg := range msgs {
+		offset := msg.GetCursor().GetOffset()
+		if offset <= last {
+			if i == 0 {
+				return fmt.Errorf("pubsublite: server delivered messages with start offset = %d, expected >= %d", offset, ot.lastOffset+1)
+			}
+			return errServerOutOfOrderMessages
+		}
+		last = offset
+	}
+	return nil
+}
+
+type tokenCounter struct {
+	Bytes    int64
+	Messages int64
+}
+
+func (tc *tokenCounter) Add(deltaBytes, deltaMsgs int64) error {
+	if deltaBytes < 0 || deltaMsgs < 0 {
+		// This should not occurr.
+		return errTokenCounterDeltaNegative
+	}
+	// TODO: handle overflow?
+	tc.Bytes += deltaBytes
+	tc.Messages += deltaMsgs
+	return nil
+}
+
+func (tc *tokenCounter) Sub(deltaBytes, deltaMsgs int64) error {
+	if deltaBytes < 0 || deltaMsgs < 0 {
+		// This should not occur.
+		return errTokenCounterDeltaNegative
+	}
+	if deltaBytes > tc.Bytes {
+		return errTokenCounterBytesNegative
+	}
+	if deltaMsgs > tc.Messages {
+		return errTokenCounterMessagesNegative
+	}
+	tc.Bytes -= deltaBytes
+	tc.Messages -= deltaMsgs
+	return nil
+}
+
+func (tc *tokenCounter) Reset() {
+	tc.Bytes = 0
+	tc.Messages = 0
+}
+
+func (tc *tokenCounter) ToFlowControlRequest() *pb.FlowControlRequest {
+	return &pb.FlowControlRequest{
+		AllowedBytes:    tc.Bytes,
+		AllowedMessages: tc.Messages,
+	}
+}
+
+type flowControlBatcher struct {
+	// The current amount of outstanding byte and message flow control tokens.
+	clientTokens tokenCounter
+	// The pending aggregate flow control request that needs to be sent to the
+	// stream.
+	pendingTokens tokenCounter
 }

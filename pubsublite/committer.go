@@ -26,6 +26,8 @@ import (
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
+// TODO: Expedite commits?
+
 var (
 	errInvalidInitialCommitResponse = errors.New("pubsublite: first response from server was not an initial response for streaming commit")
 	errInvalidCommitResponse        = errors.New("pubsublite: received invalid commit response from server")
