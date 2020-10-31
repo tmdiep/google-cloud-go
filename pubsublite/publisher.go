@@ -15,9 +15,8 @@ package pubsublite
 
 import (
 	"context"
-	"math/rand"
-	"time"
 
+	"cloud.google.com/go/pubsublite/internal/wire"
 	"google.golang.org/api/option"
 
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
@@ -51,7 +50,7 @@ func (r *PublishResult) Get(ctx context.Context) (serverID string, err error) {
 	}
 }
 
-func (r *PublishResult) set(pm *publishMetadata, err error) {
+func (r *PublishResult) set(pm *wire.PublishMetadata, err error) {
 	r.serverID = pm.String()
 	r.err = err
 	close(r.ready)
@@ -65,7 +64,7 @@ func newPublishResult() *PublishResult {
 // topic.
 type PublisherClient struct {
 	settings PublishSettings
-	pub      *routingPublisher
+	pub      wire.Publisher
 }
 
 // NewPublisherClient creates a new Cloud Pub/Sub Lite client to publish
@@ -73,8 +72,12 @@ type PublisherClient struct {
 // See https://cloud.google.com/pubsub/lite/docs/publishing for more information
 // about publishing.
 func NewPublisherClient(ctx context.Context, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) (*PublisherClient, error) {
-	msgRouter := newDefaultMessageRouter(rand.New(rand.NewSource(time.Now().UnixNano())))
-	pub, err := newRoutingPublisher(ctx, msgRouter, settings, topic, opts...)
+	region, err := ZoneToRegion(topic.Zone)
+	if err != nil {
+		return nil, err
+	}
+	// TODO: Validate and convert the publish settings.
+	pub, err := wire.NewPublisher(ctx, wire.DefaultPublishSettings, region, topic.String(), opts...)
 	if err != nil {
 		return nil, err
 	}

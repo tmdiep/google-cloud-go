@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 
-package pubsublite
+package wire
 
 import (
 	"fmt"
@@ -246,7 +246,6 @@ func (pt *periodicTask) Start(period time.Duration, task func()) {
 }
 
 func (pt *periodicTask) Resume() {
-	pt.task()
 	pt.ticker.Reset(pt.period)
 }
 

@@ -11,19 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 
-package pubsublite
+package wire
 
 import (
 	"fmt"
 	"math/rand"
 	"testing"
-	"time"
 
 	"cloud.google.com/go/pubsublite/internal/test"
-	"github.com/golang/protobuf/proto"
-
-	tspb "github.com/golang/protobuf/ptypes/timestamp"
-	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 type fakeMsgRouter struct {
@@ -37,76 +32,6 @@ func (f *fakeMsgRouter) SetPartitionCount(count int) {
 
 func (f *fakeMsgRouter) Route(orderingKey []byte) int {
 	return f.partitionCount * f.multiplier
-}
-
-func TestTransformPublishedMessage(t *testing.T) {
-	for _, tc := range []struct {
-		desc         string
-		keyExtractor KeyExtractorFunc
-		msg          *Message
-		want         *pb.PubSubMessage
-	}{
-		{
-			desc:         "valid: minimal",
-			keyExtractor: extractOrderingKey,
-			msg: &Message{
-				Data: []byte("Hello world"),
-			},
-			want: &pb.PubSubMessage{
-				Data: []byte("Hello world"),
-			},
-		},
-		{
-			desc: "valid: override key extractor",
-			keyExtractor: func(msg *Message) []byte {
-				return msg.Data
-			},
-			msg: &Message{
-				Data:        []byte("Hello world"),
-				OrderingKey: "IGNORED",
-			},
-			want: &pb.PubSubMessage{
-				Data: []byte("Hello world"),
-				Key:  []byte("Hello world"),
-			},
-		},
-		{
-			desc:         "valid: filled",
-			keyExtractor: extractOrderingKey,
-			msg: &Message{
-				Data: []byte("foo"),
-				Attributes: map[string]AttributeValues{
-					"attr": []string{"val1", "val2"},
-				},
-				EventTime:   time.Unix(1555593697, 154358*1000),
-				OrderingKey: "order",
-			},
-			want: &pb.PubSubMessage{
-				Data: []byte("foo"),
-				Attributes: map[string]*pb.AttributeValues{
-					"attr": {
-						Values: [][]byte{
-							[]byte("val1"), []byte("val2"),
-						},
-					},
-				},
-				EventTime: &tspb.Timestamp{
-					Seconds: 1555593697,
-					Nanos:   154358 * 1000,
-				},
-				Key: []byte("order"),
-			},
-		},
-	} {
-		t.Run(tc.desc, func(t *testing.T) {
-			got, err := transformPublishedMessage(tc.msg, tc.keyExtractor)
-			if err != nil {
-				t.Errorf("toProto() err = %v", err)
-			} else if !proto.Equal(got, tc.want) {
-				t.Errorf("toProto() got = %v\nwant = %v", got, tc.want)
-			}
-		})
-	}
 }
 
 func TestRoundRobinMsgRouter(t *testing.T) {

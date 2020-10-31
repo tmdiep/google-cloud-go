@@ -27,7 +27,6 @@ import (
 	"google.golang.org/api/option"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
-	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 const gibi = 1 << 30
@@ -319,45 +318,4 @@ func TestPublish(t *testing.T) {
 		}
 		fmt.Printf("Published a message with a message ID: %s\n", id)
 	}
-}
-
-func TestSubscribe(t *testing.T) {
-	initIntegrationTest(t)
-
-	ctx := context.Background()
-	proj := testutil.ProjID()
-	zone := "us-central1-b"
-	region, _ := ZoneToRegion(zone)
-	resourceID := "go-publish-test"
-	subscription := SubscriptionPath{Project: proj, Zone: zone, SubscriptionID: resourceID}
-	partition := 0
-
-	subsClient, err := newSubscriberClient(ctx, region)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cursorClient, err := newCursorClient(ctx, region)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	settings := DefaultReceiveSettings
-	settings.MaxOutstandingMessages = 20
-	subscriber := newSinglePartitionSubscriber(ctx, subsClient, cursorClient, settings, subscription, partition)
-
-	subscriber.Start()
-	if err := subscriber.WaitStarted(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-
-	receive := func(msg *pb.SequencedMessage, ack *ackReplyConsumer) {
-		fmt.Printf("Got msg: %v\n", msg)
-		ack.Ack()
-	}
-	subscriber.Receive(receive)
-
-	time.Sleep(5 * time.Second)
-
-	subscriber.Stop()
-	subscriber.WaitStopped()
 }

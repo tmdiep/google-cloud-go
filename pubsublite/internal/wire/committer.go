@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 
-package pubsublite
+package wire
 
 import (
 	"context"
@@ -39,8 +39,6 @@ const commitCursorPeriod = 50 * time.Millisecond
 type committer struct {
 	// Immutable after creation.
 	cursorClient *vkit.CursorClient
-	subscription SubscriptionPath
-	partition    int
 	initialReq   *pb.StreamingCommitCursorRequest
 
 	// Fields below must be guarded with mutex.
@@ -52,16 +50,14 @@ type committer struct {
 	abstractService
 }
 
-func newCommitter(ctx context.Context, cursor *vkit.CursorClient, settings ReceiveSettings, subs SubscriptionPath, partition int, acks *ackTracker) *committer {
+func newCommitter(ctx context.Context, cursor *vkit.CursorClient, settings ReceiveSettings, subscription subscriptionPartition, acks *ackTracker) *committer {
 	commit := &committer{
 		cursorClient: cursor,
-		subscription: subs,
-		partition:    partition,
 		initialReq: &pb.StreamingCommitCursorRequest{
 			Request: &pb.StreamingCommitCursorRequest_Initial{
 				Initial: &pb.InitialCommitCursorRequest{
-					Subscription: subs.String(),
-					Partition:    int64(partition),
+					Subscription: subscription.path,
+					Partition:    int64(subscription.partition),
 				},
 			},
 		},

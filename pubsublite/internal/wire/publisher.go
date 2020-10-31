@@ -11,14 +11,16 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 
-package pubsublite
+package wire
 
 import (
 	"container/list"
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"reflect"
+	"time"
 
 	"github.com/golang/protobuf/proto"
 	"google.golang.org/api/option"
@@ -35,28 +37,41 @@ var (
 	errPublishQueueEmpty         = errors.New("pubsublite: received publish response from server with no batches in flight")
 )
 
-// publishMetadata holds the results of a published message.
-type publishMetadata struct {
-	partition int
-	offset    int64
-	err       error
+// PublishMetadata holds the results of a published message.
+type PublishMetadata struct {
+	Partition int
+	Offset    int64
 }
 
-func (pm *publishMetadata) String() string {
-	if pm.err != nil {
-		return ""
-	}
-	return fmt.Sprintf("%d:%d", pm.partition, pm.offset)
+func (pm *PublishMetadata) String() string {
+	return fmt.Sprintf("%d:%d", pm.Partition, pm.Offset)
 }
 
-// publishResultFunc receives the result of a publish.
-type publishResultFunc func(*publishMetadata, error)
+// PublishResultFunc receives the result of a publish.
+type PublishResultFunc func(*PublishMetadata, error)
+
+// Publisher is the client interface exported from this package for publishing
+// messages.
+type Publisher interface {
+	Publish(*pb.PubSubMessage, PublishResultFunc)
+
+	Start()
+	WaitStarted() error
+	Stop()
+	WaitStopped() error
+}
+
+// NewPublisher creates a new client for publishing messages.
+func NewPublisher(ctx context.Context, settings PublishSettings, region, topicPath string, opts ...option.ClientOption) (Publisher, error) {
+	msgRouter := newDefaultMessageRouter(rand.New(rand.NewSource(time.Now().UnixNano())))
+	return newRoutingPublisher(ctx, msgRouter, settings, region, topicPath, opts...)
+}
 
 // messageHolder stores a message to be published, with associated metadata.
 type messageHolder struct {
 	msg      *pb.PubSubMessage
 	size     int
-	onResult publishResultFunc
+	onResult PublishResultFunc
 }
 
 // publishBatch holds messages that are published in the same
@@ -102,8 +117,7 @@ func (b *publishBatch) ToPublishRequest() *pb.PublishRequest {
 type singlePartitionPublisher struct {
 	// Immutable after creation.
 	pubClient  *vkit.PublisherClient
-	topic      TopicPath
-	partition  int
+	topic      topicPartition
 	initialReq *pb.PublishRequest
 
 	// Fields below must be guarded with mutex.
@@ -121,16 +135,15 @@ type singlePartitionPublisher struct {
 	abstractService
 }
 
-func newSinglePartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic TopicPath, partition int) *singlePartitionPublisher {
+func newSinglePartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic topicPartition) *singlePartitionPublisher {
 	publisher := &singlePartitionPublisher{
 		pubClient: pubClient,
 		topic:     topic,
-		partition: partition,
 		initialReq: &pb.PublishRequest{
 			RequestType: &pb.PublishRequest_InitialRequest{
 				InitialRequest: &pb.InitialPublishRequest{
-					Topic:     topic.String(),
-					Partition: int64(partition),
+					Topic:     topic.path,
+					Partition: int64(topic.partition),
 				},
 			},
 		},
@@ -171,7 +184,7 @@ func (pp *singlePartitionPublisher) Stop() {
 }
 
 // Publish publishes a pub/sub message.
-func (pp *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onResult publishResultFunc) {
+func (pp *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onResult PublishResultFunc) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
 
@@ -207,7 +220,7 @@ func (pp *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onResult publ
 }
 
 func (pp *singlePartitionPublisher) newStream(ctx context.Context) (grpc.ClientStream, error) {
-	return pp.pubClient.Publish(addTopicRoutingMetadata(ctx, pp.topic, pp.partition))
+	return pp.pubClient.Publish(addTopicRoutingMetadata(ctx, pp.topic))
 }
 
 func (pp *singlePartitionPublisher) initialRequest() interface{} {
@@ -297,7 +310,7 @@ func (pp *singlePartitionPublisher) onResponse(response interface{}) {
 
 		batch, _ := frontElem.Value.(*publishBatch)
 		for i, msgHolder := range batch.msgHolders {
-			pm := &publishMetadata{partition: pp.partition, offset: firstOffset + int64(i)}
+			pm := &PublishMetadata{Partition: pp.topic.partition, Offset: firstOffset + int64(i)}
 			msgHolder.onResult(pm, nil)
 			pp.availableBufferBytes += msgHolder.size
 		}
@@ -380,8 +393,8 @@ type routingPublisher struct {
 	// Immutable after creation.
 	ctx       context.Context
 	pubClient *vkit.PublisherClient
-	admin     *AdminClient
-	topic     TopicPath
+	admin     *vkit.AdminClient
+	topicPath string
 	settings  PublishSettings
 
 	msgRouter  messageRouter
@@ -390,14 +403,7 @@ type routingPublisher struct {
 	compositeService
 }
 
-func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) (*routingPublisher, error) {
-	if err := validatePublishSettings(settings); err != nil {
-		return nil, err
-	}
-	region, err := ZoneToRegion(topic.Zone)
-	if err != nil {
-		return nil, err
-	}
+func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings PublishSettings, region, topicPath string, opts ...option.ClientOption) (*routingPublisher, error) {
 	pubClient, err := newPublisherClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err
@@ -411,7 +417,7 @@ func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings 
 		ctx:        ctx,
 		pubClient:  pubClient,
 		admin:      admin,
-		topic:      topic,
+		topicPath:  topicPath,
 		settings:   settings,
 		msgRouter:  msgRouter,
 		publishers: make(map[int]*singlePartitionPublisher),
@@ -427,7 +433,7 @@ func (rp *routingPublisher) Start() {
 	}
 }
 
-func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onResult publishResultFunc) {
+func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onResult PublishResultFunc) {
 	pub, err := rp.routeToPublisher(msg)
 	if err != nil {
 		onResult(nil, err)
@@ -445,11 +451,12 @@ func (rp *routingPublisher) initPublishers() bool {
 		return false
 	}
 
-	partitionCount, err := rp.admin.TopicPartitions(rp.ctx, rp.topic)
+	partitions, err := rp.admin.GetTopicPartitions(rp.ctx, &pb.GetTopicPartitionsRequest{Name: rp.topicPath})
 	if err != nil {
 		rp.unsafeUpdateStatus(serviceTerminated, err)
 		return false
 	}
+	partitionCount := int(partitions.GetPartitionCount())
 	if partitionCount <= 0 {
 		err := fmt.Errorf("pubsublite: topic has invalid number of partitions %d", partitionCount)
 		rp.unsafeUpdateStatus(serviceTerminated, err)
@@ -457,7 +464,7 @@ func (rp *routingPublisher) initPublishers() bool {
 	}
 
 	for i := 0; i < partitionCount; i++ {
-		pub := newSinglePartitionPublisher(rp.ctx, rp.pubClient, rp.settings, rp.topic, i)
+		pub := newSinglePartitionPublisher(rp.ctx, rp.pubClient, rp.settings, topicPartition{rp.topicPath, i})
 		rp.publishers[i] = pub
 		rp.unsafeAddServices(pub)
 	}

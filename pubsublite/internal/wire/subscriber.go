@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 
-package pubsublite
+package wire
 
 import (
 	"context"
@@ -37,7 +37,7 @@ type wireMessagesReceiverFunc func([]*pb.SequencedMessage)
 type wireSubscriber struct {
 	// Immutable after creation.
 	subsClient   *vkit.SubscriberClient
-	subscription SubscriptionPath
+	subscription subscriptionPartition
 	partition    int
 	initialReq   *pb.SubscribeRequest
 	receiver     wireMessagesReceiverFunc
@@ -49,16 +49,15 @@ type wireSubscriber struct {
 	abstractService
 }
 
-func newWireSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, settings ReceiveSettings, subs SubscriptionPath, partition int, receiver wireMessagesReceiverFunc) *wireSubscriber {
+func newWireSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, settings ReceiveSettings, subscription subscriptionPartition, receiver wireMessagesReceiverFunc) *wireSubscriber {
 	subscriber := &wireSubscriber{
 		subsClient:   subsClient,
-		subscription: subs,
-		partition:    partition,
+		subscription: subscription,
 		initialReq: &pb.SubscribeRequest{
 			Request: &pb.SubscribeRequest_Initial{
 				Initial: &pb.InitialSubscribeRequest{
-					Subscription: subs.String(),
-					Partition:    int64(partition),
+					Subscription: subscription.path,
+					Partition:    int64(subscription.partition),
 				},
 			},
 		},
@@ -82,7 +81,7 @@ func (s *wireSubscriber) Stop() {
 }
 
 func (s *wireSubscriber) newStream(ctx context.Context) (grpc.ClientStream, error) {
-	return s.subsClient.Subscribe(addSubscriptionRoutingMetadata(ctx, s.subscription, s.partition))
+	return s.subsClient.Subscribe(addSubscriptionRoutingMetadata(ctx, s.subscription))
 }
 
 func (s *wireSubscriber) initialRequest() interface{} {
@@ -197,15 +196,15 @@ type singlePartitionSubscriber struct {
 	compositeService
 }
 
-func newSinglePartitionSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, cursorClient *vkit.CursorClient, settings ReceiveSettings, subscription SubscriptionPath, partition int) *singlePartitionSubscriber {
+func newSinglePartitionSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, cursorClient *vkit.CursorClient, settings ReceiveSettings, subscription subscriptionPartition) *singlePartitionSubscriber {
 	acks := newAckTracker()
-	commit := newCommitter(ctx, cursorClient, settings, subscription, partition, acks)
+	commit := newCommitter(ctx, cursorClient, settings, subscription, acks)
 	ps := &singlePartitionSubscriber{
 		settings:  settings,
 		committer: commit,
 		acks:      acks,
 	}
-	subs := newWireSubscriber(ctx, subsClient, settings, subscription, partition, ps.onMessages)
+	subs := newWireSubscriber(ctx, subsClient, settings, subscription, ps.onMessages)
 	ps.subscriber = subs
 	ps.init()
 	ps.unsafeAddServices(subs, commit)
