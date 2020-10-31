@@ -142,8 +142,8 @@ func newSinglePartitionPublisher(ctx context.Context, pubClient *vkit.PublisherC
 		initialReq: &pb.PublishRequest{
 			RequestType: &pb.PublishRequest_InitialRequest{
 				InitialRequest: &pb.InitialPublishRequest{
-					Topic:     topic.path,
-					Partition: int64(topic.partition),
+					Topic:     topic.Path,
+					Partition: int64(topic.Partition),
 				},
 			},
 		},
@@ -310,7 +310,7 @@ func (pp *singlePartitionPublisher) onResponse(response interface{}) {
 
 		batch, _ := frontElem.Value.(*publishBatch)
 		for i, msgHolder := range batch.msgHolders {
-			pm := &PublishMetadata{Partition: pp.topic.partition, Offset: firstOffset + int64(i)}
+			pm := &PublishMetadata{Partition: pp.topic.Partition, Offset: firstOffset + int64(i)}
 			msgHolder.onResult(pm, nil)
 			pp.availableBufferBytes += msgHolder.size
 		}
@@ -391,13 +391,14 @@ func (pp *singlePartitionPublisher) unsafeCheckDone() {
 
 type routingPublisher struct {
 	// Immutable after creation.
-	ctx       context.Context
-	pubClient *vkit.PublisherClient
-	admin     *vkit.AdminClient
-	topicPath string
-	settings  PublishSettings
+	ctx         context.Context
+	pubClient   *vkit.PublisherClient
+	adminClient *vkit.AdminClient
+	topicPath   string
+	settings    PublishSettings
+	msgRouter   messageRouter
 
-	msgRouter  messageRouter
+	// Fields below must be guarded with mutex.
 	publishers map[int]*singlePartitionPublisher
 
 	compositeService
@@ -408,19 +409,19 @@ func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings 
 	if err != nil {
 		return nil, err
 	}
-	admin, err := NewAdminClient(ctx, region, opts...)
+	adminClient, err := NewAdminClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err
 	}
 
 	pub := &routingPublisher{
-		ctx:        ctx,
-		pubClient:  pubClient,
-		admin:      admin,
-		topicPath:  topicPath,
-		settings:   settings,
-		msgRouter:  msgRouter,
-		publishers: make(map[int]*singlePartitionPublisher),
+		ctx:         ctx,
+		pubClient:   pubClient,
+		adminClient: adminClient,
+		topicPath:   topicPath,
+		settings:    settings,
+		msgRouter:   msgRouter,
+		publishers:  make(map[int]*singlePartitionPublisher),
 	}
 	pub.init()
 	return pub, nil
@@ -451,7 +452,7 @@ func (rp *routingPublisher) initPublishers() bool {
 		return false
 	}
 
-	partitions, err := rp.admin.GetTopicPartitions(rp.ctx, &pb.GetTopicPartitionsRequest{Name: rp.topicPath})
+	partitions, err := rp.adminClient.GetTopicPartitions(rp.ctx, &pb.GetTopicPartitionsRequest{Name: rp.topicPath})
 	if err != nil {
 		rp.unsafeUpdateStatus(serviceTerminated, err)
 		return false

@@ -14,11 +14,11 @@
 package wire
 
 type topicPartition struct {
-	path      string
-	partition int
+	Path      string
+	Partition int
 }
 
 type subscriptionPartition struct {
-	path      string
-	partition int
+	Path      string
+	Partition int
 }

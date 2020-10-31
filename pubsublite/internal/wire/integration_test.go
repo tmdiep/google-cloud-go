@@ -17,11 +17,10 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"testing"
-	"time"
 
 	"cloud.google.com/go/internal/testutil"
-
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
@@ -45,38 +44,73 @@ func TestSubscribe(t *testing.T) {
 	proj := testutil.ProjID()
 	zone := "us-central1-b"
 	region := "us-central1"
-	resourceID := "go-publish-test"
-	subscription := subscriptionPartition{
-		path:      fmt.Sprintf("projects/%s/locations/%s/subscriptions/%s", proj, zone, resourceID),
-		partition: 0,
+	resourceID := "go-publish-test-4"
+	topicPath := fmt.Sprintf("projects/%s/locations/%s/topics/%s", proj, zone, resourceID)
+	subscriptionPath := fmt.Sprintf("projects/%s/locations/%s/subscriptions/%s", proj, zone, resourceID)
+	numMessages := 20
+
+	adminClient, err := NewAdminClient(ctx, region)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	subsClient, err := newSubscriberClient(ctx, region)
+	partitions, err := adminClient.GetTopicPartitions(ctx, &pb.GetTopicPartitionsRequest{Name: topicPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cursorClient, err := newCursorClient(ctx, region)
+
+	pubSettings := DefaultPublishSettings
+	publisher, err := NewPublisher(ctx, pubSettings, region, topicPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	publisher.Start()
+	if err := publisher.WaitStarted(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	published := func(pm *PublishMetadata, err error) {
+		fmt.Printf("Published msg: %s, %v\n", pm, err)
+	}
+
+	for i := 0; i < numMessages; i++ {
+		publisher.Publish(&pb.PubSubMessage{Data: []byte(fmt.Sprintf("%d", i))}, published)
+	}
+
+	publisher.Stop()
+	publisher.WaitStopped()
 
 	settings := DefaultReceiveSettings
-	settings.MaxOutstandingMessages = 20
-	subscriber := newSinglePartitionSubscriber(ctx, subsClient, cursorClient, settings, subscription)
+	settings.MaxOutstandingMessages = 8
+	for i := 0; i < int(partitions.GetPartitionCount()); i++ {
+		settings.Partitions = append(settings.Partitions, i)
+	}
+	subscriber, err := NewSubscriber(ctx, settings, region, subscriptionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	subscriber.Start()
 	if err := subscriber.WaitStarted(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	receive := func(msg *pb.SequencedMessage, ack *ackReplyConsumer) {
-		fmt.Printf("Got msg: %v\n", msg)
+	var wg sync.WaitGroup
+	wg.Add(numMessages)
+	receive := func(msg *pb.SequencedMessage, ack *AckConsumer) {
+		wg.Done()
+		fmt.Printf("Received: offset=%d, data=%s\n", msg.GetCursor().GetOffset(), string(msg.GetMessage().GetData()))
 		ack.Ack()
 	}
-	subscriber.Receive(receive)
+	if err := subscriber.Receive(receive); err != nil {
+		t.Fatal(err)
+	}
 
-	time.Sleep(5 * time.Second)
+	wg.Wait()
+	//time.Sleep(5 * time.Second)
 
+	fmt.Println("Stopping")
 	subscriber.Stop()
 	subscriber.WaitStopped()
 }

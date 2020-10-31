@@ -195,8 +195,6 @@ func (cs *compositeService) unsafeUpdateStatus(targetStatus serviceStatus, err e
 }
 
 func (cs *compositeService) onServiceStatusChange(handle *abstractService, status serviceStatus, err error) {
-	//fmt.Printf("receiving %d, %v\n", status, err)
-
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
@@ -232,16 +230,25 @@ func (cs *compositeService) onServiceStatusChange(handle *abstractService, statu
 }
 
 type periodicTask struct {
-	period time.Duration
-	ticker *time.Ticker
-	stop   chan struct{}
-	task   func()
+	period  time.Duration
+	ticker  *time.Ticker
+	stop    chan struct{}
+	stopped bool
+	task    func()
+	name    string
 }
 
-func (pt *periodicTask) Start(period time.Duration, task func()) {
-	pt.ticker = time.NewTicker(period)
-	pt.stop = make(chan struct{})
-	pt.task = task
+func newPeriodicTask(period time.Duration, task func(), name string) *periodicTask {
+	return &periodicTask{
+		ticker: time.NewTicker(period),
+		stop:   make(chan struct{}),
+		period: period,
+		task:   task,
+		name:   name,
+	}
+}
+
+func (pt *periodicTask) Start() {
 	go pt.poll()
 }
 
@@ -255,15 +262,19 @@ func (pt *periodicTask) Pause() {
 
 // Stop permanently stops the periodic task.
 func (pt *periodicTask) Stop() {
-	close(pt.stop)
+	// Prevent a panic if the stop channel has already been stopped.
+	if !pt.stopped {
+		close(pt.stop)
+		pt.stopped = true
+	}
 }
 
 func (pt *periodicTask) poll() {
-	fmt.Printf("Started: %v\n", time.Now())
+	fmt.Printf("periodicTask(%s).Started: %v\n", pt.name, time.Now())
 	for {
 		select {
 		case <-pt.stop:
-			fmt.Printf("Stopped: %v\n", time.Now())
+			fmt.Printf("periodicTask(%s).Stopped: %v\n", pt.name, time.Now())
 			// Ends the goroutine.
 			return
 		case <-pt.ticker.C:

@@ -69,6 +69,7 @@ type ReceiveSettings struct {
 	MaxOutstandingMessages int
 	MaxOutstandingBytes    int
 	Timeout                time.Duration
+	Partitions             []int
 }
 
 // DefaultReceiveSettings holds the default values for ReceiveSettings.

@@ -179,8 +179,8 @@ func initPubReq(topic topicPartition) *pb.PublishRequest {
 	return &pb.PublishRequest{
 		RequestType: &pb.PublishRequest_InitialRequest{
 			InitialRequest: &pb.InitialPublishRequest{
-				Topic:     topic.path,
-				Partition: int64(topic.partition),
+				Topic:     topic.Path,
+				Partition: int64(topic.Partition),
 			},
 		},
 	}
@@ -224,7 +224,7 @@ func TestPartitionPublisherStartOnce(t *testing.T) {
 
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 	defer pub.stopVerifyFinalError()
@@ -246,7 +246,7 @@ func TestPartitionPublisherStartStop(t *testing.T) {
 
 	stream := test.NewRPCVerifier(t)
 	block := stream.PushWithBlock(initPubReq(topic), initPubResp(), nil)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 
@@ -277,7 +277,7 @@ func TestPartitionPublisherStopAbortsRetries(t *testing.T) {
 	// Unavailable is a retryable error, but the stream should not be retried
 	// because the publisher is stopped.
 	block := stream.PushWithBlock(initPubReq(topic), initPubResp(), status.Error(codes.Unavailable, ""))
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 
@@ -307,16 +307,16 @@ func TestPartitionPublisherConnectRetries(t *testing.T) {
 	// First 2 errors are retryable.
 	stream1 := test.NewRPCVerifier(t)
 	stream1.Push(initPubReq(topic), nil, status.Error(codes.Unavailable, "server unavailable"))
-	mockServer.AddPublishStream(topic.path, topic.partition, stream1)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream1)
 
 	stream2 := test.NewRPCVerifier(t)
 	stream2.Push(initPubReq(topic), nil, status.Error(codes.Aborted, "aborted"))
-	mockServer.AddPublishStream(topic.path, topic.partition, stream2)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream2)
 
 	// Third stream should succeed.
 	stream3 := test.NewRPCVerifier(t)
 	stream3.Push(initPubReq(topic), initPubResp(), nil)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream3)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream3)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 	defer pub.stopVerifyFinalError()
@@ -337,7 +337,7 @@ func TestPartitionPublisherConnectPermanentFailure(t *testing.T) {
 	// cannot start.
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), nil, permErr)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 
@@ -361,7 +361,7 @@ func TestPartitionPublisherConnectTimeout(t *testing.T) {
 
 	stream := test.NewRPCVerifier(t)
 	block := stream.PushWithBlock(initPubReq(topic), nil, wantErr)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, settings)
 
@@ -388,7 +388,7 @@ func TestPartitionPublisherInvalidInitialResponse(t *testing.T) {
 	// a permanent failure (bug on the server).
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), msgPubResp(0), nil)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 
@@ -413,7 +413,7 @@ func TestPartitionPublisherSpuriousPublishResponse(t *testing.T) {
 	// published, the client treats this as a permanent failure (bug on the
 	// server).
 	block := stream.PushWithBlock(nil, msgPubResp(0), nil)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 	if gotErr := pub.startError(); gotErr != nil {
@@ -456,7 +456,7 @@ func TestPartitionPublisherBatching(t *testing.T) {
 	stream.Push(msgPubReq(msg1, msg2, msg3), msgPubResp(0), nil)
 	stream.Push(msgPubReq(msg4), msgPubResp(3), nil)
 	stream.Push(msgPubReq(msg5, msg6, msg7), msgPubResp(45), nil)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, settings)
 	if gotErr := pub.startError(); gotErr != nil {
@@ -477,13 +477,13 @@ func TestPartitionPublisherBatching(t *testing.T) {
 	// Stop flushes pending messages.
 	pub.pub.Stop()
 
-	result1.validateResult(topic.partition, 0)
-	result2.validateResult(topic.partition, 1)
-	result3.validateResult(topic.partition, 2)
-	result4.validateResult(topic.partition, 3)
-	result5.validateResult(topic.partition, 45)
-	result6.validateResult(topic.partition, 46)
-	result7.validateResult(topic.partition, 47)
+	result1.validateResult(topic.Partition, 0)
+	result2.validateResult(topic.Partition, 1)
+	result3.validateResult(topic.Partition, 2)
+	result4.validateResult(topic.Partition, 3)
+	result5.validateResult(topic.Partition, 45)
+	result6.validateResult(topic.Partition, 46)
+	result7.validateResult(topic.Partition, 47)
 
 	if gotErr := pub.finalError(); gotErr != nil {
 		t.Errorf("Publisher final err: (%v), want: <nil>", gotErr)
@@ -508,7 +508,7 @@ func TestPartitionPublisherBatchingDelay(t *testing.T) {
 	stream.Push(initPubReq(topic), initPubResp(), nil)
 	stream.Push(msgPubReq(msg1), msgPubResp(0), nil)
 	stream.Push(msgPubReq(msg2), msgPubResp(1), nil)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, settings)
 	defer pub.stopVerifyFinalError()
@@ -520,8 +520,8 @@ func TestPartitionPublisherBatchingDelay(t *testing.T) {
 	time.Sleep(settings.DelayThreshold * 2)
 	result2 := pub.publish(msg2)
 
-	result1.validateResult(topic.partition, 0)
-	result2.validateResult(topic.partition, 1)
+	result1.validateResult(topic.Partition, 0)
+	result2.validateResult(topic.Partition, 1)
 }
 
 func TestPartitionPublisherResendMessages(t *testing.T) {
@@ -538,7 +538,7 @@ func TestPartitionPublisherResendMessages(t *testing.T) {
 	stream1 := test.NewRPCVerifier(t)
 	stream1.Push(initPubReq(topic), initPubResp(), nil)
 	stream1.Push(msgPubReq(msg1), nil, status.Error(codes.Aborted, "server aborted"))
-	mockServer.AddPublishStream(topic.path, topic.partition, stream1)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream1)
 
 	// The publisher should re-send pending messages to the second stream.
 	stream2 := test.NewRPCVerifier(t)
@@ -546,7 +546,7 @@ func TestPartitionPublisherResendMessages(t *testing.T) {
 	stream2.Push(msgPubReq(msg1), msgPubResp(0), nil)
 	stream2.Push(msgPubReq(msg2), msgPubResp(1), nil)
 	stream2.Push(msgPubReq(msg3), msgPubResp(2), nil)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream2)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream2)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 	defer pub.stopVerifyFinalError()
@@ -556,11 +556,11 @@ func TestPartitionPublisherResendMessages(t *testing.T) {
 
 	result1 := pub.publish(msg1)
 	result2 := pub.publish(msg2)
-	result1.validateResult(topic.partition, 0)
-	result2.validateResult(topic.partition, 1)
+	result1.validateResult(topic.Partition, 0)
+	result2.validateResult(topic.Partition, 1)
 
 	result3 := pub.publish(msg3)
-	result3.validateResult(topic.partition, 2)
+	result3.validateResult(topic.Partition, 2)
 }
 
 func TestPartitionPublisherPublishPermanentError(t *testing.T) {
@@ -578,7 +578,7 @@ func TestPartitionPublisherPublishPermanentError(t *testing.T) {
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
 	stream.Push(msgPubReq(msg1), nil, permError)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 	if gotErr := pub.startError(); gotErr != nil {
@@ -615,7 +615,7 @@ func TestPartitionPublisherBufferOverflow(t *testing.T) {
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
 	block := stream.PushWithBlock(msgPubReq(msg1), msgPubResp(0), nil)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, settings)
 	if gotErr := pub.startError(); gotErr != nil {
@@ -633,7 +633,7 @@ func TestPartitionPublisherBufferOverflow(t *testing.T) {
 	// message is ErrServiceStopped.
 	result3 := pub.publish(msg3)
 
-	result1.validateResult(topic.partition, 0)
+	result1.validateResult(topic.Partition, 0)
 	result2.validateError(ErrOverflow)
 	result3.validateError(ErrServiceStopped)
 
@@ -657,7 +657,7 @@ func TestPartitionPublisherBufferRefill(t *testing.T) {
 	stream.Push(initPubReq(topic), initPubResp(), nil)
 	stream.Push(msgPubReq(msg1), msgPubResp(0), nil)
 	stream.Push(msgPubReq(msg2), msgPubResp(1), nil)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, settings)
 	defer pub.stopVerifyFinalError()
@@ -666,10 +666,10 @@ func TestPartitionPublisherBufferRefill(t *testing.T) {
 	}
 
 	result1 := pub.publish(msg1)
-	result1.validateResult(topic.partition, 0)
+	result1.validateResult(topic.Partition, 0)
 
 	result2 := pub.publish(msg2)
-	result2.validateResult(topic.partition, 1)
+	result2.validateResult(topic.Partition, 1)
 }
 
 func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
@@ -685,7 +685,7 @@ func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
 	block := stream.PushWithBlock(msgPubReq(msg1), msgPubResp(0), nil)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 	if gotErr := pub.startError(); gotErr != nil {
@@ -703,7 +703,7 @@ func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
 	result3 := pub.publish(msg3)
 
 	wantErrMsg := "maximum allowed size is MaxPublishMessageBytes"
-	result1.validateResult(topic.partition, 0)
+	result1.validateResult(topic.Partition, 0)
 	result2.validateErrorMsg(wantErrMsg)
 	result3.validateError(ErrServiceStopped)
 
@@ -729,7 +729,7 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 	// publisher to fail permanently (bug on the server).
 	stream.Push(msgPubReq(msg2), msgPubResp(4), nil)
 	stream.Push(msgPubReq(msg3), msgPubResp(5), nil)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 	if gotErr := pub.startError(); gotErr != nil {
@@ -741,7 +741,7 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 	result3 := pub.publish(msg3)
 	close(block)
 
-	result1.validateResult(topic.partition, 4)
+	result1.validateResult(topic.Partition, 4)
 
 	wantMsg := "server returned publish response with inconsistent start offset"
 	result2.validateErrorMsg(wantMsg)
@@ -764,7 +764,7 @@ func TestPartitionPublisherInvalidServerPublishResponse(t *testing.T) {
 	// Server sends duplicate initial publish response, which causes the publisher
 	// to fail permanently (bug on the server).
 	stream.Push(msgPubReq(msg), initPubResp(), nil)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 	if gotErr := pub.startError(); gotErr != nil {
@@ -797,7 +797,7 @@ func TestPartitionPublisherFlushMessages(t *testing.T) {
 	block := stream.PushWithBlock(msgPubReq(msg1), msgPubResp(5), nil)
 	stream.Push(msgPubReq(msg2), msgPubResp(6), nil)
 	stream.Push(msgPubReq(msg3), nil, finalErr)
-	mockServer.AddPublishStream(topic.path, topic.partition, stream)
+	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 	if gotErr := pub.startError(); gotErr != nil {
@@ -812,8 +812,8 @@ func TestPartitionPublisherFlushMessages(t *testing.T) {
 	result4 := pub.publish(msg4)
 
 	// First 2 messages should be allowed to complete.
-	result1.validateResult(topic.partition, 5)
-	result2.validateResult(topic.partition, 6)
+	result1.validateResult(topic.Partition, 5)
+	result2.validateResult(topic.Partition, 6)
 	// Third message failed with a server error, which should result in the
 	// publisher terminating with an error.
 	result3.validateError(finalErr)

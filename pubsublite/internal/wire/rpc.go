@@ -146,7 +146,7 @@ func newPartitionAssignmentClient(ctx context.Context, region string, opts ...op
 func addTopicRoutingMetadata(ctx context.Context, topic topicPartition) context.Context {
 	md, _ := metadata.FromOutgoingContext(ctx)
 	md = md.Copy()
-	val := fmt.Sprintf("partition=%d&topic=%s", topic.partition, url.QueryEscape(topic.path))
+	val := fmt.Sprintf("partition=%d&topic=%s", topic.Partition, url.QueryEscape(topic.Path))
 	md[routingMetadataHeader] = append(md[routingMetadataHeader], val)
 	return metadata.NewOutgoingContext(ctx, md)
 }
@@ -154,7 +154,7 @@ func addTopicRoutingMetadata(ctx context.Context, topic topicPartition) context.
 func addSubscriptionRoutingMetadata(ctx context.Context, subscription subscriptionPartition) context.Context {
 	md, _ := metadata.FromOutgoingContext(ctx)
 	md = md.Copy()
-	val := fmt.Sprintf("partition=%d&subscription=%s", subscription.partition, url.QueryEscape(subscription.path))
+	val := fmt.Sprintf("partition=%d&subscription=%s", subscription.Partition, url.QueryEscape(subscription.Path))
 	md[routingMetadataHeader] = append(md[routingMetadataHeader], val)
 	return metadata.NewOutgoingContext(ctx, md)
 }

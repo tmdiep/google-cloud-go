@@ -26,8 +26,6 @@ import (
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
-// TODO: Expedite commits?
-
 var (
 	errInvalidInitialCommitResponse = errors.New("pubsublite: first response from server was not an initial response for streaming commit")
 	errInvalidCommitResponse        = errors.New("pubsublite: received invalid commit response from server")
@@ -45,26 +43,27 @@ type committer struct {
 	stream *retryableStream
 
 	cursorTracker *committedCursorTracker
-	pollCommits   periodicTask
+	pollCommits   *periodicTask
 
 	abstractService
 }
 
 func newCommitter(ctx context.Context, cursor *vkit.CursorClient, settings ReceiveSettings, subscription subscriptionPartition, acks *ackTracker) *committer {
-	commit := &committer{
+	c := &committer{
 		cursorClient: cursor,
 		initialReq: &pb.StreamingCommitCursorRequest{
 			Request: &pb.StreamingCommitCursorRequest_Initial{
 				Initial: &pb.InitialCommitCursorRequest{
-					Subscription: subscription.path,
-					Partition:    int64(subscription.partition),
+					Subscription: subscription.Path,
+					Partition:    int64(subscription.Partition),
 				},
 			},
 		},
 		cursorTracker: newCommittedCursorTracker(acks),
 	}
-	commit.stream = newRetryableStream(ctx, commit, settings.Timeout, reflect.TypeOf(pb.StreamingCommitCursorResponse{}))
-	return commit
+	c.stream = newRetryableStream(ctx, c, settings.Timeout, reflect.TypeOf(pb.StreamingCommitCursorResponse{}))
+	c.pollCommits = newPeriodicTask(commitCursorPeriod, c.commitOffsetToStream, "pollCommits")
+	return c
 }
 
 func (c *committer) Start() {
@@ -72,7 +71,7 @@ func (c *committer) Start() {
 	defer c.mu.Unlock()
 
 	c.stream.Start()
-	c.pollCommits.Start(commitCursorPeriod, c.commitOffsetToStream)
+	c.pollCommits.Start()
 }
 
 func (c *committer) Stop() {
@@ -184,6 +183,7 @@ func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error
 
 func (c *committer) unsafeCheckDone() {
 	if c.status == serviceTerminating && c.cursorTracker.Done() {
+		c.pollCommits.Stop()
 		c.stream.Stop()
 	}
 }

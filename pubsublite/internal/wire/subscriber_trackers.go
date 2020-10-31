@@ -25,7 +25,6 @@ import (
 var (
 	errServerOutOfOrderMessages     = errors.New("pubsublite: server delivered messages out of order")
 	errOutOfOrderMessages           = errors.New("pubsublite: messages are out of order")
-	errTokenCounterDeltaNegative    = errors.New("pubsublite: flow control delta must not be negative")
 	errTokenCounterBytesNegative    = errors.New("pubsublite: received messages that account for more bytes than were requested")
 	errTokenCounterMessagesNegative = errors.New("pubsublite: received more messages than were requested")
 )
@@ -34,12 +33,12 @@ var (
 const nilCursorOffset int64 = -1
 
 // ackedFunc is invoked when a message has been acked by the user.
-type ackedFunc func(*ackReplyConsumer)
+type ackedFunc func(*AckConsumer)
 
-// ackReplyConsumer is used for handling message acks. It is attached to a
+// AckConsumer is used for handling message acks. It is attached to a
 // Message and also stored within the subscriber client for tracking until the
 // message has been acked by the server.
-type ackReplyConsumer struct {
+type AckConsumer struct {
 	// The message offset.
 	Offset int64
 	// Bytes released to the flow controller once the message has been acked.
@@ -51,41 +50,41 @@ type ackReplyConsumer struct {
 	onAck ackedFunc
 }
 
-func newAckReplyConsumer(offset, msgBytes int64, onAck ackedFunc) *ackReplyConsumer {
-	return &ackReplyConsumer{Offset: offset, MsgBytes: msgBytes, onAck: onAck}
+func newAckConsumer(offset, msgBytes int64, onAck ackedFunc) *AckConsumer {
+	return &AckConsumer{Offset: offset, MsgBytes: msgBytes, onAck: onAck}
 }
 
-func (ar *ackReplyConsumer) Ack() {
-	ar.mu.Lock()
-	defer ar.mu.Unlock()
+func (ac *AckConsumer) Ack() {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
 
-	if ar.acked {
+	if ac.acked {
 		return
 	}
-	ar.acked = true
-	if ar.onAck != nil {
+	ac.acked = true
+	if ac.onAck != nil {
 		// Don't block the user's goroutine with potentially expensive ack
 		// processing.
-		go ar.onAck(ar)
+		go ac.onAck(ac)
 	}
 }
 
-func (ar *ackReplyConsumer) IsAcked() bool {
-	ar.mu.Lock()
-	defer ar.mu.Unlock()
-	return ar.acked
+func (ac *AckConsumer) IsAcked() bool {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	return ac.acked
 }
 
 // Clear onAck when the ack is obsolete.
-func (ar *ackReplyConsumer) Clear() {
-	ar.mu.Lock()
-	defer ar.mu.Unlock()
-	ar.onAck = nil
+func (ac *AckConsumer) Clear() {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	ac.onAck = nil
 }
 
 // ackTracker manages outstanding message acks, i.e. messages that have been
 // delivered to the user, but not yet acked. It is used by the committer and
-// partitionSubscriber, so requires a mutex.
+// wireSubscriber, so requires a mutex.
 type ackTracker struct {
 	// Guards access to fields below.
 	mu sync.Mutex
@@ -93,7 +92,7 @@ type ackTracker struct {
 	// All offsets before and including this prefix have been acked by the user.
 	ackedPrefixOffset int64
 	// Outstanding message acks, strictly ordered by increasing message offsets.
-	outstandingAcks *list.List // Value = *ackReplyConsumer
+	outstandingAcks *list.List // Value = *AckConsumer
 }
 
 func newAckTracker() *ackTracker {
@@ -111,7 +110,7 @@ func (at *ackTracker) Reset() {
 	defer at.mu.Unlock()
 
 	for elem := at.outstandingAcks.Front(); elem != nil; elem = elem.Next() {
-		ack, _ := elem.Value.(*ackReplyConsumer)
+		ack, _ := elem.Value.(*AckConsumer)
 		ack.Clear()
 	}
 	at.outstandingAcks.Init()
@@ -119,7 +118,7 @@ func (at *ackTracker) Reset() {
 }
 
 // Push adds an outstanding ack to the tracker.
-func (at *ackTracker) Push(ack *ackReplyConsumer) error {
+func (at *ackTracker) Push(ack *AckConsumer) error {
 	at.mu.Lock()
 	defer at.mu.Unlock()
 
@@ -128,7 +127,7 @@ func (at *ackTracker) Push(ack *ackReplyConsumer) error {
 		return errOutOfOrderMessages
 	}
 	if elem := at.outstandingAcks.Back(); elem != nil {
-		lastOutstandingAck, _ := elem.Value.(*ackReplyConsumer)
+		lastOutstandingAck, _ := elem.Value.(*AckConsumer)
 		if ack.Offset <= lastOutstandingAck.Offset {
 			return errOutOfOrderMessages
 		}
@@ -144,7 +143,7 @@ func (at *ackTracker) Pop() {
 	defer at.mu.Unlock()
 
 	for elem := at.outstandingAcks.Front(); elem != nil; elem = elem.Next() {
-		ack, _ := elem.Value.(*ackReplyConsumer)
+		ack, _ := elem.Value.(*AckConsumer)
 		if !ack.IsAcked() {
 			break
 		}
@@ -169,7 +168,7 @@ func (at *ackTracker) CommitOffset() int64 {
 }
 
 // committedCursorTracker tracks pending and last successful committed offsets.
-// It is only used by the committer.
+// It is only accessed by the committer.
 type committedCursorTracker struct {
 	acks *ackTracker
 	// Last offset for which the server acknowledged the commit.
@@ -229,7 +228,7 @@ func (ct *committedCursorTracker) AcknowledgeOffsets(numAcked int64) error {
 		ct.lastConfirmedOffset = extractOffsetFromElem(front)
 		ct.pendingOffsets.Remove(front)
 	}
-	fmt.Printf("LastConfirmedOffset: %d\n", ct.lastConfirmedOffset)
+	//fmt.Printf("lastConfirmedOffset: %d\n", ct.lastConfirmedOffset)
 	return nil
 }
 
@@ -239,8 +238,8 @@ func (ct *committedCursorTracker) Done() bool {
 }
 
 // subscriberOffsetTracker tracks the offset of the last message received from
-// the server and ensures messages are delivered in order. It is only used by
-// the wireSubscriber.
+// the server and ensures messages are delivered in order. It is only accessed
+// by the wireSubscriber.
 type subscriberOffsetTracker struct {
 	lastOffset int64
 }
@@ -262,7 +261,7 @@ func (ot *subscriberOffsetTracker) RequestForRestart() *pb.SeekRequest {
 	}
 }
 
-func (ot *subscriberOffsetTracker) Update(msgs []*pb.SequencedMessage) error {
+func (ot *subscriberOffsetTracker) OnMessages(msgs []*pb.SequencedMessage) error {
 	last := ot.lastOffset
 	for i, msg := range msgs {
 		offset := msg.GetCursor().GetOffset()
@@ -277,35 +276,31 @@ func (ot *subscriberOffsetTracker) Update(msgs []*pb.SequencedMessage) error {
 	return nil
 }
 
+type flowControlTokens struct {
+	Bytes    int64
+	Messages int64
+}
+
 type tokenCounter struct {
 	Bytes    int64
 	Messages int64
 }
 
-func (tc *tokenCounter) Add(deltaBytes, deltaMsgs int64) error {
-	if deltaBytes < 0 || deltaMsgs < 0 {
-		// This should not occurr.
-		return errTokenCounterDeltaNegative
-	}
+func (tc *tokenCounter) Add(delta *flowControlTokens) {
 	// TODO: handle overflow?
-	tc.Bytes += deltaBytes
-	tc.Messages += deltaMsgs
-	return nil
+	tc.Bytes += delta.Bytes
+	tc.Messages += delta.Messages
 }
 
-func (tc *tokenCounter) Sub(deltaBytes, deltaMsgs int64) error {
-	if deltaBytes < 0 || deltaMsgs < 0 {
-		// This should not occur.
-		return errTokenCounterDeltaNegative
-	}
-	if deltaBytes > tc.Bytes {
+func (tc *tokenCounter) Sub(delta *flowControlTokens) error {
+	if delta.Bytes > tc.Bytes {
 		return errTokenCounterBytesNegative
 	}
-	if deltaMsgs > tc.Messages {
+	if delta.Messages > tc.Messages {
 		return errTokenCounterMessagesNegative
 	}
-	tc.Bytes -= deltaBytes
-	tc.Messages -= deltaMsgs
+	tc.Bytes -= delta.Bytes
+	tc.Messages -= delta.Messages
 	return nil
 }
 
@@ -315,16 +310,66 @@ func (tc *tokenCounter) Reset() {
 }
 
 func (tc *tokenCounter) ToFlowControlRequest() *pb.FlowControlRequest {
+	if tc.Bytes <= 0 || tc.Messages <= 0 {
+		return nil
+	}
 	return &pb.FlowControlRequest{
 		AllowedBytes:    tc.Bytes,
 		AllowedMessages: tc.Messages,
 	}
 }
 
+const expediteBatchRequestRatio = 0.5
+
+func exceedsExpediteRatio(pending, client int64) bool {
+	return client > 0 && (float64(pending)/float64(client)) >= expediteBatchRequestRatio
+}
+
+// flowControlBatcher tracks flow control tokens and manages batching of flow
+// control requests to avoid overwhelming the server. It is only accessed by
+// the wireSubscriber.
 type flowControlBatcher struct {
 	// The current amount of outstanding byte and message flow control tokens.
 	clientTokens tokenCounter
 	// The pending aggregate flow control request that needs to be sent to the
 	// stream.
 	pendingTokens tokenCounter
+}
+
+func (fc *flowControlBatcher) OnClientFlowRequest(tokens *flowControlTokens) {
+	fc.clientTokens.Add(tokens)
+	fc.pendingTokens.Add(tokens)
+}
+
+func (fc *flowControlBatcher) OnMessages(msgs []*pb.SequencedMessage) error {
+	var totalBytes int64
+	for _, msg := range msgs {
+		totalBytes += msg.GetSizeBytes()
+	}
+	return fc.clientTokens.Sub(&flowControlTokens{Bytes: totalBytes, Messages: int64(len(msgs))})
+}
+
+// RequestForRestart returns a FlowControlRequest that should be sent when a new
+// subscriber stream is connected. May return nil.
+func (fc *flowControlBatcher) RequestForRestart() *pb.FlowControlRequest {
+	fc.pendingTokens.Reset()
+	return fc.clientTokens.ToFlowControlRequest()
+}
+
+// ReleasePendingRequest returns a non-nil request when there is a batch
+// FlowControlRequest to send to the stream.
+func (fc *flowControlBatcher) ReleasePendingRequest() *pb.FlowControlRequest {
+	req := fc.pendingTokens.ToFlowControlRequest()
+	fc.pendingTokens.Reset()
+	return req
+}
+
+func (fc *flowControlBatcher) ShouldExpediteBatchRequest() bool {
+	if exceedsExpediteRatio(fc.pendingTokens.Bytes, fc.clientTokens.Bytes) {
+		return true
+	}
+	if exceedsExpediteRatio(fc.pendingTokens.Messages, fc.clientTokens.Messages) {
+		return true
+	}
+	return false
 }
