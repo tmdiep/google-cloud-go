@@ -63,8 +63,23 @@ type Publisher interface {
 
 // NewPublisher creates a new client for publishing messages.
 func NewPublisher(ctx context.Context, settings PublishSettings, region, topicPath string, opts ...option.ClientOption) (Publisher, error) {
+	pubClient, err := newPublisherClient(ctx, region, opts...)
+	if err != nil {
+		return nil, err
+	}
+	adminClient, err := NewAdminClient(ctx, region, opts...)
+	if err != nil {
+		return nil, err
+	}
+
 	msgRouter := newDefaultMessageRouter(rand.New(rand.NewSource(time.Now().UnixNano())))
-	return newRoutingPublisher(ctx, msgRouter, settings, region, topicPath, opts...)
+	pubFactory := &singlePartitionPublisherFactory{
+		ctx:       ctx,
+		pubClient: pubClient,
+		settings:  settings,
+		topicPath: topicPath,
+	}
+	return newRoutingPublisher(adminClient, msgRouter, pubFactory), nil
 }
 
 // messageHolder stores a message to be published, with associated metadata.
@@ -101,19 +116,16 @@ func (b *publishBatch) ToPublishRequest() *pb.PublishRequest {
 // - Publish() receives the message from the user.
 // - It is added to `msgBundler`, which performs batching in accordance with
 //   user-configured PublishSettings.
-// - handleBatch() receives new message batches from the bundler.
-// - The batch is added to `publishQueue` and sent to the gRPC stream, if
-//   connected. If the stream is currently reconnecting, the entire
-//   `publishQueue` is resent to the stream immediately after it has
-//   reconnected.
+// - handleBatch() receives new message batches from the bundler. The batch is
+//   added to `publishQueue` and sent to the gRPC stream, if connected. If the
+//   stream is currently reconnecting, the entire `publishQueue` is resent to
+//   the stream immediately after it has reconnected within
+//   onStreamStatusChange().
 // - onResponse() receives the first cursor offset for the front batch in
 //   `publishQueue`. It assigns the cursor offsets for each message and
 //   releases the publish result to the user.
 //
 // See comments for unsafeInitiateShutdown() for error scenarios.
-//
-// Capitalized methods are safe to call from multiple goroutines. All other
-// methods are private implementation.
 type singlePartitionPublisher struct {
 	// Immutable after creation.
 	pubClient  *vkit.PublisherClient
@@ -127,46 +139,57 @@ type singlePartitionPublisher struct {
 	msgBundler *bundler.Bundler
 	// FIFO queue of in-flight batches of published messages. Results have not yet
 	// been received from the server.
-	publishQueue          *list.List // Value = *publishBatch
+	publishQueue *list.List // Value = *publishBatch
+	// Used for error checking, to ensure the server returns increasing offsets
+	// for published messages.
 	minExpectedNextOffset int64
-	enableSendToStream    bool
-	availableBufferBytes  int
+	// The buffer size is managed by this publisher rather than the bundler due to
+	// the in-flight publish queue.
+	availableBufferBytes int
+	enableSendToStream   bool
 
 	abstractService
 }
 
-func newSinglePartitionPublisher(ctx context.Context, pubClient *vkit.PublisherClient, settings PublishSettings, topic topicPartition) *singlePartitionPublisher {
-	publisher := &singlePartitionPublisher{
-		pubClient: pubClient,
-		topic:     topic,
+// singlePartitionPublisherFactory creates instances of singlePartitionPublisher
+// for given partition numbers.
+type singlePartitionPublisherFactory struct {
+	ctx       context.Context
+	pubClient *vkit.PublisherClient
+	settings  PublishSettings
+	topicPath string
+}
+
+func (f *singlePartitionPublisherFactory) New(partition int) *singlePartitionPublisher {
+	pp := &singlePartitionPublisher{
+		pubClient: f.pubClient,
+		topic:     topicPartition{Path: f.topicPath, Partition: partition},
 		initialReq: &pb.PublishRequest{
 			RequestType: &pb.PublishRequest_InitialRequest{
 				InitialRequest: &pb.InitialPublishRequest{
-					Topic:     topic.Path,
-					Partition: int64(topic.Partition),
+					Topic:     f.topicPath,
+					Partition: int64(partition),
 				},
 			},
 		},
 		publishQueue:         list.New(),
-		availableBufferBytes: settings.BufferedByteLimit,
+		availableBufferBytes: f.settings.BufferedByteLimit,
 	}
 
 	msgBundler := bundler.NewBundler(&messageHolder{}, func(item interface{}) {
 		msgs, _ := item.([]*messageHolder)
-		publisher.handleBatch(msgs)
+		pp.handleBatch(msgs)
 	})
-	msgBundler.DelayThreshold = settings.DelayThreshold
-	msgBundler.BundleCountThreshold = settings.CountThreshold
-	msgBundler.BundleByteThreshold = settings.ByteThreshold
+	msgBundler.DelayThreshold = f.settings.DelayThreshold
+	msgBundler.BundleCountThreshold = f.settings.CountThreshold
+	msgBundler.BundleByteThreshold = f.settings.ByteThreshold
 	msgBundler.BundleByteLimit = MaxPublishRequestBytes
-	msgBundler.HandlerLimit = 1 // Handle batches serially for ordering
-	// The buffer size is managed by this publisher due to the in-flight publish
-	// queue.
-	msgBundler.BufferedByteLimit = settings.BufferedByteLimit * 10
+	msgBundler.HandlerLimit = 1                                      // Handle batches serially for ordering
+	msgBundler.BufferedByteLimit = f.settings.BufferedByteLimit * 10 // Handled in the publisher
 
-	publisher.msgBundler = msgBundler
-	publisher.stream = newRetryableStream(ctx, publisher, settings.Timeout, reflect.TypeOf(pb.PublishResponse{}))
-	return publisher
+	pp.msgBundler = msgBundler
+	pp.stream = newRetryableStream(f.ctx, pp, f.settings.Timeout, reflect.TypeOf(pb.PublishResponse{}))
+	return pp
 }
 
 // Start attempts to establish a publish stream connection.
@@ -183,7 +206,7 @@ func (pp *singlePartitionPublisher) Stop() {
 	pp.unsafeInitiateShutdown(serviceTerminating, nil)
 }
 
-// Publish publishes a pub/sub message.
+// Publish a pub/sub message.
 func (pp *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onResult PublishResultFunc) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
@@ -211,7 +234,7 @@ func (pp *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onResult Publ
 	}
 
 	// If the new message cannot be published, flush pending messages and then
-	// terminate the stream.
+	// terminate the stream once results are received.
 	if err := processMessage(); err != nil {
 		pp.unsafeInitiateShutdown(serviceTerminating, err)
 		onResult(nil, err)
@@ -284,8 +307,9 @@ func (pp *singlePartitionPublisher) handleBatch(messages []*messageHolder) {
 	pp.publishQueue.PushBack(batch)
 
 	if pp.enableSendToStream {
-		// Note: if the stream is reconnecting, the entire publish queue will be
-		// sent to the stream in order once the connection has been established.
+		// Note: if the underlying stream is reconnecting or Send() fails, the
+		// entire publish queue will be sent to the stream in order once the
+		// connection has been established. Thus the return value is ignored.
 		pp.stream.Send(batch.ToPublishRequest())
 	}
 }
@@ -310,6 +334,7 @@ func (pp *singlePartitionPublisher) onResponse(response interface{}) {
 
 		batch, _ := frontElem.Value.(*publishBatch)
 		for i, msgHolder := range batch.msgHolders {
+			// Messages are ordered, so the offset of each message is firstOffset + i.
 			pm := &PublishMetadata{Partition: pp.topic.Partition, Offset: firstOffset + int64(i)}
 			msgHolder.onResult(pm, nil)
 			pp.availableBufferBytes += msgHolder.size
@@ -392,11 +417,10 @@ func (pp *singlePartitionPublisher) unsafeCheckDone() {
 type routingPublisher struct {
 	// Immutable after creation.
 	ctx         context.Context
-	pubClient   *vkit.PublisherClient
 	adminClient *vkit.AdminClient
-	topicPath   string
-	settings    PublishSettings
 	msgRouter   messageRouter
+	topicPath   string
+	pubFactory  *singlePartitionPublisherFactory
 
 	// Fields below must be guarded with mutex.
 	publishers map[int]*singlePartitionPublisher
@@ -404,27 +428,17 @@ type routingPublisher struct {
 	compositeService
 }
 
-func newRoutingPublisher(ctx context.Context, msgRouter messageRouter, settings PublishSettings, region, topicPath string, opts ...option.ClientOption) (*routingPublisher, error) {
-	pubClient, err := newPublisherClient(ctx, region, opts...)
-	if err != nil {
-		return nil, err
-	}
-	adminClient, err := NewAdminClient(ctx, region, opts...)
-	if err != nil {
-		return nil, err
-	}
-
+func newRoutingPublisher(adminClient *vkit.AdminClient, msgRouter messageRouter, pubFactory *singlePartitionPublisherFactory) *routingPublisher {
 	pub := &routingPublisher{
-		ctx:         ctx,
-		pubClient:   pubClient,
+		ctx:         pubFactory.ctx,
 		adminClient: adminClient,
-		topicPath:   topicPath,
-		settings:    settings,
 		msgRouter:   msgRouter,
+		topicPath:   pubFactory.topicPath,
+		pubFactory:  pubFactory,
 		publishers:  make(map[int]*singlePartitionPublisher),
 	}
 	pub.init()
-	return pub, nil
+	return pub
 }
 
 // No-op if already successfully started.
@@ -452,12 +466,11 @@ func (rp *routingPublisher) initPublishers() bool {
 		return false
 	}
 
-	partitions, err := rp.adminClient.GetTopicPartitions(rp.ctx, &pb.GetTopicPartitionsRequest{Name: rp.topicPath})
+	partitionCount, err := rp.partitionCount()
 	if err != nil {
 		rp.unsafeUpdateStatus(serviceTerminated, err)
 		return false
 	}
-	partitionCount := int(partitions.GetPartitionCount())
 	if partitionCount <= 0 {
 		err := fmt.Errorf("pubsublite: topic has invalid number of partitions %d", partitionCount)
 		rp.unsafeUpdateStatus(serviceTerminated, err)
@@ -465,13 +478,21 @@ func (rp *routingPublisher) initPublishers() bool {
 	}
 
 	for i := 0; i < partitionCount; i++ {
-		pub := newSinglePartitionPublisher(rp.ctx, rp.pubClient, rp.settings, topicPartition{rp.topicPath, i})
+		pub := rp.pubFactory.New(i)
 		rp.publishers[i] = pub
 		rp.unsafeAddServices(pub)
 	}
 
 	rp.msgRouter.SetPartitionCount(partitionCount)
 	return true
+}
+
+func (rp *routingPublisher) partitionCount() (int, error) {
+	partitions, err := rp.adminClient.GetTopicPartitions(rp.ctx, &pb.GetTopicPartitionsRequest{Name: rp.topicPath})
+	if err != nil {
+		return 0, err
+	}
+	return int(partitions.GetPartitionCount()), nil
 }
 
 func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*singlePartitionPublisher, error) {

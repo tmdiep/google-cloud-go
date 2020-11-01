@@ -115,15 +115,20 @@ func newTestPartitionPublisher(t *testing.T, topic topicPartition, settings Publ
 		t.Fatal(err)
 	}
 
+	pubFactory := &singlePartitionPublisherFactory{
+		ctx:       ctx,
+		pubClient: pubClient,
+		settings:  settings,
+		topicPath: topic.Path,
+	}
 	tp := &testPartitionPublisher{
 		t:          t,
 		started:    make(chan struct{}),
 		terminated: make(chan struct{}),
+		pub:        pubFactory.New(topic.Partition),
 	}
-	pub := newSinglePartitionPublisher(ctx, pubClient, settings, topic)
-	pub.addOnStatusChange(tp.onStatusChange)
-	pub.Start()
-	tp.pub = pub
+	tp.pub.addOnStatusChange(tp.onStatusChange)
+	tp.pub.Start()
 	return tp
 }
 
@@ -828,12 +833,24 @@ func TestPartitionPublisherFlushMessages(t *testing.T) {
 
 func newTestRoutingPublisher(t *testing.T, topicPath string, settings PublishSettings, fakeSourceVal int64) *routingPublisher {
 	ctx := context.Background()
-	source := &test.FakeSource{Ret: fakeSourceVal}
-	msgRouter := &roundRobinMsgRouter{rng: rand.New(source)}
-	pub, err := newRoutingPublisher(ctx, msgRouter, settings, "ignored", topicPath, clientOpts...)
+	pubClient, err := newPublisherClient(ctx, "ignored", clientOpts...)
 	if err != nil {
 		t.Fatal(err)
 	}
+	adminClient, err := NewAdminClient(ctx, "ignored", clientOpts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source := &test.FakeSource{Ret: fakeSourceVal}
+	msgRouter := &roundRobinMsgRouter{rng: rand.New(source)}
+	pubFactory := &singlePartitionPublisherFactory{
+		ctx:       ctx,
+		pubClient: pubClient,
+		settings:  settings,
+		topicPath: topicPath,
+	}
+	pub := newRoutingPublisher(adminClient, msgRouter, pubFactory)
 	pub.Start()
 	return pub
 }

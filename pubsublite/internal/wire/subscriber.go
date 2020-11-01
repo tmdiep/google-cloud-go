@@ -16,6 +16,7 @@ package wire
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"time"
 
@@ -32,7 +33,6 @@ var (
 	errInvalidSubscribeResponse        = errors.New("pubsublite: received invalid subscribe response from server")
 	errDuplicateReceive                = errors.New("pubsublite: already called Receive for subscriber")
 	errNoMessageReceiver               = errors.New("pubsublite: no message receiver has been set")
-	errNoSubscribePartitions           = errors.New("pubsublite: no partitions specified for subscribe")
 )
 
 type MessageReceiverFunc func(*pb.SequencedMessage, *AckConsumer)
@@ -50,7 +50,43 @@ type Subscriber interface {
 
 // NewSubscriber creates a new client for receiving messages.
 func NewSubscriber(ctx context.Context, settings ReceiveSettings, region, subscriptionPath string, opts ...option.ClientOption) (Subscriber, error) {
-	return newMultiPartitionSubscriber(ctx, settings, region, subscriptionPath, opts...)
+	subsClient, err := newSubscriberClient(ctx, region, opts...)
+	if err != nil {
+		return nil, err
+	}
+	cursorClient, err := newCursorClient(ctx, region, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(settings.Partitions) > 0 {
+		if err := validatePartitions(settings.Partitions); err != nil {
+			return nil, err
+		}
+		subsFactory := &singlePartitionSubscriberFactory{
+			ctx:              ctx,
+			subsClient:       subsClient,
+			cursorClient:     cursorClient,
+			settings:         settings,
+			subscriptionPath: subscriptionPath,
+		}
+		return newMultiPartitionSubscriber(subsFactory), nil
+	}
+	// TODO: create assigning subscriber
+	return nil, nil
+}
+
+func validatePartitions(partitions []int) error {
+	partitionMap := make(map[int]struct{})
+	for _, p := range partitions {
+		if p < 0 {
+			return fmt.Errorf("pubsublite: partition numbers are zero-indexed; invalid partition %d", p)
+		}
+		if _, exists := partitionMap[p]; exists {
+			return fmt.Errorf("pubsublite: duplicate partition number %d", p)
+		}
+	}
+	return nil
 }
 
 // The frequency of sending batch flow control requests.
@@ -278,10 +314,19 @@ type singlePartitionSubscriber struct {
 	compositeService
 }
 
-func newSinglePartitionSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, cursorClient *vkit.CursorClient, settings ReceiveSettings, subscription subscriptionPartition) *singlePartitionSubscriber {
+type singlePartitionSubscriberFactory struct {
+	ctx              context.Context
+	subsClient       *vkit.SubscriberClient
+	cursorClient     *vkit.CursorClient
+	settings         ReceiveSettings
+	subscriptionPath string
+}
+
+func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSubscriber {
+	subscription := subscriptionPartition{Path: f.subscriptionPath, Partition: partition}
 	acks := newAckTracker()
-	commit := newCommitter(ctx, cursorClient, settings, subscription, acks)
-	subs := newWireSubscriber(ctx, subsClient, settings, subscription, acks)
+	commit := newCommitter(f.ctx, f.cursorClient, f.settings, subscription, acks)
+	subs := newWireSubscriber(f.ctx, f.subsClient, f.settings, subscription, acks)
 	ps := &singlePartitionSubscriber{
 		committer:  commit,
 		subscriber: subs,
@@ -302,30 +347,16 @@ type multiPartitionSubscriber struct {
 	compositeService
 }
 
-func newMultiPartitionSubscriber(ctx context.Context, settings ReceiveSettings, region, subscriptionPath string, opts ...option.ClientOption) (*multiPartitionSubscriber, error) {
-	if len(settings.Partitions) == 0 {
-		// This should not occur.
-		return nil, errNoSubscribePartitions
-	}
-	subsClient, err := newSubscriberClient(ctx, region, opts...)
-	if err != nil {
-		return nil, err
-	}
-	cursorClient, err := newCursorClient(ctx, region, opts...)
-	if err != nil {
-		return nil, err
-	}
+func newMultiPartitionSubscriber(subsFactory *singlePartitionSubscriberFactory) *multiPartitionSubscriber {
+	ms := &multiPartitionSubscriber{}
+	ms.init()
 
-	multiSubs := &multiPartitionSubscriber{}
-	multiSubs.init()
-
-	for _, partition := range settings.Partitions {
-		subscription := subscriptionPartition{Path: subscriptionPath, Partition: partition}
-		subs := newSinglePartitionSubscriber(ctx, subsClient, cursorClient, settings, subscription)
-		multiSubs.subscribers = append(multiSubs.subscribers, subs)
-		multiSubs.unsafeAddServices(subs)
+	for _, partition := range subsFactory.settings.Partitions {
+		subscriber := subsFactory.New(partition)
+		ms.subscribers = append(ms.subscribers, subscriber)
+		ms.unsafeAddServices(subscriber)
 	}
-	return multiSubs, nil
+	return ms
 }
 
 func (ms *multiPartitionSubscriber) Receive(receiver MessageReceiverFunc) error {

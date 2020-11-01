@@ -105,7 +105,7 @@ func (as *abstractService) unsafeUpdateStatus(targetStatus serviceStatus, err er
 		as.err = err
 	}
 	if as.onStatusChange != nil {
-		// Notify in a goroutine to prevent deadlocks if the parent is holding a
+		// Notify in a goroutine to prevent deadlocks if the receiver is holding a
 		// locked mutex.
 		for _, onStatusChange := range as.onStatusChange {
 			go onStatusChange(as.handle(), targetStatus, as.err)
