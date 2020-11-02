@@ -104,7 +104,7 @@ type wireSubscriber struct {
 	// Fields below must be guarded with mutex.
 	stream          *retryableStream
 	acks            *ackTracker
-	offsetTracker   *subscriberOffsetTracker
+	offsetTracker   subscriberOffsetTracker
 	flowControl     flowControlBatcher
 	pollFlowControl *periodicTask
 
@@ -124,8 +124,7 @@ func newWireSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, s
 				},
 			},
 		},
-		acks:          acks,
-		offsetTracker: newSubscriberOffsetTracker(),
+		acks: acks,
 	}
 	s.stream = newRetryableStream(ctx, s, settings.Timeout, reflect.TypeOf(pb.SubscribeResponse{}))
 	s.pollFlowControl = newPeriodicTask(batchFlowControlPeriod, s.sendPendingFlowControl, "pollFlowControl")
@@ -279,7 +278,7 @@ func (s *wireSubscriber) unsafeSendStartFlowControl() {
 }
 
 func (s *wireSubscriber) unsafeAllowFlow(allow *flowControlTokens) {
-	s.flowControl.OnClientFlowRequest(allow)
+	s.flowControl.OnClientFlow(allow)
 	if s.flowControl.ShouldExpediteBatchRequest() {
 		s.unsafeSendFlowControl(s.flowControl.ReleasePendingRequest())
 	}
