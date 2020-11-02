@@ -37,29 +37,39 @@ const (
 	serviceTerminated serviceStatus = 3
 )
 
+// serviceHandle is used to compare pointers to service instances.
+type serviceHandle interface{}
+
 // service is the interface that must be implemented by services (essentially
-// gRPC client stream wrappers) that can be dependencies of a compositeService.
+// gRPC client stream wrappers, e.g. subscriber, publisher) that can be
+// dependencies of a compositeService.
 type service interface {
 	Start()
 	Stop()
-	// Allows compositeService.onServiceStatusChange to work for multiple layers
-	// of embedding.
-	handle() *abstractService
-	addOnStatusChange(serviceStatusChangeFunc)
+
+	// Methods below are implemented by abstractService.
+	AddStatusChangeReceiver(serviceHandle, serviceStatusChangeFunc)
+	RemoveStatusChangeReceiver(serviceHandle)
+	Handle() serviceHandle
 }
 
 // serviceStatusChangeFunc notifies the parent of service status changes.
 // `serviceTerminating` and `serviceTerminated` have an associated error. This
 // error may be nil if the user called Stop().
-type serviceStatusChangeFunc func(*abstractService, serviceStatus, error)
+type serviceStatusChangeFunc func(serviceHandle, serviceStatus, error)
+
+type statusChangeReceiver struct {
+	handle         serviceHandle // For removing the receiver.
+	onStatusChange serviceStatusChangeFunc
+}
 
 // abstractService can be embedded into other structs to provide common
-// functionality for managing service status.
+// functionality for managing service status and status change receivers.
 type abstractService struct {
 	mu sync.Mutex
 
-	onStatusChange []serviceStatusChangeFunc
-	status         serviceStatus
+	statusChangeReceivers []*statusChangeReceiver
+	status                serviceStatus
 	// The error that cause the service to terminate.
 	err error
 }
@@ -70,14 +80,36 @@ func (as *abstractService) Error() error {
 	return as.err
 }
 
-func (as *abstractService) handle() *abstractService {
-	return as
-}
-
-func (as *abstractService) addOnStatusChange(onStatusChange serviceStatusChangeFunc) {
+func (as *abstractService) AddStatusChangeReceiver(handle serviceHandle, onStatusChange serviceStatusChangeFunc) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
-	as.onStatusChange = append(as.onStatusChange, onStatusChange)
+	as.statusChangeReceivers = append(
+		as.statusChangeReceivers,
+		&statusChangeReceiver{handle, onStatusChange})
+}
+
+func (as *abstractService) RemoveStatusChangeReceiver(handle serviceHandle) {
+	as.mu.Lock()
+	defer as.mu.Unlock()
+
+	for i := len(as.statusChangeReceivers) - 1; i >= 0; i++ {
+		r := as.statusChangeReceivers[i]
+		if r.handle == handle {
+			// Swap with last element, erase last element and truncate the slice.
+			lastIdx := len(as.statusChangeReceivers) - 1
+			if i != lastIdx {
+				as.statusChangeReceivers[i] = as.statusChangeReceivers[lastIdx]
+			}
+			as.statusChangeReceivers[lastIdx] = nil
+			as.statusChangeReceivers = as.statusChangeReceivers[:lastIdx]
+		}
+	}
+}
+
+// Handle identifies this service instance, even when there's multiple layers
+// of embedding.
+func (as *abstractService) Handle() serviceHandle {
+	return as
 }
 
 func (as *abstractService) unsafeCheckServiceStatus() error {
@@ -104,12 +136,11 @@ func (as *abstractService) unsafeUpdateStatus(targetStatus serviceStatus, err er
 		// Prevent clobbering an original error.
 		as.err = err
 	}
-	if as.onStatusChange != nil {
+
+	for _, receiver := range as.statusChangeReceivers {
 		// Notify in a goroutine to prevent deadlocks if the receiver is holding a
 		// locked mutex.
-		for _, onStatusChange := range as.onStatusChange {
-			go onStatusChange(as.handle(), targetStatus, as.err)
-		}
+		go receiver.onStatusChange(as.Handle(), as.status, as.err)
 	}
 	return true
 }
@@ -117,9 +148,12 @@ func (as *abstractService) unsafeUpdateStatus(targetStatus serviceStatus, err er
 type serviceHolder struct {
 	service    service
 	lastStatus serviceStatus
+	remove     bool
 }
 
 // compositeService can be embedded into other structs to manage child services.
+// It implements the service interface and can itself be a dependency of another
+// compositeService.
 type compositeService struct {
 	// Used to block until all dependencies have started or terminated.
 	waitStarted    chan struct{}
@@ -166,8 +200,21 @@ func (cs *compositeService) init() {
 
 func (cs *compositeService) unsafeAddServices(services ...service) {
 	for _, s := range services {
-		s.addOnStatusChange(cs.onServiceStatusChange)
+		s.AddStatusChangeReceiver(cs.Handle(), cs.onServiceStatusChange)
 		cs.dependencies = append(cs.dependencies, &serviceHolder{service: s})
+	}
+}
+
+func (cs *compositeService) unsafeRemoveService(service service) {
+	for _, s := range cs.dependencies {
+		if s.service.Handle() == service.Handle() {
+			// Remove the service from the list of dependencies after it has actually
+			//terminated.
+			s.remove = true
+			if s.lastStatus < serviceTerminating {
+				s.service.Stop()
+			}
+		}
 	}
 }
 
@@ -180,31 +227,34 @@ func (cs *compositeService) unsafeInitiateShutdown(targetStatus serviceStatus, e
 	cs.unsafeUpdateStatus(targetStatus, err)
 }
 
-func (cs *compositeService) unsafeUpdateStatus(targetStatus serviceStatus, err error) bool {
+func (cs *compositeService) unsafeUpdateStatus(targetStatus serviceStatus, err error) (ret bool) {
 	previousStatus := cs.status
-	if cs.abstractService.unsafeUpdateStatus(targetStatus, err) {
+	if ret = cs.abstractService.unsafeUpdateStatus(targetStatus, err); ret {
 		if previousStatus == serviceUninitialized {
 			close(cs.waitStarted)
 		}
 		if targetStatus == serviceTerminated {
 			close(cs.waitTerminated)
 		}
-		return true
 	}
-	return false
+	return
 }
 
-func (cs *compositeService) onServiceStatusChange(handle *abstractService, status serviceStatus, err error) {
+func (cs *compositeService) onServiceStatusChange(handle serviceHandle, status serviceStatus, err error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
 	numStarted := 0
 	numTerminated := 0
+	removeIdx := -1
 
-	for _, s := range cs.dependencies {
-		if s.service.handle() == handle {
+	for i, s := range cs.dependencies {
+		if s.service.Handle() == handle {
 			if status > s.lastStatus {
 				s.lastStatus = status
+			}
+			if s.lastStatus == serviceTerminated && s.remove {
+				removeIdx = i
 			}
 		} else if status >= serviceTerminating && s.lastStatus < serviceTerminating {
 			// If a single service terminates, stop them all, but allow the others to
@@ -226,6 +276,16 @@ func (cs *compositeService) onServiceStatusChange(handle *abstractService, statu
 		cs.unsafeUpdateStatus(serviceTerminating, err)
 	case numStarted == len(cs.dependencies):
 		cs.unsafeUpdateStatus(serviceActive, err)
+	}
+
+	if removeIdx >= 0 {
+		// Swap with last element, erase last element and truncate the slice.
+		lastIdx := len(cs.dependencies) - 1
+		if removeIdx != lastIdx {
+			cs.dependencies[removeIdx] = cs.dependencies[lastIdx]
+		}
+		cs.dependencies[lastIdx] = nil
+		cs.dependencies = cs.dependencies[:lastIdx]
 	}
 }
 

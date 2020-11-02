@@ -127,7 +127,7 @@ func newTestPartitionPublisher(t *testing.T, topic topicPartition, settings Publ
 		terminated: make(chan struct{}),
 		pub:        pubFactory.New(topic.Partition),
 	}
-	tp.pub.addOnStatusChange(tp.onStatusChange)
+	tp.pub.AddStatusChangeReceiver(nil, tp.onStatusChange)
 	tp.pub.Start()
 	return tp
 }
@@ -138,7 +138,7 @@ func (tp *testPartitionPublisher) publish(msg *pb.PubSubMessage) *publishResultR
 	return result
 }
 
-func (tp *testPartitionPublisher) onStatusChange(unused *abstractService, status serviceStatus, err error) {
+func (tp *testPartitionPublisher) onStatusChange(unused serviceHandle, status serviceStatus, err error) {
 	if status == serviceActive {
 		close(tp.started)
 	}

@@ -373,3 +373,50 @@ func (ms *multiPartitionSubscriber) Receive(receiver MessageReceiverFunc) error 
 	}
 	return nil
 }
+
+type assigningSubscriber struct {
+	// Immutable after creation.
+	assigner    *assigner
+	subsFactory *singlePartitionSubscriberFactory
+
+	// Fields below must be guarded with mutex.
+	// Subscribers keyed by partition number. Updated as assignments change.
+	subscribers map[int]*singlePartitionSubscriber
+
+	compositeService
+}
+
+func newAssigningSubscriber(partitionClient *vkit.PartitionAssignmentClient, subsFactory *singlePartitionSubscriberFactory) *assigningSubscriber {
+	as := &assigningSubscriber{
+		subscribers: make(map[int]*singlePartitionSubscriber),
+	}
+	as.init()
+
+	as.assigner = newAssigner(subsFactory.ctx, partitionClient, subsFactory.settings, subsFactory.subscriptionPath, as.handleAssignment)
+	as.unsafeAddServices(as.assigner)
+	return as
+}
+
+func (as *assigningSubscriber) handleAssignment(assignment *partitionAssignment) {
+	as.mu.Lock()
+	defer as.mu.Unlock()
+
+	// Handle new partitions.
+	for _, partition := range assignment.Partitions() {
+		if _, exists := as.subscribers[partition]; !exists {
+			subscriber := as.subsFactory.New(partition)
+			as.unsafeAddServices(subscriber)
+			as.subscribers[partition] = subscriber
+		}
+	}
+
+	// Handle removed partitions.
+	for partition, subscriber := range as.subscribers {
+		if !assignment.Contains(partition) {
+			as.unsafeRemoveService(subscriber)
+			// Safe to delete map entry during range loop:
+			// https://golang.org/ref/spec#For_statements
+			delete(as.subscribers, partition)
+		}
+	}
+}
