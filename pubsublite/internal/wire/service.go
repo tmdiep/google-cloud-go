@@ -108,7 +108,7 @@ func (as *abstractService) RemoveStatusChangeReceiver(handle serviceHandle) {
 	}
 }
 
-// Handle identifies this service instance, even when there's multiple layers
+// Handle identifies this service instance, even when there are multiple layers
 // of embedding.
 func (as *abstractService) Handle() serviceHandle {
 	return as
@@ -120,7 +120,7 @@ func (as *abstractService) unsafeCheckServiceStatus() error {
 		return ErrServiceUninitialized
 	case as.status == serviceStarting:
 		return ErrServiceStarting
-	case as.status > serviceActive:
+	case as.status >= serviceTerminating:
 		return ErrServiceStopped
 	default:
 		return nil
@@ -267,6 +267,7 @@ func (cs *compositeService) onServiceStatusChange(handle serviceHandle, status s
 				s.lastStatus = status
 			}
 			if s.lastStatus == serviceTerminated && s.remove {
+				s.service.RemoveStatusChangeReceiver(cs.Handle())
 				removeIdx = i
 			}
 		} else if status >= serviceTerminating && s.lastStatus < serviceTerminating {
