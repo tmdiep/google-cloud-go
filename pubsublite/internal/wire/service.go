@@ -94,7 +94,7 @@ func (as *abstractService) RemoveStatusChangeReceiver(handle serviceHandle) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 
-	for i := len(as.statusChangeReceivers) - 1; i >= 0; i++ {
+	for i := len(as.statusChangeReceivers) - 1; i >= 0; i-- {
 		r := as.statusChangeReceivers[i]
 		if r.handle == handle {
 			// Swap with last element, erase last element and truncate the slice.

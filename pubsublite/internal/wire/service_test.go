@@ -17,9 +17,12 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"cloud.google.com/go/pubsublite/internal/test"
 )
+
+const receiveStatusTimeout = 5 * time.Second
 
 type mockService struct {
 	abstractService
@@ -39,11 +42,13 @@ type testStatusChangeReceiver struct {
 	// the statuses.
 	StatusC    chan serviceStatus
 	LastStatus serviceStatus
+	Name       string
 }
 
-func newTestStatusChangeReceiver() *testStatusChangeReceiver {
+func newTestStatusChangeReceiver(name string) *testStatusChangeReceiver {
 	return &testStatusChangeReceiver{
 		StatusC: make(chan serviceStatus, 1),
+		Name:    name,
 	}
 }
 
@@ -54,24 +59,36 @@ func (sr *testStatusChangeReceiver) OnStatusChange(handle serviceHandle, status 
 }
 
 func (sr *testStatusChangeReceiver) ValidateStatus(t *testing.T, want serviceStatus) {
-	status := <-sr.StatusC
-	if status <= sr.LastStatus {
-		t.Errorf("Duplicate service status: %d, last status: %d", status, sr.LastStatus)
+	select {
+	case status := <-sr.StatusC:
+		if status <= sr.LastStatus {
+			t.Errorf("%s: Duplicate service status: %d, last status: %d", sr.Name, status, sr.LastStatus)
+		}
+		if status != want {
+			t.Errorf("%s: Got service status: %d, want: %d", sr.Name, status, want)
+		}
+		sr.LastStatus = status
+	case <-time.After(receiveStatusTimeout):
+		t.Errorf("%s: Did not receive status within %v", sr.Name, receiveStatusTimeout)
 	}
-	if status != want {
-		t.Errorf("Got service status: %d, want: %d", status, want)
+}
+
+func (sr *testStatusChangeReceiver) EnsureNoMoreStatusChanges(t *testing.T) {
+	select {
+	case status := <-sr.StatusC:
+		t.Errorf("%s: Unexpected service status: %d", sr.Name, status)
+	default:
 	}
-	sr.LastStatus = status
 }
 
 func TestServiceUpdateStatusIsLinear(t *testing.T) {
-	receiver := newTestStatusChangeReceiver()
+	receiver := newTestStatusChangeReceiver("receiver")
 
 	err1 := errors.New("error1")
 	err2 := errors.New("error2")
 
 	service := &mockService{}
-	service.AddStatusChangeReceiver(nil, receiver.OnStatusChange)
+	service.AddStatusChangeReceiver(receiver.Handle(), receiver.OnStatusChange)
 	service.UpdateStatus(serviceStarting, nil)
 	receiver.ValidateStatus(t, serviceStarting)
 
@@ -131,8 +148,34 @@ func TestServiceCheckServiceStatus(t *testing.T) {
 }
 
 func TestServiceAddRemoveStatusChangeReceiver(t *testing.T) {
-	receiver1 := newTestStatusChangeReceiver()
-	receiver2 := newTestStatusChangeReceiver()
-	receiver3 := newTestStatusChangeReceiver()
+	receiver1 := newTestStatusChangeReceiver("receiver1")
+	receiver2 := newTestStatusChangeReceiver("receiver2")
+	receiver3 := newTestStatusChangeReceiver("receiver3")
+
+	service := &mockService{}
+	service.AddStatusChangeReceiver(receiver1.Handle(), receiver1.OnStatusChange)
+	service.AddStatusChangeReceiver(receiver2.Handle(), receiver2.OnStatusChange)
+	service.AddStatusChangeReceiver(receiver3.Handle(), receiver3.OnStatusChange)
+	service.UpdateStatus(serviceActive, nil)
+
+	service.RemoveStatusChangeReceiver(receiver1.Handle())
+	service.UpdateStatus(serviceTerminating, nil)
+
+	service.RemoveStatusChangeReceiver(receiver2.Handle())
+	service.UpdateStatus(serviceTerminated, nil)
+
+	receiver1.ValidateStatus(t, serviceActive)
+	receiver2.ValidateStatus(t, serviceActive)
+	receiver2.ValidateStatus(t, serviceTerminating)
+	receiver3.ValidateStatus(t, serviceActive)
+	receiver3.ValidateStatus(t, serviceTerminating)
+	receiver3.ValidateStatus(t, serviceTerminated)
+
+	receiver1.EnsureNoMoreStatusChanges(t)
+	receiver2.EnsureNoMoreStatusChanges(t)
+	receiver3.EnsureNoMoreStatusChanges(t)
+}
+
+func TestServiceAddRemoveStatusChangeReceiver(t *testing.T) {
 
 }
