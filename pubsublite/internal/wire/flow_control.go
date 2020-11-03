@@ -39,11 +39,6 @@ type tokenCounter struct {
 	Messages int64
 }
 
-func (tc *tokenCounter) Add(delta *flowControlTokens) {
-	tc.Bytes = saturatedAdd(tc.Bytes, delta.Bytes)
-	tc.Messages = saturatedAdd(tc.Messages, delta.Messages)
-}
-
 func saturatedAdd(sum, delta int64) int64 {
 	remainder := math.MaxInt64 - sum
 	if delta >= remainder {
@@ -52,7 +47,12 @@ func saturatedAdd(sum, delta int64) int64 {
 	return sum + delta
 }
 
-func (tc *tokenCounter) Sub(delta *flowControlTokens) error {
+func (tc *tokenCounter) Add(delta flowControlTokens) {
+	tc.Bytes = saturatedAdd(tc.Bytes, delta.Bytes)
+	tc.Messages = saturatedAdd(tc.Messages, delta.Messages)
+}
+
+func (tc *tokenCounter) Sub(delta flowControlTokens) error {
 	if delta.Bytes > tc.Bytes {
 		return errTokenCounterBytesNegative
 	}
@@ -70,7 +70,7 @@ func (tc *tokenCounter) Reset() {
 }
 
 func (tc *tokenCounter) ToFlowControlRequest() *pb.FlowControlRequest {
-	if tc.Bytes <= 0 || tc.Messages <= 0 {
+	if tc.Bytes <= 0 && tc.Messages <= 0 {
 		return nil
 	}
 	return &pb.FlowControlRequest{
@@ -89,17 +89,28 @@ type flowControlBatcher struct {
 	pendingTokens tokenCounter
 }
 
-func (fc *flowControlBatcher) OnClientFlow(tokens *flowControlTokens) {
+const expediteBatchRequestRatio = 0.5
+
+func exceedsExpediteRatio(pending, client int64) bool {
+	return client > 0 && (float64(pending)/float64(client)) >= expediteBatchRequestRatio
+}
+
+// OnClientFlow increments flow control tokens. This occurs when:
+// - Initialization from ReceiveSettings.
+// - The user acks messages.
+func (fc *flowControlBatcher) OnClientFlow(tokens flowControlTokens) {
 	fc.clientTokens.Add(tokens)
 	fc.pendingTokens.Add(tokens)
 }
 
+// OnMessages decrements flow control tokens when messages are received from the
+// server.
 func (fc *flowControlBatcher) OnMessages(msgs []*pb.SequencedMessage) error {
 	var totalBytes int64
 	for _, msg := range msgs {
 		totalBytes += msg.GetSizeBytes()
 	}
-	return fc.clientTokens.Sub(&flowControlTokens{Bytes: totalBytes, Messages: int64(len(msgs))})
+	return fc.clientTokens.Sub(flowControlTokens{Bytes: totalBytes, Messages: int64(len(msgs))})
 }
 
 // RequestForRestart returns a FlowControlRequest that should be sent when a new
@@ -130,12 +141,6 @@ func (fc *flowControlBatcher) ShouldExpediteBatchRequest() bool {
 	return false
 }
 
-const expediteBatchRequestRatio = 0.5
-
-func exceedsExpediteRatio(pending, client int64) bool {
-	return client > 0 && (float64(pending)/float64(client)) >= expediteBatchRequestRatio
-}
-
 // subscriberOffsetTracker tracks the expected offset of the next message
 // received from the server. It is only accessed by the wireSubscriber.
 type subscriberOffsetTracker struct {
@@ -146,7 +151,7 @@ type subscriberOffsetTracker struct {
 // stream reconnects. Returns if the subscriber has just started, in which case
 // the server returns the offset of the last committed cursor.
 func (ot *subscriberOffsetTracker) RequestForRestart() *pb.SeekRequest {
-	if ot.minNextOffset == 0 {
+	if ot.minNextOffset <= 0 {
 		return nil
 	}
 	return &pb.SeekRequest{

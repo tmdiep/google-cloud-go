@@ -142,7 +142,7 @@ func (s *wireSubscriber) Start() {
 		s.stream.Start()
 		s.pollFlowControl.Start()
 
-		s.flowControl.OnClientFlow(&flowControlTokens{
+		s.flowControl.OnClientFlow(flowControlTokens{
 			Bytes:    int64(s.settings.MaxOutstandingBytes),
 			Messages: int64(s.settings.MaxOutstandingMessages),
 		})
@@ -248,7 +248,7 @@ func (s *wireSubscriber) onAck(ar *AckConsumer) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.unsafeAllowFlow(&flowControlTokens{Bytes: ar.MsgBytes, Messages: 1})
+	s.unsafeAllowFlow(flowControlTokens{Bytes: ar.MsgBytes, Messages: 1})
 }
 
 func (s *wireSubscriber) sendPendingFlowControl() {
@@ -262,7 +262,7 @@ func (s *wireSubscriber) unsafeSendStartFlowControl() {
 	s.pollFlowControl.Resume()
 }
 
-func (s *wireSubscriber) unsafeAllowFlow(allow *flowControlTokens) {
+func (s *wireSubscriber) unsafeAllowFlow(allow flowControlTokens) {
 	s.flowControl.OnClientFlow(allow)
 	if s.flowControl.ShouldExpediteBatchRequest() {
 		s.unsafeSendFlowControl(s.flowControl.ReleasePendingRequest())
