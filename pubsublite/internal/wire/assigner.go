@@ -59,8 +59,9 @@ func (pa *partitionAssignment) Contains(partition int) bool {
 }
 
 // partitionAssignmentReceiver must enact the received partition assignment from
-// the server, or otherwise terminate the subscriber.
-type partitionAssignmentReceiver func(*partitionAssignment)
+// the server, or otherwise return an error, which will break the stream. The
+// receiver must not call the assigner, as this would result in a deadlock.
+type partitionAssignmentReceiver func(*partitionAssignment) error
 
 type assigner struct {
   // Immutable after creation.
@@ -83,6 +84,7 @@ func newAssigner(ctx context.Context, partitionClient *vkit.PartitionAssignmentC
   if err != nil {
     return nil, fmt.Errorf("pubsublite: failed to generate client UUID: %v", err)
   }
+  fmt.Printf("assigner: client uuid %v\n", clientID)
 
   a := &assigner{
     partitionClient: partitionClient,
@@ -103,7 +105,10 @@ func newAssigner(ctx context.Context, partitionClient *vkit.PartitionAssignmentC
 func (a *assigner) Start() {
   a.mu.Lock()
   defer a.mu.Unlock()
-  a.stream.Start()
+
+  if a.unsafeUpdateStatus(serviceStarting, nil) {
+    a.stream.Start()
+  }
 }
 
 func (a *assigner) Stop() {
@@ -137,7 +142,9 @@ func (a *assigner) onStreamStatusChange(status streamStatus) {
   switch status {
   case streamConnected:
     a.unsafeUpdateStatus(serviceActive, nil)
-    a.unsafeHandlePendingAssignment()
+    if err := a.unsafeHandlePendingAssignment(); err != nil {
+      a.unsafeInitiateShutdown(serviceTerminated, err)
+    }
 
   case streamTerminated:
     a.unsafeInitiateShutdown(serviceTerminated, a.stream.Error())
@@ -161,12 +168,9 @@ func (a *assigner) onResponse(response interface{}) {
 }
 
 func (a *assigner) unsafeHandlePendingAssignment() error {
-  // Temporarily unlock in case the receiver calls Stop() to terminate the
-  // entire subscriber, which would result in a deadlock.
-  a.mu.Unlock()
-  a.receiveAssignment(newPartitionAssignment(a.pendingAssignment))
-  a.mu.Lock()
-
+  if err := a.receiveAssignment(newPartitionAssignment(a.pendingAssignment)); err != nil {
+    return err
+  }
   a.stream.Send(&pb.PartitionAssignmentRequest{
     Request: &pb.PartitionAssignmentRequest_Ack{
       Ack: &pb.PartitionAssignmentAck{},

@@ -70,8 +70,10 @@ func (c *committer) Start() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.stream.Start()
-	c.pollCommits.Start()
+	if c.unsafeUpdateStatus(serviceStarting, nil) {
+		c.stream.Start()
+		c.pollCommits.Start()
+	}
 }
 
 func (c *committer) Stop() {

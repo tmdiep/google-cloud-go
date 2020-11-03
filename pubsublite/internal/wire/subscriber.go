@@ -31,8 +31,6 @@ var (
 	errServerNoMessages                = errors.New("pubsublite: server delivered no messages")
 	errInvalidInitialSubscribeResponse = errors.New("pubsublite: first response from server was not an initial response for subscribe")
 	errInvalidSubscribeResponse        = errors.New("pubsublite: received invalid subscribe response from server")
-	errDuplicateReceive                = errors.New("pubsublite: already called Receive for subscriber")
-	errNoMessageReceiver               = errors.New("pubsublite: no message receiver has been set")
 )
 
 type MessageReceiverFunc func(*pb.SequencedMessage, *AckConsumer)
@@ -40,8 +38,6 @@ type MessageReceiverFunc func(*pb.SequencedMessage, *AckConsumer)
 // Subscriber is the client interface exported from this package for receiving
 // messages.
 type Subscriber interface {
-	Receive(MessageReceiverFunc) error
-
 	Start()
 	WaitStarted() error
 	Stop()
@@ -49,7 +45,7 @@ type Subscriber interface {
 }
 
 // NewSubscriber creates a new client for receiving messages.
-func NewSubscriber(ctx context.Context, settings ReceiveSettings, region, subscriptionPath string, opts ...option.ClientOption) (Subscriber, error) {
+func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver MessageReceiverFunc, region, subscriptionPath string, opts ...option.ClientOption) (Subscriber, error) {
 	subsClient, err := newSubscriberClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err
@@ -59,21 +55,27 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, region, subscr
 		return nil, err
 	}
 
+	subsFactory := &singlePartitionSubscriberFactory{
+		ctx:              ctx,
+		subsClient:       subsClient,
+		cursorClient:     cursorClient,
+		settings:         settings,
+		subscriptionPath: subscriptionPath,
+		receiver:         receiver,
+	}
+
 	if len(settings.Partitions) > 0 {
 		if err := validatePartitions(settings.Partitions); err != nil {
 			return nil, err
 		}
-		subsFactory := &singlePartitionSubscriberFactory{
-			ctx:              ctx,
-			subsClient:       subsClient,
-			cursorClient:     cursorClient,
-			settings:         settings,
-			subscriptionPath: subscriptionPath,
-		}
 		return newMultiPartitionSubscriber(subsFactory), nil
 	}
-	// TODO: create assigning subscriber
-	return nil, nil
+
+	partitionClient, err := newPartitionAssignmentClient(ctx, region, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return newAssigningSubscriber(partitionClient, subsFactory)
 }
 
 func validatePartitions(partitions []int) error {
@@ -111,7 +113,7 @@ type wireSubscriber struct {
 	abstractService
 }
 
-func newWireSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, settings ReceiveSettings, subscription subscriptionPartition, acks *ackTracker) *wireSubscriber {
+func newWireSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, settings ReceiveSettings, receiver MessageReceiverFunc, subscription subscriptionPartition, acks *ackTracker) *wireSubscriber {
 	s := &wireSubscriber{
 		subsClient:   subsClient,
 		settings:     settings,
@@ -124,7 +126,8 @@ func newWireSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, s
 				},
 			},
 		},
-		acks: acks,
+		receiver: receiver,
+		acks:     acks,
 	}
 	s.stream = newRetryableStream(ctx, s, settings.Timeout, reflect.TypeOf(pb.SubscribeResponse{}))
 	s.pollFlowControl = newPeriodicTask(batchFlowControlPeriod, s.sendPendingFlowControl, "pollFlowControl")
@@ -135,35 +138,21 @@ func (s *wireSubscriber) Start() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.stream.Start()
-	s.pollFlowControl.Start()
+	if s.unsafeUpdateStatus(serviceStarting, nil) {
+		s.stream.Start()
+		s.pollFlowControl.Start()
+
+		s.flowControl.OnClientFlow(&flowControlTokens{
+			Bytes:    int64(s.settings.MaxOutstandingBytes),
+			Messages: int64(s.settings.MaxOutstandingMessages),
+		})
+	}
 }
 
 func (s *wireSubscriber) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unsafeInitiateShutdown(serviceTerminating, nil)
-}
-
-func (s *wireSubscriber) Receive(receiver MessageReceiverFunc) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if err := s.unsafeCheckServiceStatus(); err != nil {
-		return err
-	}
-	if s.receiver != nil {
-		return errDuplicateReceive
-	}
-
-	// The server sends messages from the last committed cursor upon the first
-	// flow control request.
-	s.receiver = receiver
-	s.unsafeAllowFlow(&flowControlTokens{
-		Bytes:    int64(s.settings.MaxOutstandingBytes),
-		Messages: int64(s.settings.MaxOutstandingMessages),
-	})
-	return nil
 }
 
 func (s *wireSubscriber) newStream(ctx context.Context) (grpc.ClientStream, error) {
@@ -237,10 +226,6 @@ func (s *wireSubscriber) onSeekResponse(response *pb.SeekResponse) error {
 func (s *wireSubscriber) onMessageResponse(response *pb.MessageResponse) error {
 	if len(response.Messages) == 0 {
 		return errServerNoMessages
-	}
-	if s.receiver == nil {
-		// This should not occur.
-		return errNoMessageReceiver
 	}
 	if err := s.offsetTracker.OnMessages(response.Messages); err != nil {
 		return err
@@ -319,13 +304,14 @@ type singlePartitionSubscriberFactory struct {
 	cursorClient     *vkit.CursorClient
 	settings         ReceiveSettings
 	subscriptionPath string
+	receiver         MessageReceiverFunc
 }
 
 func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSubscriber {
 	subscription := subscriptionPartition{Path: f.subscriptionPath, Partition: partition}
 	acks := newAckTracker()
 	commit := newCommitter(f.ctx, f.cursorClient, f.settings, subscription, acks)
-	subs := newWireSubscriber(f.ctx, f.subsClient, f.settings, subscription, acks)
+	subs := newWireSubscriber(f.ctx, f.subsClient, f.settings, f.receiver, subscription, acks)
 	ps := &singlePartitionSubscriber{
 		committer:  commit,
 		subscriber: subs,
@@ -333,10 +319,6 @@ func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSu
 	ps.init()
 	ps.unsafeAddServices(subs, commit)
 	return ps
-}
-
-func (ps *singlePartitionSubscriber) Receive(receiver MessageReceiverFunc) error {
-	return ps.subscriber.Receive(receiver)
 }
 
 type multiPartitionSubscriber struct {
@@ -358,26 +340,10 @@ func newMultiPartitionSubscriber(subsFactory *singlePartitionSubscriberFactory) 
 	return ms
 }
 
-func (ms *multiPartitionSubscriber) Receive(receiver MessageReceiverFunc) error {
-	ms.mu.Lock()
-	defer ms.mu.Unlock()
-
-	if err := ms.unsafeCheckServiceStatus(); err != nil {
-		return err
-	}
-
-	for _, subs := range ms.subscribers {
-		if err := subs.Receive(receiver); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 type assigningSubscriber struct {
 	// Immutable after creation.
-	assigner    *assigner
 	subsFactory *singlePartitionSubscriberFactory
+	assigner    *assigner
 
 	// Fields below must be guarded with mutex.
 	// Subscribers keyed by partition number. Updated as assignments change.
@@ -386,20 +352,29 @@ type assigningSubscriber struct {
 	compositeService
 }
 
-func newAssigningSubscriber(partitionClient *vkit.PartitionAssignmentClient, subsFactory *singlePartitionSubscriberFactory) *assigningSubscriber {
+func newAssigningSubscriber(partitionClient *vkit.PartitionAssignmentClient, subsFactory *singlePartitionSubscriberFactory) (*assigningSubscriber, error) {
 	as := &assigningSubscriber{
+		subsFactory: subsFactory,
 		subscribers: make(map[int]*singlePartitionSubscriber),
 	}
 	as.init()
 
-	as.assigner = newAssigner(subsFactory.ctx, partitionClient, subsFactory.settings, subsFactory.subscriptionPath, as.handleAssignment)
-	as.unsafeAddServices(as.assigner)
-	return as
+	assigner, err := newAssigner(subsFactory.ctx, partitionClient, subsFactory.settings, subsFactory.subscriptionPath, as.handleAssignment)
+	if err != nil {
+		return nil, err
+	}
+	as.assigner = assigner
+	as.unsafeAddServices(assigner)
+	return as, nil
 }
 
-func (as *assigningSubscriber) handleAssignment(assignment *partitionAssignment) {
+func (as *assigningSubscriber) handleAssignment(assignment *partitionAssignment) error {
 	as.mu.Lock()
 	defer as.mu.Unlock()
+
+	if as.status >= serviceTerminating {
+		return ErrServiceStopped
+	}
 
 	// Handle new partitions.
 	for _, partition := range assignment.Partitions() {
@@ -407,6 +382,7 @@ func (as *assigningSubscriber) handleAssignment(assignment *partitionAssignment)
 			subscriber := as.subsFactory.New(partition)
 			as.unsafeAddServices(subscriber)
 			as.subscribers[partition] = subscriber
+			fmt.Printf("assigningSubscriber: added subscriber for partition %d\n", partition)
 		}
 	}
 
@@ -417,6 +393,8 @@ func (as *assigningSubscriber) handleAssignment(assignment *partitionAssignment)
 			// Safe to delete map entry during range loop:
 			// https://golang.org/ref/spec#For_statements
 			delete(as.subscribers, partition)
+			fmt.Printf("assigningSubscriber: removed subscriber for partition %d\n", partition)
 		}
 	}
+	return nil
 }

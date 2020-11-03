@@ -27,14 +27,16 @@ type serviceStatus int
 const (
 	// Service has not been started.
 	serviceUninitialized serviceStatus = 0
+	// Service is starting up.
+	serviceStarting serviceStatus = 1
 	// Service is active and accepting new data. Note that the underlying stream
 	// may be reconnecting due to retryable errors.
-	serviceActive serviceStatus = 1
+	serviceActive serviceStatus = 2
 	// Service is gracefully shutting down by flushing all pending data. No new
 	// data is accepted.
-	serviceTerminating serviceStatus = 2
+	serviceTerminating serviceStatus = 3
 	// Service has terminated. No new data is accepted.
-	serviceTerminated serviceStatus = 3
+	serviceTerminated serviceStatus = 4
 )
 
 // serviceHandle is used to compare pointers to service instances.
@@ -116,6 +118,8 @@ func (as *abstractService) unsafeCheckServiceStatus() error {
 	switch {
 	case as.status == serviceUninitialized:
 		return ErrServiceUninitialized
+	case as.status == serviceStarting:
+		return ErrServiceStarting
 	case as.status > serviceActive:
 		return ErrServiceStopped
 	default:
@@ -164,12 +168,21 @@ type compositeService struct {
 	abstractService
 }
 
+// init must be called after creation of the derived struct.
+func (cs *compositeService) init() {
+	cs.waitStarted = make(chan struct{})
+	cs.waitTerminated = make(chan struct{})
+}
+
 // Start up dependencies.
 func (cs *compositeService) Start() {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	for _, s := range cs.dependencies {
-		s.service.Start()
+
+	if cs.abstractService.unsafeUpdateStatus(serviceStarting, nil) {
+		for _, s := range cs.dependencies {
+			s.service.Start()
+		}
 	}
 }
 
@@ -192,16 +205,13 @@ func (cs *compositeService) WaitStopped() error {
 	return cs.Error()
 }
 
-// init must be called after creation of the derived struct.
-func (cs *compositeService) init() {
-	cs.waitStarted = make(chan struct{})
-	cs.waitTerminated = make(chan struct{})
-}
-
 func (cs *compositeService) unsafeAddServices(services ...service) {
 	for _, s := range services {
 		s.AddStatusChangeReceiver(cs.Handle(), cs.onServiceStatusChange)
 		cs.dependencies = append(cs.dependencies, &serviceHolder{service: s})
+		if cs.status > serviceUninitialized {
+			s.Start()
+		}
 	}
 }
 
@@ -209,11 +219,12 @@ func (cs *compositeService) unsafeRemoveService(service service) {
 	for _, s := range cs.dependencies {
 		if s.service.Handle() == service.Handle() {
 			// Remove the service from the list of dependencies after it has actually
-			//terminated.
+			// terminated.
 			s.remove = true
 			if s.lastStatus < serviceTerminating {
 				s.service.Stop()
 			}
+			break
 		}
 	}
 }
@@ -230,7 +241,9 @@ func (cs *compositeService) unsafeInitiateShutdown(targetStatus serviceStatus, e
 func (cs *compositeService) unsafeUpdateStatus(targetStatus serviceStatus, err error) (ret bool) {
 	previousStatus := cs.status
 	if ret = cs.abstractService.unsafeUpdateStatus(targetStatus, err); ret {
-		if previousStatus == serviceUninitialized {
+		// Note: the waitStarted channel must be closed when the service fails to
+		// start.
+		if previousStatus == serviceStarting {
 			close(cs.waitStarted)
 		}
 		if targetStatus == serviceTerminated {
@@ -269,15 +282,6 @@ func (cs *compositeService) onServiceStatusChange(handle serviceHandle, status s
 		}
 	}
 
-	switch {
-	case numTerminated == len(cs.dependencies):
-		cs.unsafeUpdateStatus(serviceTerminated, err)
-	case status >= serviceTerminating:
-		cs.unsafeUpdateStatus(serviceTerminating, err)
-	case numStarted == len(cs.dependencies):
-		cs.unsafeUpdateStatus(serviceActive, err)
-	}
-
 	if removeIdx >= 0 {
 		// Swap with last element, erase last element and truncate the slice.
 		lastIdx := len(cs.dependencies) - 1
@@ -286,6 +290,15 @@ func (cs *compositeService) onServiceStatusChange(handle serviceHandle, status s
 		}
 		cs.dependencies[lastIdx] = nil
 		cs.dependencies = cs.dependencies[:lastIdx]
+	}
+
+	switch {
+	case numTerminated >= len(cs.dependencies):
+		cs.unsafeUpdateStatus(serviceTerminated, err)
+	case status >= serviceTerminating:
+		cs.unsafeUpdateStatus(serviceTerminating, err)
+	case numStarted >= len(cs.dependencies):
+		cs.unsafeUpdateStatus(serviceActive, err)
 	}
 }
 

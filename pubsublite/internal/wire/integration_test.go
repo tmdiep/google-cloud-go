@@ -37,7 +37,7 @@ func initIntegrationTest(t *testing.T) {
 	}
 }
 
-func TestSubscribe(t *testing.T) {
+func TestPubSub(t *testing.T) {
 	initIntegrationTest(t)
 
 	ctx := context.Background()
@@ -84,16 +84,8 @@ func TestSubscribe(t *testing.T) {
 	settings := DefaultReceiveSettings
 	settings.MaxOutstandingMessages = 8
 	for i := 0; i < int(partitions.GetPartitionCount()); i++ {
+		// Comment out to use assigning subscriber
 		settings.Partitions = append(settings.Partitions, i)
-	}
-	subscriber, err := NewSubscriber(ctx, settings, region, subscriptionPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	subscriber.Start()
-	if err := subscriber.WaitStarted(); err != nil {
-		t.Fatalf("Start() error = %v", err)
 	}
 
 	var wg sync.WaitGroup
@@ -103,12 +95,18 @@ func TestSubscribe(t *testing.T) {
 		fmt.Printf("Received: offset=%d, data=%s\n", msg.GetCursor().GetOffset(), string(msg.GetMessage().GetData()))
 		ack.Ack()
 	}
-	if err := subscriber.Receive(receive); err != nil {
+
+	subscriber, err := NewSubscriber(ctx, settings, receive, region, subscriptionPath)
+	if err != nil {
 		t.Fatal(err)
+	}
+	subscriber.Start()
+	if err := subscriber.WaitStarted(); err != nil {
+		t.Fatalf("Start() error = %v", err)
 	}
 
 	wg.Wait()
-	//time.Sleep(5 * time.Second)
+	//time.Sleep(5 * time.Second) // Comment out wg.Done
 
 	fmt.Println("Stopping")
 	subscriber.Stop()

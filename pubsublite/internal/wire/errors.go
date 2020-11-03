@@ -24,6 +24,10 @@ var (
 	// subscriber) cannot perform an operation because it is uninitialized.
 	ErrServiceUninitialized = errors.New("pubsublite: service must be started")
 
+	// ErrServiceStarting indicates that a service (e.g. publisher or subscriber)
+	// cannot perform an operation because it is starting up.
+	ErrServiceStarting = errors.New("pubsublite: service is starting up")
+
 	// ErrServiceStopped indicates that a service (e.g. publisher or subscriber)
 	// cannot perform an operation because it has stoped or is in the process of
 	// stopping.

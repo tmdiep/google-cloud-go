@@ -196,7 +196,10 @@ func (f *singlePartitionPublisherFactory) New(partition int) *singlePartitionPub
 func (pp *singlePartitionPublisher) Start() {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
-	pp.stream.Start()
+
+	if pp.unsafeUpdateStatus(serviceStarting, nil) {
+		pp.stream.Start()
+	}
 }
 
 // Stop initiates shutdown of the publisher. All pending messages are flushed.
@@ -443,9 +446,31 @@ func newRoutingPublisher(adminClient *vkit.AdminClient, msgRouter messageRouter,
 
 // No-op if already successfully started.
 func (rp *routingPublisher) Start() {
-	if rp.initPublishers() {
-		rp.compositeService.Start()
+	rp.mu.Lock()
+	defer rp.mu.Unlock()
+
+	if !rp.unsafeUpdateStatus(serviceStarting, nil) {
+		// Already started.
+		return
 	}
+
+	partitionCount, err := rp.partitionCount()
+	if err != nil {
+		rp.unsafeUpdateStatus(serviceTerminated, err)
+		return
+	}
+	if partitionCount <= 0 {
+		err := fmt.Errorf("pubsublite: topic has invalid number of partitions %d", partitionCount)
+		rp.unsafeUpdateStatus(serviceTerminated, err)
+		return
+	}
+
+	for i := 0; i < partitionCount; i++ {
+		pub := rp.pubFactory.New(i)
+		rp.publishers[i] = pub
+		rp.unsafeAddServices(pub)
+	}
+	rp.msgRouter.SetPartitionCount(partitionCount)
 }
 
 func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onResult PublishResultFunc) {
@@ -455,36 +480,6 @@ func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onResult PublishResul
 		return
 	}
 	pub.Publish(msg, onResult)
-}
-
-func (rp *routingPublisher) initPublishers() bool {
-	rp.mu.Lock()
-	defer rp.mu.Unlock()
-
-	if len(rp.publishers) > 0 || rp.status == serviceTerminated {
-		// Already started.
-		return false
-	}
-
-	partitionCount, err := rp.partitionCount()
-	if err != nil {
-		rp.unsafeUpdateStatus(serviceTerminated, err)
-		return false
-	}
-	if partitionCount <= 0 {
-		err := fmt.Errorf("pubsublite: topic has invalid number of partitions %d", partitionCount)
-		rp.unsafeUpdateStatus(serviceTerminated, err)
-		return false
-	}
-
-	for i := 0; i < partitionCount; i++ {
-		pub := rp.pubFactory.New(i)
-		rp.publishers[i] = pub
-		rp.unsafeAddServices(pub)
-	}
-
-	rp.msgRouter.SetPartitionCount(partitionCount)
-	return true
 }
 
 func (rp *routingPublisher) partitionCount() (int, error) {
@@ -498,6 +493,10 @@ func (rp *routingPublisher) partitionCount() (int, error) {
 func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*singlePartitionPublisher, error) {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
+
+	if err := rp.unsafeCheckServiceStatus(); err != nil {
+		return nil, err
+	}
 
 	partition := rp.msgRouter.Route(msg.GetKey())
 	pub, ok := rp.publishers[partition]
