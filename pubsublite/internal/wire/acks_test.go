@@ -309,7 +309,7 @@ func TestCommitCursorTrackerStreamReconnects(t *testing.T) {
 		t.Errorf("commitCursorTracker.Done() got %v, want %v", got, want)
 	}
 
-	// Done() returns true when there are unacked messages.
+	// Note: Done() returns true even though there are unacked messages.
 	ack4 := newAckConsumer(4, 0, onAck)
 	if err := ackTracker.Push(ack4); err != nil {
 		t.Errorf("ackTracker.Push() got err %v", err)

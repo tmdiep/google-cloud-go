@@ -75,7 +75,7 @@ func (ac *ackConsumer) Clear() {
 
 // Represents an uninitialized cursor offset. A sentinel value is used instead
 // if an optional to simplify cursor comparisons (i.e. -1 works without the need
-// to check for nil).
+// to check for nil and then convert to int64).
 const nilCursorOffset int64 = -1
 
 // ackTracker manages outstanding message acks, i.e. messages that have been
@@ -220,7 +220,7 @@ func (ct *commitCursorTracker) ClearPending() {
 	ct.pendingOffsets.Init()
 }
 
-// AcknowledgeOffsets processes the server's acknowledgement of the first
+// AcknowledgeOffsets processes the server's acknowledgment of the first
 // `numAcked` pending offsets.
 func (ct *commitCursorTracker) AcknowledgeOffsets(numAcked int64) error {
 	if numPending := int64(ct.pendingOffsets.Len()); numPending < numAcked {
@@ -235,7 +235,7 @@ func (ct *commitCursorTracker) AcknowledgeOffsets(numAcked int64) error {
 	return nil
 }
 
-// Done when there are no more unacknowledged offsets.
+// Done when the server has confirmed the desired commit offset.
 func (ct *commitCursorTracker) Done() bool {
-	return ct.pendingOffsets.Len() == 0 && ct.NextOffset() == nilCursorOffset
+	return ct.acks.CommitOffset() <= ct.lastConfirmedOffset
 }
