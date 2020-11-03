@@ -33,7 +33,7 @@ var (
 	errInvalidSubscribeResponse        = errors.New("pubsublite: received invalid subscribe response from server")
 )
 
-type MessageReceiverFunc func(*pb.SequencedMessage, *AckConsumer)
+type MessageReceiverFunc func(*pb.SequencedMessage, AckConsumer)
 
 // Subscriber is the client interface exported from this package for receiving
 // messages.
@@ -243,12 +243,19 @@ func (s *wireSubscriber) onMessageResponse(response *pb.MessageResponse) error {
 	return nil
 }
 
-func (s *wireSubscriber) onAck(ar *AckConsumer) {
+func (s *wireSubscriber) onAck(ac *ackConsumer) {
+	// Don't block the user's goroutine with potentially expensive ack
+	// processing and also to ensure onAckAsync() does not run while holding the
+	// ackConsumer's mutex.
+	go s.onAckAsync(ac.MsgBytes)
+}
+
+func (s *wireSubscriber) onAckAsync(msgBytes int64) {
 	s.acks.Pop()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.unsafeAllowFlow(flowControlTokens{Bytes: ar.MsgBytes, Messages: 1})
+	s.unsafeAllowFlow(flowControlTokens{Bytes: msgBytes, Messages: 1})
 }
 
 func (s *wireSubscriber) sendPendingFlowControl() {

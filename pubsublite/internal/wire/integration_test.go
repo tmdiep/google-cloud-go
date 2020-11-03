@@ -90,7 +90,7 @@ func TestPubSub(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(numMessages)
-	receive := func(msg *pb.SequencedMessage, ack *AckConsumer) {
+	receive := func(msg *pb.SequencedMessage, ack AckConsumer) {
 		wg.Done()
 		fmt.Printf("Received: offset=%d, data=%s\n", msg.GetCursor().GetOffset(), string(msg.GetMessage().GetData()))
 		ack.Ack()

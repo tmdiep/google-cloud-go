@@ -19,16 +19,18 @@ import (
 	"sync"
 )
 
-// Represents an uninitialized cursor offset.
-const nilCursorOffset int64 = -1
+// AckConsumer is the interface exported from this package for acking messages.
+type AckConsumer interface {
+	Ack()
+}
 
 // ackedFunc is invoked when a message has been acked by the user.
-type ackedFunc func(*AckConsumer)
+type ackedFunc func(*ackConsumer)
 
-// AckConsumer is used for handling message acks. It is attached to a
-// Message and also stored within the subscriber client for tracking until the
-// message has been acked by the server.
-type AckConsumer struct {
+// ackConsumer is used for handling message acks. It is attached to a Message
+// and also stored within the ackTracker until the message has been acked by the
+// user.
+type ackConsumer struct {
 	// The message offset.
 	Offset int64
 	// Bytes released to the flow controller once the message has been acked.
@@ -40,11 +42,11 @@ type AckConsumer struct {
 	onAck ackedFunc
 }
 
-func newAckConsumer(offset, msgBytes int64, onAck ackedFunc) *AckConsumer {
-	return &AckConsumer{Offset: offset, MsgBytes: msgBytes, onAck: onAck}
+func newAckConsumer(offset, msgBytes int64, onAck ackedFunc) *ackConsumer {
+	return &ackConsumer{Offset: offset, MsgBytes: msgBytes, onAck: onAck}
 }
 
-func (ac *AckConsumer) Ack() {
+func (ac *ackConsumer) Ack() {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 
@@ -53,36 +55,39 @@ func (ac *AckConsumer) Ack() {
 	}
 	ac.acked = true
 	if ac.onAck != nil {
-		// Don't block the user's goroutine with potentially expensive ack
-		// processing.
-		go ac.onAck(ac)
+		ac.onAck(ac)
 	}
 }
 
-func (ac *AckConsumer) IsAcked() bool {
+func (ac *ackConsumer) IsAcked() bool {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 	return ac.acked
 }
 
-// Clear onAck when the ack is obsolete.
-func (ac *AckConsumer) Clear() {
+// Clear onAck when the ack can no longer be processed. The user's ack would be
+// ignored.
+func (ac *ackConsumer) Clear() {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 	ac.onAck = nil
 }
 
+// Represents an uninitialized cursor offset. A sentinel value is used instead
+// if an optional to simplify cursor comparisons (i.e. -1 works without the need
+// to check for nil).
+const nilCursorOffset int64 = -1
+
 // ackTracker manages outstanding message acks, i.e. messages that have been
 // delivered to the user, but not yet acked. It is used by the committer and
-// wireSubscriber, so requires a mutex.
+// wireSubscriber, so requires its own mutex.
 type ackTracker struct {
 	// Guards access to fields below.
 	mu sync.Mutex
-
 	// All offsets before and including this prefix have been acked by the user.
 	ackedPrefixOffset int64
 	// Outstanding message acks, strictly ordered by increasing message offsets.
-	outstandingAcks *list.List // Value = *AckConsumer
+	outstandingAcks *list.List // Value = *ackConsumer
 }
 
 func newAckTracker() *ackTracker {
@@ -92,32 +97,18 @@ func newAckTracker() *ackTracker {
 	}
 }
 
-// Reset the ackTracker back to its initial state. Any remaining outstanding
-// acks are considered to be obsolete. This should be called when the
-// subscriber client terminates.
-func (at *ackTracker) Reset() {
-	at.mu.Lock()
-	defer at.mu.Unlock()
-
-	for elem := at.outstandingAcks.Front(); elem != nil; elem = elem.Next() {
-		ack, _ := elem.Value.(*AckConsumer)
-		ack.Clear()
-	}
-	at.outstandingAcks.Init()
-	at.ackedPrefixOffset = nilCursorOffset
-}
-
 // Push adds an outstanding ack to the tracker.
-func (at *ackTracker) Push(ack *AckConsumer) error {
+func (at *ackTracker) Push(ack *ackConsumer) error {
 	at.mu.Lock()
 	defer at.mu.Unlock()
 
-	// These errors should not occur unless there is a bug in the client library.
+	// These errors should not occur unless there is a bug in the client library
+	// as message ordering should have been validated by subscriberOffsetTracker.
 	if ack.Offset <= at.ackedPrefixOffset {
 		return errOutOfOrderMessages
 	}
 	if elem := at.outstandingAcks.Back(); elem != nil {
-		lastOutstandingAck, _ := elem.Value.(*AckConsumer)
+		lastOutstandingAck, _ := elem.Value.(*ackConsumer)
 		if ack.Offset <= lastOutstandingAck.Offset {
 			return errOutOfOrderMessages
 		}
@@ -127,13 +118,18 @@ func (at *ackTracker) Push(ack *AckConsumer) error {
 	return nil
 }
 
-// Pop processes outstanding acks and updates `ackedPrefixOffset`.
+// Pop processes outstanding acks and updates `ackedPrefixOffset` until an
+// unacked message is found.
 func (at *ackTracker) Pop() {
 	at.mu.Lock()
 	defer at.mu.Unlock()
 
-	for elem := at.outstandingAcks.Front(); elem != nil; elem = elem.Next() {
-		ack, _ := elem.Value.(*AckConsumer)
+	for {
+		elem := at.outstandingAcks.Front()
+		if elem == nil {
+			break
+		}
+		ack, _ := elem.Value.(*ackConsumer)
 		if !ack.IsAcked() {
 			break
 		}
@@ -152,23 +148,37 @@ func (at *ackTracker) CommitOffset() int64 {
 	if at.ackedPrefixOffset == nilCursorOffset {
 		return nilCursorOffset
 	}
-	// Convert from last acked to first unacked, which is the cursor offset to be
-	// committed.
+	// Convert from last acked to first unacked, which is the commit offset.
 	return at.ackedPrefixOffset + 1
 }
 
-// committedCursorTracker tracks pending and last successful committed offsets.
+// Release clears and invalidates any outstanding acks. This should be called
+// when the subscriber terminates.
+func (at *ackTracker) Release() {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+
+	for elem := at.outstandingAcks.Front(); elem != nil; elem = elem.Next() {
+		ack, _ := elem.Value.(*ackConsumer)
+		ack.Clear()
+	}
+	at.outstandingAcks.Init()
+}
+
+// commitCursorTracker tracks pending and last successful committed offsets.
 // It is only accessed by the committer.
-type committedCursorTracker struct {
+type commitCursorTracker struct {
+	// Used to obtain the desired commit offset based on messages acked by the
+	// user.
 	acks *ackTracker
 	// Last offset for which the server acknowledged the commit.
 	lastConfirmedOffset int64
-	// Unacknowledged committed offsets.
+	// Queue of unacknowledged committed offsets.
 	pendingOffsets *list.List // Value = int64
 }
 
-func newCommittedCursorTracker(acks *ackTracker) *committedCursorTracker {
-	return &committedCursorTracker{
+func newCommitCursorTracker(acks *ackTracker) *commitCursorTracker {
+	return &commitCursorTracker{
 		acks:                acks,
 		lastConfirmedOffset: nilCursorOffset,
 		pendingOffsets:      list.New(),
@@ -183,32 +193,36 @@ func extractOffsetFromElem(elem *list.Element) int64 {
 	return offset
 }
 
-// ClearPending discards old pending offsets. Should be called when the stream
-// reconnects, as the acknowledgements for these would not be received.
-func (ct *committedCursorTracker) ClearPending() {
-	ct.pendingOffsets.Init()
-}
-
-// NextOffset is the next offset to be sent to the stream, if any.
-func (ct *committedCursorTracker) NextOffset() int64 {
-	newCommitOffset := ct.acks.CommitOffset()
-	if newCommitOffset <= ct.lastConfirmedOffset {
+// NextOffset is the commit offset to be sent to the stream. Returns
+// nilCursorOffset if the commit offset does not need to be updated.
+func (ct *commitCursorTracker) NextOffset() int64 {
+	desiredCommitOffset := ct.acks.CommitOffset()
+	if desiredCommitOffset <= ct.lastConfirmedOffset {
+		// The server has already confirmed the commit offset.
 		return nilCursorOffset
 	}
-	if newCommitOffset <= extractOffsetFromElem(ct.pendingOffsets.Back()) {
+	if desiredCommitOffset <= extractOffsetFromElem(ct.pendingOffsets.Back()) {
+		// The commit offset has already been sent to the commit stream and is
+		// awaiting acknowledgment.
 		return nilCursorOffset
 	}
-	return newCommitOffset
+	return desiredCommitOffset
 }
 
 // AddPending adds a sent, but not yet acknowledged, committed offset.
-func (ct *committedCursorTracker) AddPending(offset int64) {
+func (ct *commitCursorTracker) AddPending(offset int64) {
 	ct.pendingOffsets.PushBack(offset)
+}
+
+// ClearPending discards old pending offsets. Should be called when the commit
+// stream reconnects, as the acknowledgments for these would not be received.
+func (ct *commitCursorTracker) ClearPending() {
+	ct.pendingOffsets.Init()
 }
 
 // AcknowledgeOffsets processes the server's acknowledgement of the first
 // `numAcked` pending offsets.
-func (ct *committedCursorTracker) AcknowledgeOffsets(numAcked int64) error {
+func (ct *commitCursorTracker) AcknowledgeOffsets(numAcked int64) error {
 	if numPending := int64(ct.pendingOffsets.Len()); numPending < numAcked {
 		return fmt.Errorf("pubsublite: server acknowledged %d cursor commits, but only %d were sent", numAcked, numPending)
 	}
@@ -218,11 +232,10 @@ func (ct *committedCursorTracker) AcknowledgeOffsets(numAcked int64) error {
 		ct.lastConfirmedOffset = extractOffsetFromElem(front)
 		ct.pendingOffsets.Remove(front)
 	}
-	//fmt.Printf("lastConfirmedOffset: %d\n", ct.lastConfirmedOffset)
 	return nil
 }
 
 // Done when there are no more unacknowledged offsets.
-func (ct *committedCursorTracker) Done() bool {
-	return ct.pendingOffsets.Len() == 0
+func (ct *commitCursorTracker) Done() bool {
+	return ct.pendingOffsets.Len() == 0 && ct.NextOffset() == nilCursorOffset
 }

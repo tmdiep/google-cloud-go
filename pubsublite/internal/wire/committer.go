@@ -42,7 +42,8 @@ type committer struct {
 	// Fields below must be guarded with mutex.
 	stream *retryableStream
 
-	cursorTracker *committedCursorTracker
+	acks          *ackTracker
+	cursorTracker *commitCursorTracker
 	pollCommits   *periodicTask
 
 	abstractService
@@ -59,7 +60,8 @@ func newCommitter(ctx context.Context, cursor *vkit.CursorClient, settings Recei
 				},
 			},
 		},
-		cursorTracker: newCommittedCursorTracker(acks),
+		acks:          acks,
+		cursorTracker: newCommitCursorTracker(acks),
 	}
 	c.stream = newRetryableStream(ctx, c, settings.Timeout, reflect.TypeOf(pb.StreamingCommitCursorResponse{}))
 	c.pollCommits = newPeriodicTask(commitCursorPeriod, c.commitOffsetToStream, "pollCommits")
@@ -179,13 +181,17 @@ func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error
 	}
 
 	// Otherwise immediately terminate the stream.
-	c.pollCommits.Stop()
-	c.stream.Stop()
+	c.unsafeTerminate()
 }
 
 func (c *committer) unsafeCheckDone() {
 	if c.status == serviceTerminating && c.cursorTracker.Done() {
-		c.pollCommits.Stop()
-		c.stream.Stop()
+		c.unsafeTerminate()
 	}
+}
+
+func (c *committer) unsafeTerminate() {
+	c.pollCommits.Stop()
+	c.stream.Stop()
+	c.acks.Release()
 }
