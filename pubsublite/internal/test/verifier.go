@@ -45,13 +45,14 @@ func (r *rpcMetadata) wait() error {
 	}
 	select {
 	case <-time.After(blockWaitTimeout):
+		// Note: avoid returning a retryable code to quickly terminate the test.
 		return status.Errorf(codes.FailedPrecondition, "mockserver: test did not unblock response within %v", blockWaitTimeout)
 	case <-r.blockResponse:
 		return nil
 	}
 }
 
-// RPCVerifier stores an stack of requests expected from the client, and the
+// RPCVerifier stores an queue of requests expected from the client, and the
 // corresponding response or error to return.
 type RPCVerifier struct {
 	t        *testing.T
@@ -162,7 +163,7 @@ func (v *RPCVerifier) Flush() {
 	v.rpcs.Init()
 }
 
-// streamVerifiers stores a stack of verifiers for unique stream connections.
+// streamVerifiers stores a queue of verifiers for unique stream connections.
 type streamVerifiers struct {
 	t          *testing.T
 	verifiers  *list.List // Value = *RPCVerifier
