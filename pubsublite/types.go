@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"cloud.google.com/go/pubsublite/internal/wire"
 )
 
 // LocationPath stores a path consisting of a project and zone.
@@ -114,31 +116,9 @@ func parseSubscriptionPath(input string) (SubscriptionPath, error) {
 	return SubscriptionPath{Project: parts[1], Zone: parts[2], SubscriptionID: parts[3]}, nil
 }
 
-// validateZone verifies that the `input` string has the format of a valid
-// Google Cloud zone. An example zone is "europe-west1-b".
-// See https://cloud.google.com/compute/docs/regions-zones for more information.
-func validateZone(input string) error {
-	parts := strings.Split(input, "-")
-	if len(parts) != 3 {
-		return fmt.Errorf("pubsublite: invalid zone %q", input)
-	}
-	return nil
-}
-
-// validateRegion verifies that the `input` string has the format of a valid
-// Google Cloud region. An example region is "europe-west1".
-// See https://cloud.google.com/compute/docs/regions-zones for more information.
-func validateRegion(input string) error {
-	parts := strings.Split(input, "-")
-	if len(parts) != 2 {
-		return fmt.Errorf("pubsublite: invalid region %q", input)
-	}
-	return nil
-}
-
 // ZoneToRegion returns the region that the given zone is in.
 func ZoneToRegion(zone string) (string, error) {
-	if err := validateZone(zone); err != nil {
+	if err := wire.ValidateZone(zone); err != nil {
 		return "", err
 	}
 	return zone[0:strings.LastIndex(zone, "-")], nil

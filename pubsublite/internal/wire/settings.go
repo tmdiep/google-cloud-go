@@ -64,7 +64,7 @@ var DefaultPublishSettings = PublishSettings{
 	BufferedByteLimit: 1 << 30, // 1 GiB
 }
 
-// ReceiveSettings configure the Receive method.
+// ReceiveSettings control the receiving of messages.
 type ReceiveSettings struct {
 	MaxOutstandingMessages int
 	MaxOutstandingBytes    int
