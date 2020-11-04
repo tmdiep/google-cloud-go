@@ -11,54 +11,18 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 
-package pubsublite
+package ps
 
 import (
 	"context"
 
+	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsublite"
 	"cloud.google.com/go/pubsublite/internal/wire"
 	"google.golang.org/api/option"
 
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
-
-// A PublishResult holds the result from a call to Publish.
-type PublishResult struct {
-	ready    chan struct{}
-	serverID string
-	err      error
-}
-
-// Ready returns a channel that is closed when the result is ready. When the
-// Ready channel is closed, Get is guaranteed not to block.
-func (r *PublishResult) Ready() <-chan struct{} { return r.ready }
-
-// Get returns the server-generated message ID and/or error result of a Publish
-// call. Get blocks until the Publish call completes or the context is done.
-func (r *PublishResult) Get(ctx context.Context) (serverID string, err error) {
-	// If the result is already ready, return it even if the context is done.
-	select {
-	case <-r.Ready():
-		return r.serverID, r.err
-	default:
-	}
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case <-r.Ready():
-		return r.serverID, r.err
-	}
-}
-
-func (r *PublishResult) set(pm *wire.PublishMetadata, err error) {
-	r.serverID = pm.String()
-	r.err = err
-	close(r.ready)
-}
-
-func newPublishResult() *PublishResult {
-	return &PublishResult{ready: make(chan struct{})}
-}
 
 // PublisherClient is a Cloud Pub/Sub Lite client to publish messages to a given
 // topic.
@@ -71,13 +35,12 @@ type PublisherClient struct {
 // messages to a given topic.
 // See https://cloud.google.com/pubsub/lite/docs/publishing for more information
 // about publishing.
-func NewPublisherClient(ctx context.Context, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) (*PublisherClient, error) {
-	region, err := ZoneToRegion(topic.Zone)
+func NewPublisherClient(ctx context.Context, settings PublishSettings, topic pubsublite.TopicPath, opts ...option.ClientOption) (*PublisherClient, error) {
+	region, err := pubsublite.ZoneToRegion(topic.Zone)
 	if err != nil {
 		return nil, err
 	}
-	// TODO: Validate and convert the publish settings.
-	pub, err := wire.NewPublisher(ctx, wire.DefaultPublishSettings, region, topic.String(), opts...)
+	pub, err := wire.NewPublisher(ctx, settings.toWireSettings(), region, topic.String(), opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -96,15 +59,21 @@ func NewPublisherClient(ctx context.Context, settings PublishSettings, topic Top
 //
 // Once Stop() has been called, future calls to Publish will immediately return
 // a PublishResult with an error.
-func (p *PublisherClient) Publish(ctx context.Context, msg *Message) (result *PublishResult) {
-	result = newPublishResult()
+func (p *PublisherClient) Publish(ctx context.Context, msg *pubsub.Message) *pubsub.PublishResult {
+	result, setResult := pubsub.NewPublishResult()
 	msgpb, err := p.transformMessage(msg)
 	if err != nil {
-		result.set(nil, err)
-		return
+		setResult("", err)
+		return result
 	}
-	p.pub.Publish(msgpb, result.set)
-	return
+	p.pub.Publish(msgpb, func(pm *wire.PublishMetadata, err error) {
+		if pm != nil {
+			setResult(pm.String(), err)
+		} else {
+			setResult("", err)
+		}
+	})
+	return result
 }
 
 // Stop sends all remaining published messages and closes publish streams.
@@ -115,7 +84,7 @@ func (p *PublisherClient) Stop() {
 	p.pub.WaitStopped()
 }
 
-func (p *PublisherClient) transformMessage(msg *Message) (*pb.PubSubMessage, error) {
+func (p *PublisherClient) transformMessage(msg *pubsub.Message) (*pb.PubSubMessage, error) {
 	if p.settings.MessageTransformer != nil {
 		return p.settings.MessageTransformer(msg)
 	}

@@ -470,6 +470,12 @@ type PublishResult struct {
 	err      error
 }
 
+// NewPublishResult is for internal use only.
+func NewPublishResult() (*PublishResult, func(string, err)) {
+	result := &PublishResult{ready: make(chan struct{})}
+	return result, result.set
+}
+
 // Ready returns a channel that is closed when the result is ready.
 // When the Ready channel is closed, Get is guaranteed not to block.
 func (r *PublishResult) Ready() <-chan struct{} { return r.ready }

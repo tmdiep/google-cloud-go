@@ -15,7 +15,6 @@ package pubsublite
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"strconv"
 	"testing"
@@ -79,19 +78,6 @@ func adminClient(ctx context.Context, t *testing.T, region string, opts ...optio
 		t.Fatalf("Failed to create admin client: %v", err)
 	}
 	return admin
-}
-
-func publisherClient(ctx context.Context, t *testing.T, settings PublishSettings, topic TopicPath, opts ...option.ClientOption) *PublisherClient {
-	ts := testutil.TokenSource(ctx, vkit.DefaultAuthScopes()...)
-	if ts == nil {
-		t.Skip("Integration tests skipped. See CONTRIBUTING.md for details")
-	}
-	opts = append(withGRPCHeadersAssertion(t, option.WithTokenSource(ts)), opts...)
-	publisher, err := NewPublisherClient(ctx, settings, topic, opts...)
-	if err != nil {
-		t.Fatalf("Failed to create publish client: %v", err)
-	}
-	return publisher
 }
 
 func cleanUpTopic(ctx context.Context, t *testing.T, admin *AdminClient, name TopicPath) {
@@ -287,35 +273,5 @@ func TestResourceAdminOperations(t *testing.T) {
 		t.Errorf("Failed to update subscription: %v", err)
 	} else if diff := testutil.Diff(gotSubsConfig, wantUpdatedSubsConfig); diff != "" {
 		t.Errorf("UpdateSubscription() got: -, want: +\n%s", diff)
-	}
-}
-
-func TestPublish(t *testing.T) {
-	initIntegrationTest(t)
-
-	ctx := context.Background()
-	proj := testutil.ProjID()
-	zone := "us-central1-b"
-	resourceID := "go-publish-test"
-	topic := TopicPath{Project: proj, Zone: zone, TopicID: resourceID}
-
-	settings := DefaultPublishSettings
-	publisher := publisherClient(ctx, t, settings, topic)
-
-	var results []*PublishResult
-	for i := 0; i < 20; i++ {
-		results = append(results, publisher.Publish(ctx, &Message{
-			Data: []byte(fmt.Sprintf("%d", i)),
-		}))
-	}
-
-	publisher.Stop()
-
-	for _, r := range results {
-		id, err := r.Get(ctx)
-		if err != nil {
-			t.Errorf("Publish failed with error: %v", err)
-		}
-		fmt.Printf("Published a message with a message ID: %s\n", id)
 	}
 }

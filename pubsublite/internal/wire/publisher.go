@@ -63,6 +63,9 @@ type Publisher interface {
 
 // NewPublisher creates a new client for publishing messages.
 func NewPublisher(ctx context.Context, settings PublishSettings, region, topicPath string, opts ...option.ClientOption) (Publisher, error) {
+	if err := validatePublishSettings(settings); err != nil {
+		return nil, err
+	}
 	pubClient, err := newPublisherClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err
