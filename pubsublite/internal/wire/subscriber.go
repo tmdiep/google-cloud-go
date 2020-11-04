@@ -379,15 +379,14 @@ func (as *assigningSubscriber) handleAssignment(assignment *partitionAssignment)
 	as.mu.Lock()
 	defer as.mu.Unlock()
 
-	if as.status >= serviceTerminating {
-		return ErrServiceStopped
-	}
-
 	// Handle new partitions.
 	for _, partition := range assignment.Partitions() {
 		if _, exists := as.subscribers[partition]; !exists {
 			subscriber := as.subsFactory.New(partition)
-			as.unsafeAddServices(subscriber)
+			if err := as.unsafeAddServices(subscriber); err != nil {
+				// Service is stopping/stopped.
+				return err
+			}
 			as.subscribers[partition] = subscriber
 			fmt.Printf("assigningSubscriber: added subscriber for partition %d\n", partition)
 		}

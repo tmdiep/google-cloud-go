@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"cloud.google.com/go/internal/testutil"
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
@@ -44,10 +45,10 @@ func TestPubSub(t *testing.T) {
 	proj := testutil.ProjID()
 	zone := "us-central1-b"
 	region := "us-central1"
-	resourceID := "go-publish-test-4"
+	resourceID := "go-publish-test"
 	topicPath := fmt.Sprintf("projects/%s/locations/%s/topics/%s", proj, zone, resourceID)
 	subscriptionPath := fmt.Sprintf("projects/%s/locations/%s/subscriptions/%s", proj, zone, resourceID)
-	numMessages := 20
+	numMessages := 32
 
 	adminClient, err := NewAdminClient(ctx, region)
 	if err != nil {
@@ -65,10 +66,13 @@ func TestPubSub(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	beforeStart := time.Now()
 	publisher.Start()
 	if err := publisher.WaitStarted(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
+	startDuration := time.Now().Sub(beforeStart)
+	fmt.Printf("Publisher start duration: %v\n", startDuration)
 
 	published := func(pm *PublishMetadata, err error) {
 		fmt.Printf("Published msg: %s, %v\n", pm, err)
@@ -100,10 +104,14 @@ func TestPubSub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	beforeStart = time.Now()
 	subscriber.Start()
 	if err := subscriber.WaitStarted(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
+	startDuration = time.Now().Sub(beforeStart)
+	fmt.Printf("subscriber start duration: %v\n", startDuration)
 
 	wg.Wait()
 	//time.Sleep(5 * time.Second) // Comment out wg.Done
