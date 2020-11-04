@@ -40,13 +40,10 @@ type committer struct {
 	initialReq   *pb.StreamingCommitCursorRequest
 
 	// Fields below must be guarded with mutex.
-	stream *retryableStream
-
+	stream        *retryableStream
 	acks          *ackTracker
 	cursorTracker *commitCursorTracker
-
-	// Periodically send batched commits.
-	pollCommits *periodicTask
+	pollCommits   *periodicTask
 
 	abstractService
 }

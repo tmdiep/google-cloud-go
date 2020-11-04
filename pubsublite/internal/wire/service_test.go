@@ -156,26 +156,29 @@ func TestServiceAddRemoveStatusChangeReceiver(t *testing.T) {
 	service.AddStatusChangeReceiver(receiver1.Handle(), receiver1.OnStatusChange)
 	service.AddStatusChangeReceiver(receiver2.Handle(), receiver2.OnStatusChange)
 	service.AddStatusChangeReceiver(receiver3.Handle(), receiver3.OnStatusChange)
-	service.UpdateStatus(serviceActive, nil)
 
-	service.RemoveStatusChangeReceiver(receiver1.Handle())
-	service.UpdateStatus(serviceTerminating, nil)
+	t.Run("All receivers", func(t *testing.T) {
+		service.UpdateStatus(serviceActive, nil)
+		receiver1.VerifyStatus(t, serviceActive)
+		receiver2.VerifyStatus(t, serviceActive)
+		receiver3.VerifyStatus(t, serviceActive)
+	})
 
-	service.RemoveStatusChangeReceiver(receiver2.Handle())
-	service.UpdateStatus(serviceTerminated, nil)
+	t.Run("receiver1 removed", func(t *testing.T) {
+		service.RemoveStatusChangeReceiver(receiver1.Handle())
+		service.UpdateStatus(serviceTerminating, nil)
+		receiver1.VerifyNoStatusChanges(t)
+		receiver2.VerifyStatus(t, serviceTerminating)
+		receiver3.VerifyStatus(t, serviceTerminating)
+	})
 
-	// receiver3 is the only one that should receive all events. The others were
-	// removed.
-	receiver1.VerifyStatus(t, serviceActive)
-	receiver2.VerifyStatus(t, serviceActive)
-	receiver2.VerifyStatus(t, serviceTerminating)
-	receiver3.VerifyStatus(t, serviceActive)
-	receiver3.VerifyStatus(t, serviceTerminating)
-	receiver3.VerifyStatus(t, serviceTerminated)
-
-	receiver1.VerifyNoStatusChanges(t)
-	receiver2.VerifyNoStatusChanges(t)
-	receiver3.VerifyNoStatusChanges(t)
+	t.Run("receiver2 removed", func(t *testing.T) {
+		service.RemoveStatusChangeReceiver(receiver2.Handle())
+		service.UpdateStatus(serviceTerminated, nil)
+		receiver1.VerifyNoStatusChanges(t)
+		receiver2.VerifyNoStatusChanges(t)
+		receiver3.VerifyStatus(t, serviceTerminated)
+	})
 }
 
 type testCompositeService struct {

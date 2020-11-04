@@ -46,6 +46,9 @@ type Subscriber interface {
 
 // NewSubscriber creates a new client for receiving messages.
 func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver MessageReceiverFunc, region, subscriptionPath string, opts ...option.ClientOption) (Subscriber, error) {
+	if err := ValidateRegion(region); err != nil {
+		return nil, err
+	}
 	subsClient, err := newSubscriberClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err

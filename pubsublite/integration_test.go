@@ -31,7 +31,8 @@ import (
 const gibi = 1 << 30
 
 var (
-	rng *rand.Rand
+	resourceIDs = uid.NewSpace("go-admin-test", nil)
+	rng         *rand.Rand
 
 	// A random zone is selected for each integration test run.
 	supportedZones = []string{
@@ -103,7 +104,6 @@ func TestResourceAdminOperations(t *testing.T) {
 	proj := testutil.ProjID()
 	zone := randomLiteZone()
 	region, _ := ZoneToRegion(zone)
-	resourceIDs := uid.NewSpace("go-admin-test", nil)
 	resourceID := resourceIDs.New()
 
 	locationPath := LocationPath{Project: proj, Zone: zone}
