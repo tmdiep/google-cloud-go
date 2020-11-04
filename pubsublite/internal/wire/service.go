@@ -14,9 +14,7 @@
 package wire
 
 import (
-	"fmt"
 	"sync"
-	"time"
 )
 
 // serviceStatus specifies the current status of the service. The order of the
@@ -239,7 +237,6 @@ func (cs *compositeService) unsafeRemoveService(service service) {
 			break
 		}
 	}
-
 	cs.dependencies = removeFromSlice(cs.dependencies, removeIdx)
 }
 
@@ -285,11 +282,11 @@ func (cs *compositeService) onServiceStatusChange(handle serviceHandle, status s
 		cs.removed = removeFromSlice(cs.removed, removeIdx)
 	}
 
-	// Note: because status changes are notified asynchronously, they may be
-	// received out of order.
 	isDependency := false
 	for _, s := range cs.dependencies {
 		if s.service.Handle() == handle {
+			// Note: because status changes are notified asynchronously, they may be
+			// received out of order.
 			if status > s.lastStatus {
 				s.lastStatus = status
 			}
@@ -338,58 +335,4 @@ func removeFromSlice(services []*serviceHolder, removeIdx int) []*serviceHolder 
 	}
 	services[lastIdx] = nil
 	return services[:lastIdx]
-}
-
-type periodicTask struct {
-	period  time.Duration
-	ticker  *time.Ticker
-	stop    chan struct{}
-	stopped bool
-	task    func()
-	name    string
-}
-
-func newPeriodicTask(period time.Duration, task func(), name string) *periodicTask {
-	return &periodicTask{
-		ticker: time.NewTicker(period),
-		stop:   make(chan struct{}),
-		period: period,
-		task:   task,
-		name:   name,
-	}
-}
-
-func (pt *periodicTask) Start() {
-	go pt.poll()
-}
-
-func (pt *periodicTask) Resume() {
-	pt.ticker.Reset(pt.period)
-}
-
-func (pt *periodicTask) Pause() {
-	pt.ticker.Stop()
-}
-
-// Stop permanently stops the periodic task.
-func (pt *periodicTask) Stop() {
-	// Prevent a panic if the stop channel has already been stopped.
-	if !pt.stopped {
-		close(pt.stop)
-		pt.stopped = true
-	}
-}
-
-func (pt *periodicTask) poll() {
-	fmt.Printf("periodicTask(%s).Started: %v\n", pt.name, time.Now())
-	for {
-		select {
-		case <-pt.stop:
-			fmt.Printf("periodicTask(%s).Stopped: %v\n", pt.name, time.Now())
-			// Ends the goroutine.
-			return
-		case <-pt.ticker.C:
-			pt.task()
-		}
-	}
 }
