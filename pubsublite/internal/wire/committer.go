@@ -31,7 +31,7 @@ var (
 	errInvalidCommitResponse        = errors.New("pubsublite: received invalid commit response from server")
 )
 
-// The frequency of cursor commits.
+// The frequency of batched cursor commits.
 const commitCursorPeriod = 50 * time.Millisecond
 
 type committer struct {
@@ -44,7 +44,9 @@ type committer struct {
 
 	acks          *ackTracker
 	cursorTracker *commitCursorTracker
-	pollCommits   *periodicTask
+
+	// Periodically send batched commits.
+	pollCommits *periodicTask
 
 	abstractService
 }
@@ -107,10 +109,13 @@ func (c *committer) onStreamStatusChange(status streamStatus) {
 	switch status {
 	case streamConnected:
 		c.unsafeUpdateStatus(serviceActive, nil)
+		// Once the stream connects, immediately send the latest desired commit
+		// offset.
 		c.unsafeCommitOffsetToStream()
 		c.pollCommits.Resume()
 
 	case streamReconnecting:
+		// Clear unacknowledged committed offsets when the stream breaks.
 		c.cursorTracker.ClearPending()
 		c.pollCommits.Pause()
 
@@ -170,11 +175,8 @@ func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error
 		return
 	}
 
-	// Stop pollCommits to prevent more in-flight commits added to the stream.
-	c.pollCommits.Pause()
-
 	if targetStatus == serviceTerminating {
-		// Try sending final commit to the stream.
+		// Expedite sending final commit to the stream.
 		c.unsafeCommitOffsetToStream()
 		c.unsafeCheckDone()
 		return
