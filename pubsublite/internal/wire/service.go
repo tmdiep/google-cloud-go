@@ -14,7 +14,6 @@
 package wire
 
 import (
-	"log"
 	"sync"
 )
 
@@ -57,6 +56,7 @@ type service interface {
 	AddStatusChangeReceiver(serviceHandle, serviceStatusChangeFunc)
 	RemoveStatusChangeReceiver(serviceHandle)
 	Handle() serviceHandle
+	Error() error
 }
 
 // abstractService can be embedded into other structs to provide common
@@ -144,10 +144,6 @@ func (as *abstractService) unsafeUpdateStatus(targetStatus serviceStatus, err er
 	if as.err == nil {
 		// Prevent clobbering original error.
 		as.err = err
-	}
-
-	if targetStatus == serviceTerminated {
-		log.Printf("Service terminated with err: %v", err)
 	}
 
 	for _, receiver := range as.statusChangeReceivers {
