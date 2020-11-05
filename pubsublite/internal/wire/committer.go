@@ -160,7 +160,7 @@ func (c *committer) onResponse(response interface{}) {
 		if numAcked <= 0 {
 			return fmt.Errorf("pubsublite: server acknowledged an invalid commit count: %d", numAcked)
 		}
-		c.cursorTracker.AcknowledgeOffsets(numAcked)
+		c.cursorTracker.ConfirmOffsets(numAcked)
 		c.unsafeCheckDone()
 		return nil
 	}

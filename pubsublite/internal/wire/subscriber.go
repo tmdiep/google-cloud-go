@@ -251,15 +251,11 @@ func (s *wireSubscriber) onMessageResponse(response *pb.MessageResponse) error {
 }
 
 func (s *wireSubscriber) onAck(ac *ackConsumer) {
-	// Don't block the user's goroutine with potentially expensive ack
-	// processing and also to ensure onAckAsync() does not run while holding the
-	// ackConsumer's mutex.
+	// Don't block the user's goroutine with potentially expensive ack processing.
 	go s.onAckAsync(ac.MsgBytes)
 }
 
 func (s *wireSubscriber) onAckAsync(msgBytes int64) {
-	s.acks.Pop()
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unsafeAllowFlow(flowControlTokens{Bytes: msgBytes, Messages: 1})

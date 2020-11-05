@@ -57,11 +57,7 @@ func TestAckTrackerProcessing(t *testing.T) {
 	}
 
 	onAck := func(ac *ackConsumer) {
-		// This callback is occuring within ackConsumer while holding a locked
-		// mutex. In non-test code, it occurs asynchronously.
-		ac.mu.Unlock()
-		ackTracker.Pop()
-		ac.mu.Lock()
+		// Nothing to do.
 	}
 	ack1 := newAckConsumer(1, 0, onAck)
 	ack2 := newAckConsumer(2, 0, onAck)
@@ -145,11 +141,7 @@ func TestCommitCursorTrackerProcessing(t *testing.T) {
 	}
 
 	onAck := func(ac *ackConsumer) {
-		// This callback is occuring within ackConsumer while holding a locked
-		// mutex. In non-test code, it occurs asynchronously.
-		ac.mu.Unlock()
-		ackTracker.Pop()
-		ac.mu.Lock()
+		// Nothing to do.
 	}
 	ack1 := newAckConsumer(1, 0, onAck)
 	ack2 := newAckConsumer(2, 0, onAck)
@@ -200,8 +192,8 @@ func TestCommitCursorTrackerProcessing(t *testing.T) {
 	if got, want := commitTracker.lastConfirmedOffset, nilCursorOffset; got != want {
 		t.Errorf("commitCursorTracker.lastConfirmedOffset got %v, want %v", got, want)
 	}
-	if err := commitTracker.AcknowledgeOffsets(2); err != nil {
-		t.Errorf("commitCursorTracker.AcknowledgeOffsets() got err %v", err)
+	if err := commitTracker.ConfirmOffsets(2); err != nil {
+		t.Errorf("commitCursorTracker.ConfirmOffsets() got err %v", err)
 	}
 	if got, want := commitTracker.lastConfirmedOffset, int64(4); got != want {
 		t.Errorf("commitCursorTracker.lastConfirmedOffset got %v, want %v", got, want)
@@ -216,11 +208,7 @@ func TestCommitCursorTrackerStreamReconnects(t *testing.T) {
 	commitTracker := newCommitCursorTracker(ackTracker)
 
 	onAck := func(ac *ackConsumer) {
-		// This callback is occuring within ackConsumer while holding a locked
-		// mutex. In non-test code, it occurs asynchronously.
-		ac.mu.Unlock()
-		ackTracker.Pop()
-		ac.mu.Lock()
+		// Nothing to do.
 	}
 	ack1 := newAckConsumer(1, 0, onAck)
 	ack2 := newAckConsumer(2, 0, onAck)
@@ -284,12 +272,12 @@ func TestCommitCursorTrackerStreamReconnects(t *testing.T) {
 		t.Errorf("commitCursorTracker.NextOffset() got %v, want %v", got, want)
 	}
 
-	// Only 1 pending commit acknowledged.
+	// Only 1 pending commit confirmed.
 	if got, want := commitTracker.lastConfirmedOffset, nilCursorOffset; got != want {
 		t.Errorf("commitCursorTracker.lastConfirmedOffset got %v, want %v", got, want)
 	}
-	if err := commitTracker.AcknowledgeOffsets(1); err != nil {
-		t.Errorf("commitCursorTracker.AcknowledgeOffsets() got err %v", err)
+	if err := commitTracker.ConfirmOffsets(1); err != nil {
+		t.Errorf("commitCursorTracker.ConfirmOffsets() got err %v", err)
 	}
 	if got, want := commitTracker.lastConfirmedOffset, int64(3); got != want {
 		t.Errorf("commitCursorTracker.lastConfirmedOffset got %v, want %v", got, want)
@@ -298,9 +286,9 @@ func TestCommitCursorTrackerStreamReconnects(t *testing.T) {
 		t.Errorf("commitCursorTracker.Done() got %v, want %v", got, want)
 	}
 
-	// Final pending commit acknowledged.
-	if err := commitTracker.AcknowledgeOffsets(1); err != nil {
-		t.Errorf("commitCursorTracker.AcknowledgeOffsets() got err %v", err)
+	// Final pending commit confirmed.
+	if err := commitTracker.ConfirmOffsets(1); err != nil {
+		t.Errorf("commitCursorTracker.ConfirmOffsets() got err %v", err)
 	}
 	if got, want := commitTracker.lastConfirmedOffset, int64(4); got != want {
 		t.Errorf("commitCursorTracker.lastConfirmedOffset got %v, want %v", got, want)
