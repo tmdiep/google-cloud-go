@@ -40,6 +40,11 @@ const (
 // serviceHandle is used to compare pointers to service instances.
 type serviceHandle interface{}
 
+// serviceStatusChangeFunc notifies the parent of service status changes.
+// `serviceTerminating` and `serviceTerminated` have an associated error. This
+// error may be nil if the user called Stop().
+type serviceStatusChangeFunc func(serviceHandle, serviceStatus, error)
+
 // service is the interface that must be implemented by services (essentially
 // gRPC client stream wrappers, e.g. subscriber, publisher) that can be
 // dependencies of a compositeService.
@@ -53,16 +58,6 @@ type service interface {
 	Handle() serviceHandle
 }
 
-// serviceStatusChangeFunc notifies the parent of service status changes.
-// `serviceTerminating` and `serviceTerminated` have an associated error. This
-// error may be nil if the user called Stop().
-type serviceStatusChangeFunc func(serviceHandle, serviceStatus, error)
-
-type statusChangeReceiver struct {
-	handle         serviceHandle // For removing the receiver.
-	onStatusChange serviceStatusChangeFunc
-}
-
 // abstractService can be embedded into other structs to provide common
 // functionality for managing service status and status change receivers.
 type abstractService struct {
@@ -72,6 +67,11 @@ type abstractService struct {
 	status                serviceStatus
 	// The error that cause the service to terminate.
 	err error
+}
+
+type statusChangeReceiver struct {
+	handle         serviceHandle // For removing the receiver.
+	onStatusChange serviceStatusChangeFunc
 }
 
 func (as *abstractService) AddStatusChangeReceiver(handle serviceHandle, onStatusChange serviceStatusChangeFunc) {
@@ -141,7 +141,7 @@ func (as *abstractService) unsafeUpdateStatus(targetStatus serviceStatus, err er
 
 	as.status = targetStatus
 	if as.err == nil {
-		// Prevent clobbering an original error.
+		// Prevent clobbering original error.
 		as.err = err
 	}
 
@@ -161,6 +161,9 @@ type serviceHolder struct {
 // compositeService can be embedded into other structs to manage child services.
 // It implements the service interface and can itself be a dependency of another
 // compositeService.
+//
+// If one child service terminates due to a permanent failure, all other child
+// services are stopped. Child services can be added and removed dynamically.
 type compositeService struct {
 	// Used to block until all dependencies have started or terminated.
 	waitStarted    chan struct{}
@@ -282,11 +285,13 @@ func (cs *compositeService) onServiceStatusChange(handle serviceHandle, status s
 		cs.removed = removeFromSlice(cs.removed, removeIdx)
 	}
 
+	// Note: we cannot rely on the service not being in the removed list above to
+	// determine whether it is an active dependency. The notification may be for a
+	// service that is no longer in cs.removed or cs.dependencies, because status
+	// changes are notified asynchronously and may be received out of order.
 	isDependency := false
 	for _, s := range cs.dependencies {
 		if s.service.Handle() == handle {
-			// Note: because status changes are notified asynchronously, they may be
-			// received out of order.
 			if status > s.lastStatus {
 				s.lastStatus = status
 			}

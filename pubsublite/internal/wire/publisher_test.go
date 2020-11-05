@@ -28,10 +28,10 @@ import (
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
-const (
-	publisherWaitTimeout = 30 * time.Second
-)
+const publisherWaitTimeout = 30 * time.Second
 
+// publishResultReceiver provides convenience methods for receiving and
+// validating publish results.
 type publishResultReceiver struct {
 	done   chan struct{}
 	t      *testing.T
@@ -173,7 +173,7 @@ func (tp *testPartitionPublisher) finalError() error {
 	}
 }
 
-func (tp *testPartitionPublisher) stopVerifyFinalError() {
+func (tp *testPartitionPublisher) stopVerifyNoFinalError() {
 	tp.pub.Stop()
 	if gotErr := tp.finalError(); gotErr != nil {
 		tp.t.Errorf("Publisher final err: (%v), want: <nil>", gotErr)
@@ -232,7 +232,7 @@ func TestPartitionPublisherStartOnce(t *testing.T) {
 	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
-	defer pub.stopVerifyFinalError()
+	defer pub.stopVerifyNoFinalError()
 
 	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
@@ -324,7 +324,7 @@ func TestPartitionPublisherConnectRetries(t *testing.T) {
 	mockServer.AddPublishStream(topic.Path, topic.Partition, stream3)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
-	defer pub.stopVerifyFinalError()
+	defer pub.stopVerifyNoFinalError()
 
 	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
@@ -516,7 +516,7 @@ func TestPartitionPublisherBatchingDelay(t *testing.T) {
 	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, settings)
-	defer pub.stopVerifyFinalError()
+	defer pub.stopVerifyNoFinalError()
 	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -554,7 +554,7 @@ func TestPartitionPublisherResendMessages(t *testing.T) {
 	mockServer.AddPublishStream(topic.Path, topic.Partition, stream2)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
-	defer pub.stopVerifyFinalError()
+	defer pub.stopVerifyNoFinalError()
 	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -665,7 +665,7 @@ func TestPartitionPublisherBufferRefill(t *testing.T) {
 	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, settings)
-	defer pub.stopVerifyFinalError()
+	defer pub.stopVerifyNoFinalError()
 	if gotErr := pub.startError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
