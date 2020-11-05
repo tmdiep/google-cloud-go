@@ -17,7 +17,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"reflect"
 	"time"
 
@@ -294,7 +293,7 @@ func (s *wireSubscriber) unsafeInitiateShutdown(targetStatus serviceStatus, err 
 		return
 	}
 
-	log.Printf("pubsublite: wireSubscriber terminating with status=%d, err=%v", targetStatus, err)
+	//log.Printf("pubsublite: wireSubscriber terminating with status=%d, err=%v", targetStatus, err)
 
 	// No data to send. Immediately terminate the stream.
 	s.pollFlowControl.Stop()

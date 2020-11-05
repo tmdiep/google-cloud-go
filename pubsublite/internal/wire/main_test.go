@@ -27,8 +27,8 @@ import (
 
 var (
 	// Initialized in TestMain.
-	mockServer test.MockServer
-	clientOpts []option.ClientOption
+	mockServer     test.MockServer
+	testClientOpts []option.ClientOption
 
 	// Intended for unit tests.
 	defaultTestPublishSettings PublishSettings
@@ -56,7 +56,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	clientOpts = []option.ClientOption{option.WithGRPCConn(conn)}
+	testClientOpts = []option.ClientOption{option.WithGRPCConn(conn)}
 
 	exit := m.Run()
 	testServer.Close()

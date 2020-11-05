@@ -25,6 +25,47 @@ func topicPartitionsResp(count int) *pb.TopicPartitions {
 	return &pb.TopicPartitions{PartitionCount: int64(count)}
 }
 
+// CursorService
+
+func initCommitReq(subscription subscriptionPartition) *pb.StreamingCommitCursorRequest {
+	return &pb.StreamingCommitCursorRequest{
+		Request: &pb.StreamingCommitCursorRequest_Initial{
+			Initial: &pb.InitialCommitCursorRequest{
+				Subscription: subscription.Path,
+				Partition:    int64(subscription.Partition),
+			},
+		},
+	}
+}
+
+func initCommitResp() *pb.StreamingCommitCursorResponse {
+	return &pb.StreamingCommitCursorResponse{
+		Request: &pb.StreamingCommitCursorResponse_Initial{
+			Initial: &pb.InitialCommitCursorResponse{},
+		},
+	}
+}
+
+func commitReq(offset int64) *pb.StreamingCommitCursorRequest {
+	return &pb.StreamingCommitCursorRequest{
+		Request: &pb.StreamingCommitCursorRequest_Commit{
+			Commit: &pb.SequencedCommitCursorRequest{
+				Cursor: &pb.Cursor{Offset: offset},
+			},
+		},
+	}
+}
+
+func commitResp(numAck int) *pb.StreamingCommitCursorResponse {
+	return &pb.StreamingCommitCursorResponse{
+		Request: &pb.StreamingCommitCursorResponse_Commit{
+			Commit: &pb.SequencedCommitCursorResponse{
+				AcknowledgedCommits: int64(numAck),
+			},
+		},
+	}
+}
+
 // PublisherService
 
 func initPubReq(topic topicPartition) *pb.PublishRequest {

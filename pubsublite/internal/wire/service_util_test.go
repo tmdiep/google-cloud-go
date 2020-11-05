@@ -50,6 +50,9 @@ func (sp *serviceTestProxy) onStatusChange(_ serviceHandle, status serviceStatus
 	}
 }
 
+func (sp *serviceTestProxy) Start() { sp.service.Start() }
+func (sp *serviceTestProxy) Stop()  { sp.service.Stop() }
+
 // StartError waits for the service to start and returns the error.
 func (sp *serviceTestProxy) StartError() error {
 	select {

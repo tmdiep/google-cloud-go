@@ -107,7 +107,7 @@ type testPartitionPublisher struct {
 
 func newTestPartitionPublisher(t *testing.T, topic topicPartition, settings PublishSettings) *testPartitionPublisher {
 	ctx := context.Background()
-	pubClient, err := newPublisherClient(ctx, "ignored", clientOpts...)
+	pubClient, err := newPublisherClient(ctx, "ignored", testClientOpts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestPartitionPublisherStartOnce(t *testing.T) {
 
 	// Ensure that new streams are not opened if the publisher is started twice.
 	// Note: only 1 stream verifier was added to the mock server above.
-	pub.pub.Start()
+	pub.Start()
 }
 
 func TestPartitionPublisherStartStop(t *testing.T) {
@@ -183,7 +183,7 @@ func TestPartitionPublisherStartStop(t *testing.T) {
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 
 	time.Sleep(10 * time.Millisecond)
-	pub.pub.Stop()
+	pub.Stop()
 	time.Sleep(10 * time.Millisecond)
 	close(block)
 
@@ -214,7 +214,7 @@ func TestPartitionPublisherStopAbortsRetries(t *testing.T) {
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 
 	time.Sleep(10 * time.Millisecond)
-	pub.pub.Stop()
+	pub.Stop()
 	time.Sleep(10 * time.Millisecond)
 	close(block)
 
@@ -407,7 +407,7 @@ func TestPartitionPublisherBatching(t *testing.T) {
 	result6 := pub.Publish(msg6)
 	result7 := pub.Publish(msg7)
 	// Stop flushes pending messages.
-	pub.pub.Stop()
+	pub.Stop()
 
 	result1.ValidateResult(topic.Partition, 0)
 	result2.ValidateResult(topic.Partition, 1)
@@ -558,8 +558,8 @@ func TestPartitionPublisherBufferOverflow(t *testing.T) {
 	// Overflow is detected, which terminates the publisher, but previous messages
 	// are flushed.
 	result2 := pub.Publish(msg2)
-	// Delay the server response for the first Publish to ensure it is allowed to
-	// complete.
+	// Delay the server response for the first Publish to verify that it is
+	// allowed to complete.
 	close(block)
 	// This message arrives after the publisher has already stopped, so its error
 	// message is ErrServiceStopped.
@@ -739,7 +739,7 @@ func TestPartitionPublisherFlushMessages(t *testing.T) {
 	result1 := pub.Publish(msg1)
 	result2 := pub.Publish(msg2)
 	result3 := pub.Publish(msg3)
-	pub.pub.Stop()
+	pub.Stop()
 	close(block)
 	result4 := pub.Publish(msg4)
 
@@ -758,13 +758,18 @@ func TestPartitionPublisherFlushMessages(t *testing.T) {
 	}
 }
 
-func newTestRoutingPublisher(t *testing.T, topicPath string, settings PublishSettings, fakeSourceVal int64) *routingPublisher {
+type testRoutingPublisher struct {
+	t   *testing.T
+	pub *routingPublisher
+}
+
+func newTestRoutingPublisher(t *testing.T, topicPath string, settings PublishSettings, fakeSourceVal int64) *testRoutingPublisher {
 	ctx := context.Background()
-	pubClient, err := newPublisherClient(ctx, "ignored", clientOpts...)
+	pubClient, err := newPublisherClient(ctx, "ignored", testClientOpts...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	adminClient, err := NewAdminClient(ctx, "ignored", clientOpts...)
+	adminClient, err := NewAdminClient(ctx, "ignored", testClientOpts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -779,8 +784,23 @@ func newTestRoutingPublisher(t *testing.T, topicPath string, settings PublishSet
 	}
 	pub := newRoutingPublisher(adminClient, msgRouter, pubFactory)
 	pub.Start()
-	return pub
+	return &testRoutingPublisher{t: t, pub: pub}
 }
+
+func (tp *testRoutingPublisher) Publish(msg *pb.PubSubMessage) *publishResultReceiver {
+	result := newPublishResultReceiver(tp.t)
+	tp.pub.Publish(msg, result.set)
+	return result
+}
+
+func (tp *testRoutingPublisher) NumPartitionPublishers() int {
+	return len(tp.pub.publishers)
+}
+
+func (tp *testRoutingPublisher) Start()             { tp.pub.Start() }
+func (tp *testRoutingPublisher) Stop()              { tp.pub.Stop() }
+func (tp *testRoutingPublisher) WaitStarted() error { return tp.pub.WaitStarted() }
+func (tp *testRoutingPublisher) WaitStopped() error { return tp.pub.WaitStopped() }
 
 func TestRoutingPublisherStartOnce(t *testing.T) {
 	topic := "projects/123456/locations/us-central1-b/topics/my-topic"
@@ -808,8 +828,8 @@ func TestRoutingPublisherStartOnce(t *testing.T) {
 		if gotErr := pub.WaitStarted(); gotErr != nil {
 			t.Errorf("Start() got err: (%v)", gotErr)
 		}
-		if gotLen, wantLen := len(pub.publishers), numPartitions; gotLen != wantLen {
-			t.Errorf("len(publishers) got %d, want %d", gotLen, wantLen)
+		if got, want := pub.NumPartitionPublishers(), numPartitions; got != want {
+			t.Errorf("Num partition publishers: got %d, want %d", got, want)
 		}
 	})
 	t.Run("Second no-op", func(t *testing.T) {
@@ -838,9 +858,10 @@ func TestRoutingPublisherPartitionCountFail(t *testing.T) {
 	if gotErr := pub.WaitStarted(); !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Start() got err: (%v), want err: (%v)", gotErr, wantErr)
 	}
-	if gotLen, wantLen := len(pub.publishers), 0; gotLen != wantLen {
-		t.Errorf("len(publishers) got %d, want %d", gotLen, wantLen)
+	if got, want := pub.NumPartitionPublishers(), 0; got != want {
+		t.Errorf("Num partition publishers: got %d, want %d", got, want)
 	}
+
 	// Ensure that the publisher does not attempt to restart. The mock server does
 	// not expect more RPCs.
 	pub.Start()
@@ -863,9 +884,10 @@ func TestRoutingPublisherPartitionCountInvalid(t *testing.T) {
 	if gotErr := pub.WaitStarted(); !test.ErrorHasMsg(gotErr, wantMsg) {
 		t.Errorf("Start() got err: (%v), want msg: %q", gotErr, wantMsg)
 	}
-	if gotLen, wantLen := len(pub.publishers), 0; gotLen != wantLen {
-		t.Errorf("len(publishers) got %d, want %d", gotLen, wantLen)
+	if got, want := pub.NumPartitionPublishers(), 0; got != want {
+		t.Errorf("Num partition publishers: got %d, want %d", got, want)
 	}
+
 	// Ensure that the publisher does not attempt to restart. The mock server does
 	// not expect more RPCs.
 	pub.Start()
@@ -910,15 +932,11 @@ func TestRoutingPublisherMultiPartitionRoundRobin(t *testing.T) {
 	if err := pub.WaitStarted(); err != nil {
 		t.Errorf("Start() got err: (%v)", err)
 	}
-	result1 := newPublishResultReceiver(t)
-	result2 := newPublishResultReceiver(t)
-	result3 := newPublishResultReceiver(t)
-	result4 := newPublishResultReceiver(t)
 
-	pub.Publish(msg1, result1.set)
-	pub.Publish(msg2, result2.set)
-	pub.Publish(msg3, result3.set)
-	pub.Publish(msg4, result4.set)
+	result1 := pub.Publish(msg1)
+	result2 := pub.Publish(msg2)
+	result3 := pub.Publish(msg3)
+	result4 := pub.Publish(msg4)
 	pub.Stop()
 
 	result1.ValidateResult(1, 41)
@@ -963,11 +981,8 @@ func TestRoutingPublisherShutdown(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", err)
 	}
 
-	result1 := newPublishResultReceiver(t)
-	result2 := newPublishResultReceiver(t)
-
-	pub.Publish(msg1, result1.set)
-	pub.Publish(msg2, result2.set)
+	result1 := pub.Publish(msg1)
+	result2 := pub.Publish(msg2)
 
 	result1.ValidateResult(0, 34)
 	result2.ValidateError(serverErr)
@@ -1004,12 +1019,9 @@ func TestRoutingPublisherPublishAfterStop(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", err)
 	}
 
-	result1 := newPublishResultReceiver(t)
-	result2 := newPublishResultReceiver(t)
-
 	pub.Stop()
-	pub.Publish(msg1, result1.set)
-	pub.Publish(msg2, result2.set)
+	result1 := pub.Publish(msg1)
+	result2 := pub.Publish(msg2)
 
 	result1.ValidateError(ErrServiceStopped)
 	result2.ValidateError(ErrServiceStopped)
