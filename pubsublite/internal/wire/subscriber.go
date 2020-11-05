@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"time"
 
@@ -222,9 +223,6 @@ func (s *wireSubscriber) onResponse(response interface{}) {
 }
 
 func (s *wireSubscriber) onSeekResponse(response *pb.SeekResponse) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	// TODO: Check cursor in seek response?
 	s.unsafeSendStartFlowControl()
 	return nil
@@ -295,6 +293,9 @@ func (s *wireSubscriber) unsafeInitiateShutdown(targetStatus serviceStatus, err 
 	if !s.unsafeUpdateStatus(targetStatus, err) {
 		return
 	}
+
+	log.Printf("pubsublite: wireSubscriber terminating with status=%d, err=%v", targetStatus, err)
+
 	// No data to send. Immediately terminate the stream.
 	s.pollFlowControl.Stop()
 	s.stream.Stop()

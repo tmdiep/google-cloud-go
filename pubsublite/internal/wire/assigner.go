@@ -17,6 +17,7 @@ import (
   "context"
   "errors"
   "fmt"
+  "log"
   "reflect"
 
   "github.com/google/uuid"
@@ -84,7 +85,7 @@ func newAssigner(ctx context.Context, partitionClient *vkit.PartitionAssignmentC
   if err != nil {
     return nil, fmt.Errorf("pubsublite: failed to generate client UUID: %v", err)
   }
-  fmt.Printf("assigner: client uuid %v\n", clientID)
+  log.Printf("pubsublite: subscription %s using UUID %v for assignment", subscriptionPath, clientID)
 
   a := &assigner{
     partitionClient: partitionClient,
@@ -171,6 +172,8 @@ func (a *assigner) unsafeHandlePendingAssignment() error {
   if err := a.receiveAssignment(newPartitionAssignment(a.pendingAssignment)); err != nil {
     return err
   }
+
+  log.Printf("pubsublite: subscriber partition assignments: %v", a.pendingAssignment)
   a.stream.Send(&pb.PartitionAssignmentRequest{
     Request: &pb.PartitionAssignmentRequest_Ack{
       Ack: &pb.PartitionAssignmentAck{},
@@ -184,6 +187,8 @@ func (a *assigner) unsafeInitiateShutdown(targetStatus serviceStatus, err error)
   if !a.unsafeUpdateStatus(targetStatus, err) {
     return
   }
+
+  log.Printf("pubsublite: assigner terminating with status=%d, err=%v", targetStatus, err)
   // No data to send. Immediately terminate the stream.
   a.stream.Stop()
 }

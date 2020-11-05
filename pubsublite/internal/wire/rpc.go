@@ -114,6 +114,10 @@ const (
 func defaultClientOptions(region string) []option.ClientOption {
 	return []option.ClientOption{
 		internaloption.WithDefaultEndpoint(region + pubsubLiteDefaultEndpoint),
+		// option.WithGRPCConnectionPool(4),
+		// option.WithGRPCDialOption(grpc.WithKeepaliveParams(keepalive.ClientParameters{
+		// 	Time: 5 * time.Minute,
+		// })),
 	}
 }
 

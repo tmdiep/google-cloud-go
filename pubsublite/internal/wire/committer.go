@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"time"
 
@@ -160,7 +161,9 @@ func (c *committer) onResponse(response interface{}) {
 		if numAcked <= 0 {
 			return fmt.Errorf("pubsublite: server acknowledged an invalid commit count: %d", numAcked)
 		}
-		c.cursorTracker.ConfirmOffsets(numAcked)
+		if err := c.cursorTracker.ConfirmOffsets(numAcked); err != nil {
+			return err
+		}
 		c.unsafeCheckDone()
 		return nil
 	}
@@ -173,6 +176,8 @@ func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error
 	if !c.unsafeUpdateStatus(targetStatus, err) {
 		return
 	}
+
+	log.Printf("pubsublite: committer terminating with status=%d, err=%v", targetStatus, err)
 
 	if targetStatus == serviceTerminating {
 		// Expedite sending final commit to the stream.

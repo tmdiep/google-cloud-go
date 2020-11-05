@@ -16,6 +16,7 @@ package wire
 import (
 	"context"
 	"io"
+	"log"
 	"reflect"
 	"sync"
 	"time"
@@ -285,6 +286,7 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 		if !shouldRetry {
 			break
 		}
+		log.Printf("pubsublite: retrying stream (%v) connection due to error: %v", rs.responseType, err)
 		if err = gax.Sleep(rs.ctx, backoff); err != nil {
 			break
 		}
@@ -309,8 +311,10 @@ func (rs *retryableStream) listen(recvStream grpc.ClientStream) {
 		}
 		if err != nil {
 			if isRetryableRecvError(err) {
+				log.Printf("pubsublite: reconnecting stream (%v) due to error: %v", rs.responseType, err)
 				go rs.reconnect()
 			} else {
+				log.Printf("pubsublite: terminating stream (%v) due to error: %v", rs.responseType, err)
 				rs.terminate(err)
 			}
 			break
