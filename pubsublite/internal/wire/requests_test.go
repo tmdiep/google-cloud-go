@@ -90,9 +90,7 @@ func initPubResp() *pb.PublishResponse {
 func msgPubReq(msgs ...*pb.PubSubMessage) *pb.PublishRequest {
 	return &pb.PublishRequest{
 		RequestType: &pb.PublishRequest_MessagePublishRequest{
-			MessagePublishRequest: &pb.MessagePublishRequest{
-				Messages: msgs,
-			},
+			MessagePublishRequest: &pb.MessagePublishRequest{Messages: msgs},
 		},
 	}
 }
@@ -101,10 +99,93 @@ func msgPubResp(cursor int64) *pb.PublishResponse {
 	return &pb.PublishResponse{
 		ResponseType: &pb.PublishResponse_MessageResponse{
 			MessageResponse: &pb.MessagePublishResponse{
-				StartCursor: &pb.Cursor{
-					Offset: cursor,
+				StartCursor: &pb.Cursor{Offset: cursor},
+			},
+		},
+	}
+}
+
+// SubscriberService
+
+func initSubReq(subscription subscriptionPartition) *pb.SubscribeRequest {
+	return &pb.SubscribeRequest{
+		Request: &pb.SubscribeRequest_Initial{
+			Initial: &pb.InitialSubscribeRequest{
+				Subscription: subscription.Path,
+				Partition:    int64(subscription.Partition),
+			},
+		},
+	}
+}
+
+func initSubResp() *pb.SubscribeResponse {
+	return &pb.SubscribeResponse{
+		Response: &pb.SubscribeResponse_Initial{
+			Initial: &pb.InitialSubscribeResponse{},
+		},
+	}
+}
+
+func seekReq(offset int64) *pb.SubscribeRequest {
+	return &pb.SubscribeRequest{
+		Request: &pb.SubscribeRequest_Seek{
+			Seek: &pb.SeekRequest{
+				Target: &pb.SeekRequest_Cursor{
+					Cursor: &pb.Cursor{Offset: offset},
 				},
 			},
+		},
+	}
+}
+
+func seekResp(offset int64) *pb.SubscribeResponse {
+	return &pb.SubscribeResponse{
+		Response: &pb.SubscribeResponse_Seek{
+			Seek: &pb.SeekResponse{
+				Cursor: &pb.Cursor{Offset: offset},
+			},
+		},
+	}
+}
+
+func flowControlReq(tokens flowControlTokens) *pb.FlowControlRequest {
+	return &pb.FlowControlRequest{
+		AllowedBytes:    tokens.Bytes,
+		AllowedMessages: tokens.Messages,
+	}
+}
+
+func flowControlSubReq(tokens flowControlTokens) *pb.SubscribeRequest {
+	return &pb.SubscribeRequest{
+		Request: &pb.SubscribeRequest_FlowControl{
+			FlowControl: flowControlReq(tokens),
+		},
+	}
+}
+
+func seqMsgWithOffset(offset int64) *pb.SequencedMessage {
+	return &pb.SequencedMessage{
+		Cursor: &pb.Cursor{Offset: offset},
+	}
+}
+
+func seqMsgWithSizeBytes(size int64) *pb.SequencedMessage {
+	return &pb.SequencedMessage{
+		SizeBytes: size,
+	}
+}
+
+func seqMsgWithOffsetAndSize(offset, size int64) *pb.SequencedMessage {
+	return &pb.SequencedMessage{
+		Cursor:    &pb.Cursor{Offset: offset},
+		SizeBytes: size,
+	}
+}
+
+func msgSubResp(msgs ...*pb.SequencedMessage) *pb.SubscribeResponse {
+	return &pb.SubscribeResponse{
+		Response: &pb.SubscribeResponse_Messages{
+			Messages: &pb.MessageResponse{Messages: msgs},
 		},
 	}
 }

@@ -46,6 +46,7 @@ func TestMain(m *testing.M) {
 	defaultTestPublishSettings.Timeout = 5 * time.Second
 
 	defaultTestReceiveSettings = DefaultReceiveSettings
+	defaultTestReceiveSettings.Timeout = 5 * time.Second
 
 	testServer, err := test.NewServer()
 	if err != nil {

@@ -35,9 +35,10 @@ func newTestCommitter(t *testing.T, subscription subscriptionPartition, acks *ac
 		t.Fatal(err)
 	}
 
-	cmt := newCommitter(ctx, cursorClient, new(nullPeriodicTaskFactory), defaultTestReceiveSettings, subscription, acks)
-	tc := &testCommitter{cmt: cmt}
-	tc.initAndStart(t, cmt, "committer")
+	tc := &testCommitter{
+		cmt: newCommitter(ctx, cursorClient, new(nullPeriodicTaskFactory), defaultTestReceiveSettings, subscription, acks),
+	}
+	tc.initAndStart(t, tc.cmt, "Committer")
 	return tc
 }
 
@@ -45,24 +46,6 @@ func newTestCommitter(t *testing.T, subscription subscriptionPartition, acks *ac
 // periodic task is disabled in tests.
 func (tc *testCommitter) SendBatchCommit() {
 	tc.cmt.commitOffsetToStream()
-}
-
-func TestCommitterStartStop(t *testing.T) {
-	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
-	acks := newAckTracker()
-
-	mockServer.OnTestStart(nil)
-	defer mockServer.OnTestEnd()
-
-	stream := test.NewRPCVerifier(t)
-	stream.Push(initCommitReq(subscription), initCommitResp(), nil)
-	mockServer.AddCommitStream(subscription.Path, subscription.Partition, stream)
-
-	cmt := newTestCommitter(t, subscription, acks)
-	if gotErr := cmt.StartError(); gotErr != nil {
-		t.Errorf("Start() got err: (%v)", gotErr)
-	}
-	cmt.StopVerifyNoError()
 }
 
 func TestCommitterStreamReconnect(t *testing.T) {
