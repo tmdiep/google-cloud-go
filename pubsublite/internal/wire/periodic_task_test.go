@@ -33,6 +33,7 @@ func TestPollingPeriodicTask(t *testing.T) {
 			t.Errorf("got %d, want %d", got, want)
 		}
 	})
+
 	t.Run("Pause", func(t *testing.T) {
 		ptask.Pause()
 		select {
@@ -41,12 +42,14 @@ func TestPollingPeriodicTask(t *testing.T) {
 		default:
 		}
 	})
+
 	t.Run("Resume", func(t *testing.T) {
 		ptask.Resume()
 		if got, want := <-values, int32(2); got != want {
 			t.Errorf("got %d, want %d", got, want)
 		}
 	})
+
 	t.Run("Stop", func(t *testing.T) {
 		ptask.Stop()
 		select {

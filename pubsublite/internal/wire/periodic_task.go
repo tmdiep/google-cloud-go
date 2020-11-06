@@ -19,11 +19,11 @@ import (
 
 // periodicTask is an interface for a recurring background task.
 type periodicTask interface {
-	// Start polling goroutines.
+	// Start the polling goroutine.
 	Start()
 	// Pause temporarily suspends the polling.
 	Pause()
-	// Resume polling.
+	// Resume polling. The task is executed after the polling period.
 	Resume()
 	// Stop permanently stops the periodic task.
 	Stop()

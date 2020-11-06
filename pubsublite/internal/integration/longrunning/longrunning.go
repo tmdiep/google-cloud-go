@@ -29,7 +29,7 @@ import (
 )
 
 var (
-	numMessages = flag.Int("messages", 10, "the number of messages to publish and receive")
+	messageCount = flag.Int("message_count", 10, "the number of messages to publish and receive")
 )
 
 const sleepPeriod = 60 * time.Second
@@ -62,7 +62,7 @@ func main() {
 	// Main publishing loop.
 	log.Printf("Running test...")
 	for {
-		for i := 0; i < *numMessages; i++ {
+		for i := 0; i < *messageCount; i++ {
 			publisher.Publish(&pb.PubSubMessage{Data: []byte(fmt.Sprintf("hello-world-%d", i))}, onPublished)
 		}
 
