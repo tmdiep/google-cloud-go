@@ -18,9 +18,7 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"cloud.google.com/go/pubsublite/internal/integration"
@@ -33,18 +31,24 @@ var (
 	messageCount = flag.Int("message_count", 10, "the number of messages to publish and receive per cycle")
 )
 
-const sleepPeriod = 60 * time.Second
+const (
+	sleepPeriod    = 60 * time.Second
+	msgWaitTimeout = 30 * time.Second
+)
 
 func main() {
 	start := time.Now()
-	var wg sync.WaitGroup
 	harness := integration.NewTestHarness()
+	msgQueue := integration.NewMsgQueue()
 
 	// Setup subscriber.
 	onReceive := func(msg *pb.SequencedMessage, ack wire.AckConsumer) {
-		log.Printf("Received: (offset=%d) %s", msg.GetCursor().GetOffset(), string(msg.GetMessage().GetData()))
 		ack.Ack()
-		wg.Done()
+
+		str := string(msg.GetMessage().GetData())
+		if msgQueue.RemoveMsg(str) {
+			log.Printf("Received: (offset=%d) %s", msg.GetCursor().GetOffset(), str)
+		}
 	}
 	subscriber := harness.StartSubscriber(onReceive)
 	go func() {
@@ -66,11 +70,10 @@ func main() {
 	log.Printf("Running test...")
 	for {
 		for i := 0; i < *messageCount; i++ {
-			publisher.Publish(&pb.PubSubMessage{Data: []byte(fmt.Sprintf("hello-world-%d", i))}, onPublished)
-			wg.Add(1)
+			publisher.Publish(&pb.PubSubMessage{Data: []byte(msgQueue.AddMsg())}, onPublished)
 		}
 
-		wg.Wait()
+		msgQueue.Wait(msgWaitTimeout)
 		log.Printf("Time elapsed: %v", time.Now().Sub(start))
 		time.Sleep(sleepPeriod)
 	}

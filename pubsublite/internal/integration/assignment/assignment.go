@@ -18,7 +18,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"time"
 
@@ -33,12 +32,16 @@ var (
 	subscriberCount = flag.Int("subscriber_count", 2, "the number of subscriber clients to create")
 )
 
-const sleepPeriod = 30 * time.Second
+const (
+	sleepPeriod    = 15 * time.Second
+	msgWaitTimeout = 30 * time.Second
+)
 
 func main() {
 	start := time.Now()
 	harness := integration.NewTestHarness()
 	harness.EnableAssignment = true
+	msgQueue := integration.NewMsgQueue()
 
 	topicPartitions := harness.TopicPartitions()
 	if topicPartitions < *subscriberCount {
@@ -47,8 +50,12 @@ func main() {
 
 	// Setup subscribers.
 	onReceive := func(msg *pb.SequencedMessage, ack wire.AckConsumer) {
-		log.Printf("Received: (offset=%d) %s", msg.GetCursor().GetOffset(), string(msg.GetMessage().GetData()))
 		ack.Ack()
+
+		str := string(msg.GetMessage().GetData())
+		if msgQueue.RemoveMsg(str) {
+			log.Printf("Received: (offset=%d) %s", msg.GetCursor().GetOffset(), str)
+		}
 	}
 
 	var subscribers []wire.Subscriber
@@ -76,9 +83,10 @@ func main() {
 	log.Printf("Running test...")
 	for {
 		for i := 0; i < *messageCount*topicPartitions; i++ {
-			publisher.Publish(&pb.PubSubMessage{Data: []byte(fmt.Sprintf("hello-world-%d", i))}, onPublished)
+			publisher.Publish(&pb.PubSubMessage{Data: []byte(msgQueue.AddMsg())}, onPublished)
 		}
 
+		msgQueue.Wait(msgWaitTimeout)
 		log.Printf("Time elapsed: %v", time.Now().Sub(start))
 		time.Sleep(sleepPeriod)
 	}
