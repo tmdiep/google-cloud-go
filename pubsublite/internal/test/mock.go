@@ -21,6 +21,7 @@ import (
 	"sync"
 
 	"cloud.google.com/go/internal/testutil"
+	"cloud.google.com/go/internal/uid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -109,7 +110,8 @@ type mockLiteServer struct {
 
 	nextStreamID  int
 	activeStreams map[int]*streamHolder
-	testActive    bool
+	testIDs       *uid.Space
+	currentTestID string
 }
 
 func key(path string, partition int) string {
@@ -123,6 +125,7 @@ func newMockLiteServer() *mockLiteServer {
 		commitVerifiers:     newKeyedStreamVerifiers(),
 		assignmentVerifiers: newKeyedStreamVerifiers(),
 		activeStreams:       make(map[int]*streamHolder),
+		testIDs:             uid.NewSpace("mockLiteServer", nil),
 	}
 }
 
@@ -151,6 +154,10 @@ func (s *mockLiteServer) popStreamVerifier(key string, keyedVerifiers *keyedStre
 }
 
 func (s *mockLiteServer) handleStream(stream grpc.ServerStream, req interface{}, requestType reflect.Type, key string, keyedVerifiers *keyedStreamVerifiers) (err error) {
+	testID := s.currentTest()
+	if testID == "" {
+		return status.Errorf(codes.FailedPrecondition, "mockserver: previous test has ended")
+	}
 	verifier, err := s.popStreamVerifier(key, keyedVerifiers)
 	if err != nil {
 		return err
@@ -185,11 +192,17 @@ func (s *mockLiteServer) handleStream(stream grpc.ServerStream, req interface{},
 			err = status.Errorf(codes.FailedPrecondition, "mockserver: stream recv error: %v", err)
 			break
 		}
+		if testID != s.currentTest() {
+			err = status.Errorf(codes.FailedPrecondition, "mockserver: previous test has ended")
+			break
+		}
 		retResponse, retErr = verifier.Pop(req)
 	}
 
 	// Check whether the stream ended prematurely.
-	verifier.Flush()
+	if testID == s.currentTest() {
+		verifier.Flush()
+	}
 	s.endStream(id)
 	return
 }
@@ -200,11 +213,11 @@ func (s *mockLiteServer) OnTestStart(globalVerifier *RPCVerifier) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.testActive {
+	if s.currentTestID != "" {
 		panic("mockserver is already in use by another test")
 	}
 
-	s.testActive = true
+	s.currentTestID = s.testIDs.New()
 	s.globalVerifier = globalVerifier
 	s.publishVerifiers.Reset()
 	s.subscribeVerifiers.Reset()
@@ -217,7 +230,7 @@ func (s *mockLiteServer) OnTestEnd() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.testActive = false
+	s.currentTestID = ""
 	if s.globalVerifier != nil {
 		s.globalVerifier.Flush()
 	}
@@ -225,6 +238,12 @@ func (s *mockLiteServer) OnTestEnd() {
 	for _, as := range s.activeStreams {
 		as.verifier.Flush()
 	}
+}
+
+func (s *mockLiteServer) currentTest() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.currentTestID
 }
 
 func (s *mockLiteServer) AddPublishStream(topic string, partition int, streamVerifier *RPCVerifier) {
