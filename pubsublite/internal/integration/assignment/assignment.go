@@ -20,7 +20,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"cloud.google.com/go/pubsublite/internal/integration"
@@ -30,28 +29,39 @@ import (
 )
 
 var (
-	messageCount = flag.Int("message_count", 10, "the number of messages to publish and receive per cycle")
+	messageCount    = flag.Int("message_count", 2, "the number of messages to publish and receive per cycle, per partition")
+	subscriberCount = flag.Int("subscriber_count", 2, "the number of subscriber clients to create")
 )
 
-const sleepPeriod = 60 * time.Second
+const sleepPeriod = 30 * time.Second
 
 func main() {
 	start := time.Now()
-	var wg sync.WaitGroup
 	harness := integration.NewTestHarness()
+	harness.EnableAssignment = true
 
-	// Setup subscriber.
+	topicPartitions := harness.TopicPartitions()
+	if topicPartitions < *subscriberCount {
+		log.Fatalf("Topic requires at least %d partitions, but only has %d", *subscriberCount, topicPartitions)
+	}
+
+	// Setup subscribers.
 	onReceive := func(msg *pb.SequencedMessage, ack wire.AckConsumer) {
 		log.Printf("Received: (offset=%d) %s", msg.GetCursor().GetOffset(), string(msg.GetMessage().GetData()))
 		ack.Ack()
-		wg.Done()
 	}
-	subscriber := harness.StartSubscriber(onReceive)
-	go func() {
-		log.Printf("Listening to messages...")
-		err := subscriber.WaitStopped()
-		log.Fatalf("Subscriber stopped with error: %v, time elapsed: %v", err, time.Now().Sub(start))
-	}()
+
+	var subscribers []wire.Subscriber
+	for i := 0; i < *subscriberCount; i++ {
+		subscriber := harness.StartSubscriber(onReceive)
+		subscribers = append(subscribers, subscriber)
+
+		go func() {
+			log.Printf("Listening to messages...")
+			err := subscriber.WaitStopped()
+			log.Fatalf("Subscriber stopped with error: %v, time elapsed: %v", err, time.Now().Sub(start))
+		}()
+	}
 
 	// Setup publisher.
 	publisher := harness.StartPublisher()
@@ -65,12 +75,10 @@ func main() {
 	// Main publishing loop.
 	log.Printf("Running test...")
 	for {
-		for i := 0; i < *messageCount; i++ {
+		for i := 0; i < *messageCount*topicPartitions; i++ {
 			publisher.Publish(&pb.PubSubMessage{Data: []byte(fmt.Sprintf("hello-world-%d", i))}, onPublished)
-			wg.Add(1)
 		}
 
-		wg.Wait()
 		log.Printf("Time elapsed: %v", time.Now().Sub(start))
 		time.Sleep(sleepPeriod)
 	}

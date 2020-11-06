@@ -33,8 +33,9 @@ var (
 )
 
 type TestHarness struct {
-	PublishSettings wire.PublishSettings
-	ReceiveSettings wire.ReceiveSettings
+	PublishSettings  wire.PublishSettings
+	ReceiveSettings  wire.ReceiveSettings
+	EnableAssignment bool
 
 	topic        pubsublite.TopicPath
 	subscription pubsublite.SubscriptionPath
@@ -42,10 +43,7 @@ type TestHarness struct {
 }
 
 func NewTestHarness() *TestHarness {
-	th := &TestHarness{
-		PublishSettings: wire.DefaultPublishSettings,
-		ReceiveSettings: wire.DefaultReceiveSettings,
-	}
+	th := new(TestHarness)
 	th.init()
 	return th
 }
@@ -82,6 +80,10 @@ func (th *TestHarness) init() {
 	}
 	th.topic = pubsublite.TopicPath{Project: proj, Zone: *zone, TopicID: *topicID}
 	th.subscription = pubsublite.SubscriptionPath{Project: proj, Zone: *zone, SubscriptionID: subsID}
+
+	th.PublishSettings = wire.DefaultPublishSettings
+	th.ReceiveSettings = wire.DefaultReceiveSettings
+	th.EnableAssignment = *enableAssignment
 }
 
 func (th *TestHarness) StartPublisher() wire.Publisher {
@@ -98,8 +100,8 @@ func (th *TestHarness) StartPublisher() wire.Publisher {
 
 func (th *TestHarness) StartSubscriber(onReceive wire.MessageReceiverFunc) wire.Subscriber {
 	settings := th.ReceiveSettings
-	if !*enableAssignment {
-		numPartitions := th.topicPartitions()
+	if !th.EnableAssignment {
+		numPartitions := th.TopicPartitions()
 		for i := 0; i < numPartitions; i++ {
 			settings.Partitions = append(settings.Partitions, i)
 		}
@@ -115,7 +117,7 @@ func (th *TestHarness) StartSubscriber(onReceive wire.MessageReceiverFunc) wire.
 	return subscriber
 }
 
-func (th *TestHarness) topicPartitions() int {
+func (th *TestHarness) TopicPartitions() int {
 	ctx := context.Background()
 	admin, err := pubsublite.NewAdminClient(ctx, th.region)
 	if err != nil {
