@@ -43,13 +43,13 @@ type committer struct {
 	stream        *retryableStream
 	acks          *ackTracker
 	cursorTracker *commitCursorTracker
-	pollCommits   periodicTask
+	pollCommits   *periodicTask
 
 	abstractService
 }
 
-func newCommitter(ctx context.Context, cursor *vkit.CursorClient, ptaskFactory periodicTaskFactory,
-	settings ReceiveSettings, subscription subscriptionPartition, acks *ackTracker) *committer {
+func newCommitter(ctx context.Context, cursor *vkit.CursorClient, settings ReceiveSettings,
+	subscription subscriptionPartition, acks *ackTracker, disableTasks bool) *committer {
 
 	c := &committer{
 		cursorClient: cursor,
@@ -65,7 +65,12 @@ func newCommitter(ctx context.Context, cursor *vkit.CursorClient, ptaskFactory p
 		cursorTracker: newCommitCursorTracker(acks),
 	}
 	c.stream = newRetryableStream(ctx, c, settings.Timeout, reflect.TypeOf(pb.StreamingCommitCursorResponse{}))
-	c.pollCommits = ptaskFactory.New(commitCursorPeriod, c.commitOffsetToStream)
+
+	backgroundTask := c.commitOffsetToStream
+	if disableTasks {
+		backgroundTask = func() {}
+	}
+	c.pollCommits = newPeriodicTask(commitCursorPeriod, backgroundTask)
 	return c
 }
 

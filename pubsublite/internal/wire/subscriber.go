@@ -65,7 +65,6 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 		settings:         settings,
 		subscriptionPath: subscriptionPath,
 		receiver:         receiver,
-		ptaskFactory:     new(pollingPeriodicTaskFactory),
 	}
 
 	if len(settings.Partitions) > 0 {
@@ -112,14 +111,13 @@ type wireSubscriber struct {
 	acks            *ackTracker
 	offsetTracker   subscriberOffsetTracker
 	flowControl     flowControlBatcher
-	pollFlowControl periodicTask
+	pollFlowControl *periodicTask
 
 	abstractService
 }
 
-func newWireSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient,
-	ptaskFactory periodicTaskFactory, settings ReceiveSettings, receiver MessageReceiverFunc,
-	subscription subscriptionPartition, acks *ackTracker) *wireSubscriber {
+func newWireSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, settings ReceiveSettings,
+	receiver MessageReceiverFunc, subscription subscriptionPartition, acks *ackTracker, disableTasks bool) *wireSubscriber {
 
 	s := &wireSubscriber{
 		subsClient:   subsClient,
@@ -137,7 +135,12 @@ func newWireSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient,
 		acks:     acks,
 	}
 	s.stream = newRetryableStream(ctx, s, settings.Timeout, reflect.TypeOf(pb.SubscribeResponse{}))
-	s.pollFlowControl = ptaskFactory.New(batchFlowControlPeriod, s.sendPendingFlowControl)
+
+	backgroundTask := s.sendPendingFlowControl
+	if disableTasks {
+		backgroundTask = func() {}
+	}
+	s.pollFlowControl = newPeriodicTask(batchFlowControlPeriod, backgroundTask)
 	return s
 }
 
@@ -315,14 +318,14 @@ type singlePartitionSubscriberFactory struct {
 	settings         ReceiveSettings
 	subscriptionPath string
 	receiver         MessageReceiverFunc
-	ptaskFactory     periodicTaskFactory
+	disableTasks     bool
 }
 
 func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSubscriber {
 	subscription := subscriptionPartition{Path: f.subscriptionPath, Partition: partition}
 	acks := newAckTracker()
-	commit := newCommitter(f.ctx, f.cursorClient, f.ptaskFactory, f.settings, subscription, acks)
-	subs := newWireSubscriber(f.ctx, f.subsClient, f.ptaskFactory, f.settings, f.receiver, subscription, acks)
+	commit := newCommitter(f.ctx, f.cursorClient, f.settings, subscription, acks, f.disableTasks)
+	subs := newWireSubscriber(f.ctx, f.subsClient, f.settings, f.receiver, subscription, acks, f.disableTasks)
 	ps := &singlePartitionSubscriber{
 		committer:  commit,
 		subscriber: subs,

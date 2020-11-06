@@ -50,7 +50,7 @@ func newTestWireSubscriber(t *testing.T, subscription subscriptionPartition, set
 		t:        t,
 		received: make(chan *testMessageHolder, 1),
 	}
-	ts.subs = newWireSubscriber(ctx, subsClient, new(disabledPeriodicTaskFactory), settings, ts.onMessages, subscription, acks)
+	ts.subs = newWireSubscriber(ctx, subsClient, settings, ts.onMessages, subscription, acks, true)
 	ts.initAndStart(t, ts.subs, "Subscriber")
 	return ts
 }

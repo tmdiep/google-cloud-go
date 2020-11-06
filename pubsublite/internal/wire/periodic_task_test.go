@@ -19,13 +19,13 @@ import (
 	"time"
 )
 
-func TestPollingPeriodicTask(t *testing.T) {
+func TestPeriodicTask(t *testing.T) {
 	var callCount int32
 	values := make(chan int32)
 	task := func() {
 		values <- atomic.AddInt32(&callCount, 1)
 	}
-	ptask := new(pollingPeriodicTaskFactory).New(10*time.Millisecond, task)
+	ptask := newPeriodicTask(10*time.Millisecond, task)
 
 	t.Run("Start", func(t *testing.T) {
 		ptask.Start()

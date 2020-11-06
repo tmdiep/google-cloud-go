@@ -17,24 +17,8 @@ import (
 	"time"
 )
 
-// periodicTask is an interface for a recurring background task.
-type periodicTask interface {
-	// Start the polling goroutine.
-	Start()
-	// Pause temporarily suspends the polling.
-	Pause()
-	// Resume polling. The task is executed after the polling period.
-	Resume()
-	// Stop permanently stops the periodic task.
-	Stop()
-}
-
-type periodicTaskFactory interface {
-	New(period time.Duration, task func()) periodicTask
-}
-
-// pollingPeriodicTask is the concrete implementation for periodicTask.
-type pollingPeriodicTask struct {
+// periodicTask manages a recurring background task.
+type periodicTask struct {
 	period  time.Duration
 	ticker  *time.Ticker
 	stop    chan struct{}
@@ -42,10 +26,8 @@ type pollingPeriodicTask struct {
 	task    func()
 }
 
-type pollingPeriodicTaskFactory struct{}
-
-func (pf *pollingPeriodicTaskFactory) New(period time.Duration, task func()) periodicTask {
-	return &pollingPeriodicTask{
+func newPeriodicTask(period time.Duration, task func()) *periodicTask {
+	return &periodicTask{
 		ticker: time.NewTicker(period),
 		stop:   make(chan struct{}),
 		period: period,
@@ -53,27 +35,31 @@ func (pf *pollingPeriodicTaskFactory) New(period time.Duration, task func()) per
 	}
 }
 
-func (pt *pollingPeriodicTask) Start() {
+// Start the polling goroutine.
+func (pt *periodicTask) Start() {
 	go pt.poll()
 }
 
-func (pt *pollingPeriodicTask) Resume() {
+// Resume polling. The task is executed after the polling period.
+func (pt *periodicTask) Resume() {
 	pt.ticker.Reset(pt.period)
 }
 
-func (pt *pollingPeriodicTask) Pause() {
+// Pause temporarily suspends the polling.
+func (pt *periodicTask) Pause() {
 	pt.ticker.Stop()
 }
 
-func (pt *pollingPeriodicTask) Stop() {
-	// Prevent a panic if the stop channel has already been stopped.
+// Stop permanently stops the periodic task.
+func (pt *periodicTask) Stop() {
+	// Prevent a panic if the stop channel has already been closed.
 	if !pt.stopped {
 		close(pt.stop)
 		pt.stopped = true
 	}
 }
 
-func (pt *pollingPeriodicTask) poll() {
+func (pt *periodicTask) poll() {
 	for {
 		select {
 		case <-pt.stop:
@@ -83,19 +69,4 @@ func (pt *pollingPeriodicTask) poll() {
 			pt.task()
 		}
 	}
-}
-
-// disabledPeriodicTask can be used by unit tests to disable the background task
-// polling and have more control over when the task executes.
-type disabledPeriodicTask struct{}
-
-func (dt *disabledPeriodicTask) Start()  {}
-func (dt *disabledPeriodicTask) Pause()  {}
-func (dt *disabledPeriodicTask) Resume() {}
-func (dt *disabledPeriodicTask) Stop()   {}
-
-type disabledPeriodicTaskFactory struct{}
-
-func (df *disabledPeriodicTaskFactory) New(period time.Duration, task func()) periodicTask {
-	return new(disabledPeriodicTask)
 }

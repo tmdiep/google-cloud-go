@@ -36,7 +36,7 @@ func newTestCommitter(t *testing.T, subscription subscriptionPartition, acks *ac
 	}
 
 	tc := &testCommitter{
-		cmt: newCommitter(ctx, cursorClient, new(disabledPeriodicTaskFactory), defaultTestReceiveSettings, subscription, acks),
+		cmt: newCommitter(ctx, cursorClient, defaultTestReceiveSettings, subscription, acks, true),
 	}
 	tc.initAndStart(t, tc.cmt, "Committer")
 	return tc
