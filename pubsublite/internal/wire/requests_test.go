@@ -66,6 +66,33 @@ func commitResp(numAck int) *pb.StreamingCommitCursorResponse {
 	}
 }
 
+// PartitionAssignmentService
+
+func initAssignmentReq(subscription string, clientID []byte) *pb.PartitionAssignmentRequest {
+	return &pb.PartitionAssignmentRequest{
+		Request: &pb.PartitionAssignmentRequest_Initial{
+			Initial: &pb.InitialPartitionAssignmentRequest{
+				Subscription: subscription,
+				ClientId:     clientID,
+			},
+		},
+	}
+}
+
+func assignmentAckReq() *pb.PartitionAssignmentRequest {
+	return &pb.PartitionAssignmentRequest{
+		Request: &pb.PartitionAssignmentRequest_Ack{
+			Ack: &pb.PartitionAssignmentAck{},
+		},
+	}
+}
+
+func assignmentResp(partitions []int64) *pb.PartitionAssignment {
+	return &pb.PartitionAssignment{
+		Partitions: partitions,
+	}
+}
+
 // PublisherService
 
 func initPubReq(topic topicPartition) *pb.PublishRequest {
