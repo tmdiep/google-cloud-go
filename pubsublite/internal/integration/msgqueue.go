@@ -32,7 +32,7 @@ type MsgQueue struct {
 
 func NewMsgQueue() *MsgQueue {
 	return &MsgQueue{
-		msgIDs: uid.NewSpace("hello", &uid.Options{Short: true}),
+		msgIDs: uid.NewSpace("hello", nil),
 		msgMap: make(map[string]bool),
 		done:   make(chan struct{}),
 	}
