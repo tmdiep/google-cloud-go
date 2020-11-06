@@ -28,7 +28,8 @@ import (
 )
 
 var (
-	messageCount = flag.Int("message_count", 10, "the number of messages to publish and receive per cycle")
+	messageCount    = flag.Int("message_count", 5, "the number of messages to publish and receive per cycle, per partition")
+	subscriberCount = flag.Int("subscriber_count", 2, "the number of subscriber clients to create (only applies when assignments are enabled)")
 )
 
 const (
@@ -39,9 +40,18 @@ const (
 func main() {
 	start := time.Now()
 	harness := integration.NewTestHarness()
+	partitionCount := harness.TopicPartitions()
 	msgQueue := integration.NewMsgQueue()
+	numSubscribers := 1
 
-	// Setup subscriber.
+	if harness.EnableAssignment {
+		if partitionCount < *subscriberCount {
+			log.Fatalf("Topic requires at least %d partitions to assign to subscribers, but only has %d partitions", *subscriberCount, partitionCount)
+		}
+		numSubscribers = *subscriberCount
+	}
+
+	// Setup subscribers.
 	onReceive := func(msg *pb.SequencedMessage, ack wire.AckConsumer) {
 		ack.Ack()
 
@@ -50,12 +60,18 @@ func main() {
 			log.Printf("Received: (offset=%d) %s", msg.GetCursor().GetOffset(), str)
 		}
 	}
-	subscriber := harness.StartSubscriber(onReceive)
-	go func() {
-		log.Printf("Listening to messages...")
-		err := subscriber.WaitStopped()
-		log.Fatalf("Subscriber stopped with error: %v, time elapsed: %v", err, time.Now().Sub(start))
-	}()
+
+	var subscribers []wire.Subscriber
+	for i := 0; i < numSubscribers; i++ {
+		subscriber := harness.StartSubscriber(onReceive)
+		subscribers = append(subscribers, subscriber)
+
+		go func() {
+			log.Printf("Subscriber%d listening to messages...", i)
+			err := subscriber.WaitStopped()
+			log.Fatalf("Subscriber%d stopped with error: %v, time elapsed: %v", i, err, time.Now().Sub(start))
+		}()
+	}
 
 	// Setup publisher.
 	publisher := harness.StartPublisher()
@@ -67,9 +83,9 @@ func main() {
 	}
 
 	// Main publishing loop.
-	log.Printf("Running test...")
+	log.Printf("Starting test...")
 	for {
-		for i := 0; i < *messageCount; i++ {
+		for i := 0; i < *messageCount*partitionCount; i++ {
 			publisher.Publish(&pb.PubSubMessage{Data: []byte(msgQueue.AddMsg())}, onPublished)
 		}
 
