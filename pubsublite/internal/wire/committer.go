@@ -116,12 +116,12 @@ func (c *committer) onStreamStatusChange(status streamStatus) {
 		// Once the stream connects, immediately send the latest desired commit
 		// offset.
 		c.unsafeCommitOffsetToStream()
-		c.pollCommits.Resume()
+		c.pollCommits.Start()
 
 	case streamReconnecting:
 		// Clear unacknowledged committed offsets when the stream breaks.
 		c.cursorTracker.ClearPending()
-		c.pollCommits.Pause()
+		c.pollCommits.Stop()
 
 	case streamTerminated:
 		c.unsafeInitiateShutdown(serviceTerminated, c.stream.Error())

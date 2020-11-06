@@ -197,7 +197,7 @@ func (s *wireSubscriber) onStreamStatusChange(status streamStatus) {
 		}
 
 	case streamReconnecting:
-		s.pollFlowControl.Pause()
+		s.pollFlowControl.Stop()
 
 	case streamTerminated:
 		s.unsafeInitiateShutdown(serviceTerminated, s.stream.Error())
@@ -269,7 +269,7 @@ func (s *wireSubscriber) sendPendingFlowControl() {
 
 func (s *wireSubscriber) unsafeSendStartFlowControl() {
 	s.unsafeSendFlowControl(s.flowControl.RequestForRestart())
-	s.pollFlowControl.Resume()
+	s.pollFlowControl.Start()
 }
 
 func (s *wireSubscriber) unsafeAllowFlow(allow flowControlTokens) {
