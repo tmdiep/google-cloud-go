@@ -17,7 +17,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"reflect"
 	"time"
 
@@ -177,7 +176,7 @@ func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error
 		return
 	}
 
-	log.Printf("pubsublite: committer terminating with status=%d, err=%v", targetStatus, err)
+	//log.Printf("pubsublite: committer terminating with status=%d, err=%v", targetStatus, err)
 
 	if targetStatus == serviceTerminating {
 		// Expedite sending final commit to the stream.

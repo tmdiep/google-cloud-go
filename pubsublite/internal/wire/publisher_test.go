@@ -177,23 +177,15 @@ func TestPartitionPublisherStartStop(t *testing.T) {
 	defer mockServer.OnTestEnd()
 
 	stream := test.NewRPCVerifier(t)
-	block := stream.PushWithBlock(initPubReq(topic), initPubResp(), nil)
+	stream.Push(initPubReq(topic), initPubResp(), nil)
 	mockServer.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
-
-	time.Sleep(10 * time.Millisecond)
-	pub.Stop()
-	time.Sleep(10 * time.Millisecond)
-	close(block)
-
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v), want: <nil>", gotErr)
 	}
-	// pubFinalError also verifies that the gRPC stream is nil.
-	if gotErr := pub.FinalError(); gotErr != nil {
-		t.Errorf("Publisher final err: (%v), want: <nil>", gotErr)
-	}
+
+	pub.StopVerifyNoError()
 	if gotErr := pub.StreamError(); gotErr != nil {
 		t.Errorf("Stream final err: (%v), want: <nil>", gotErr)
 	}
@@ -213,9 +205,9 @@ func TestPartitionPublisherStopAbortsRetries(t *testing.T) {
 
 	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
 
+	// Sleep to allow time for the stream to be connected.
 	time.Sleep(10 * time.Millisecond)
 	pub.Stop()
-	time.Sleep(10 * time.Millisecond)
 	close(block)
 
 	if gotErr := pub.StartError(); gotErr != nil {
@@ -299,7 +291,7 @@ func TestPartitionPublisherConnectTimeout(t *testing.T) {
 
 	// Send the initial server response well after settings.Timeout to simulate a
 	// timeout. The publisher fails to start.
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 	close(block)
 
 	if gotErr := pub.StartError(); !test.ErrorEqual(gotErr, wantErr) {
@@ -402,7 +394,7 @@ func TestPartitionPublisherBatching(t *testing.T) {
 	// Bundler invokes at most 1 handler and may add a message to the end of the
 	// last bundle if the hard limits (BundleByteLimit) aren't reached. Pause to
 	// handle previous bundles.
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 	result5 := pub.Publish(msg5)
 	result6 := pub.Publish(msg6)
 	result7 := pub.Publish(msg7)
