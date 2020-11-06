@@ -97,7 +97,10 @@ func validatePartitions(partitions []int) error {
 // The frequency of sending batch flow control requests.
 const batchFlowControlPeriod = 100 * time.Millisecond
 
-// wireSubscriber directly wraps the subscribe stream.
+// TODO: inflight seek
+
+// wireSubscriber directly wraps the subscribe stream. Client-initiated seek
+// unsupported.
 type wireSubscriber struct {
 	// Immutable after creation.
 	subsClient   *vkit.SubscriberClient
@@ -136,7 +139,7 @@ func newWireSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, s
 	}
 	s.stream = newRetryableStream(ctx, s, settings.Timeout, reflect.TypeOf(pb.SubscribeResponse{}))
 
-	backgroundTask := s.sendPendingFlowControl
+	backgroundTask := s.sendBatchFlowControl
 	if disableTasks {
 		backgroundTask = func() {}
 	}
@@ -192,9 +195,9 @@ func (s *wireSubscriber) onStreamStatusChange(status streamStatus) {
 			s.stream.Send(&pb.SubscribeRequest{
 				Request: &pb.SubscribeRequest_Seek{Seek: seekReq},
 			})
-		} else {
-			s.unsafeSendStartFlowControl()
 		}
+		s.unsafeSendFlowControl(s.flowControl.RequestForRestart())
+		s.pollFlowControl.Start()
 
 	case streamReconnecting:
 		s.pollFlowControl.Stop()
@@ -212,9 +215,9 @@ func (s *wireSubscriber) onResponse(response interface{}) {
 		subscribeResponse, _ := response.(*pb.SubscribeResponse)
 		switch {
 		case subscribeResponse.GetMessages() != nil:
-			return s.onMessageResponse(subscribeResponse.GetMessages())
+			return s.unsafeHandleMessageResponse(subscribeResponse.GetMessages())
 		case subscribeResponse.GetSeek() != nil:
-			return s.onSeekResponse(subscribeResponse.GetSeek())
+			return s.unsafeHandleSeekResponse(subscribeResponse.GetSeek())
 		default:
 			return errInvalidSubscribeResponse
 		}
@@ -224,13 +227,12 @@ func (s *wireSubscriber) onResponse(response interface{}) {
 	}
 }
 
-func (s *wireSubscriber) onSeekResponse(response *pb.SeekResponse) error {
+func (s *wireSubscriber) unsafeHandleSeekResponse(response *pb.SeekResponse) error {
 	// TODO: Check cursor in seek response?
-	s.unsafeSendStartFlowControl()
 	return nil
 }
 
-func (s *wireSubscriber) onMessageResponse(response *pb.MessageResponse) error {
+func (s *wireSubscriber) unsafeHandleMessageResponse(response *pb.MessageResponse) error {
 	if len(response.Messages) == 0 {
 		return errServerNoMessages
 	}
@@ -261,15 +263,10 @@ func (s *wireSubscriber) onAckAsync(msgBytes int64) {
 	s.unsafeAllowFlow(flowControlTokens{Bytes: msgBytes, Messages: 1})
 }
 
-func (s *wireSubscriber) sendPendingFlowControl() {
+func (s *wireSubscriber) sendBatchFlowControl() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unsafeSendFlowControl(s.flowControl.ReleasePendingRequest())
-}
-
-func (s *wireSubscriber) unsafeSendStartFlowControl() {
-	s.unsafeSendFlowControl(s.flowControl.RequestForRestart())
-	s.pollFlowControl.Start()
 }
 
 func (s *wireSubscriber) unsafeAllowFlow(allow flowControlTokens) {
@@ -295,9 +292,6 @@ func (s *wireSubscriber) unsafeInitiateShutdown(targetStatus serviceStatus, err 
 	if !s.unsafeUpdateStatus(targetStatus, err) {
 		return
 	}
-
-	//log.Printf("pubsublite: wireSubscriber terminating with status=%d, err=%v", targetStatus, err)
-
 	// No data to send. Immediately terminate the stream.
 	s.pollFlowControl.Stop()
 	s.stream.Stop()

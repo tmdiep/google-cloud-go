@@ -34,6 +34,11 @@ var (
 // The frequency of batched cursor commits.
 const commitCursorPeriod = 50 * time.Millisecond
 
+// committer wraps a commit cursor stream for a subscription and partition.
+// A background task periodically reads the latest desired cursor offset from
+// the ackTracker and sends a commit request to the stream if the cursor needs
+// to be updated. The commitCursorTracker is used to manage in-flight commit
+// requests.
 type committer struct {
 	// Immutable after creation.
 	cursorClient *vkit.CursorClient
@@ -74,6 +79,7 @@ func newCommitter(ctx context.Context, cursor *vkit.CursorClient, settings Recei
 	return c
 }
 
+// Start attempts to establish a commit stream connection.
 func (c *committer) Start() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -84,6 +90,8 @@ func (c *committer) Start() {
 	}
 }
 
+// Stop initiates shutdown of the committer. It attempts to send the latest
+// desired commit offset to the server before terminating.
 func (c *committer) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -115,6 +123,7 @@ func (c *committer) onStreamStatusChange(status streamStatus) {
 		c.unsafeUpdateStatus(serviceActive, nil)
 		// Once the stream connects, immediately send the latest desired commit
 		// offset.
+		c.cursorTracker.ClearPending() // Just in case
 		c.unsafeCommitOffsetToStream()
 		c.pollCommits.Start()
 
@@ -128,6 +137,7 @@ func (c *committer) onStreamStatusChange(status streamStatus) {
 	}
 }
 
+// commitOffsetToStream is called by the periodic background task.
 func (c *committer) commitOffsetToStream() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -156,6 +166,9 @@ func (c *committer) onResponse(response interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// If an inconsistency is detected in the server's responses, immediately
+	// terminate the committer, as correct processing of commits cannot be
+	// guaranteed.
 	processResponse := func() error {
 		commitResponse, _ := response.(*pb.StreamingCommitCursorResponse)
 		if commitResponse.GetCommit() == nil {
@@ -181,10 +194,8 @@ func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error
 		return
 	}
 
-	//log.Printf("pubsublite: committer terminating with status=%d, err=%v", targetStatus, err)
-
+	// If it's a graceful shutdown, expedite sending final commit to the stream.
 	if targetStatus == serviceTerminating {
-		// Expedite sending final commit to the stream.
 		c.unsafeCommitOffsetToStream()
 		c.unsafeCheckDone()
 		return

@@ -72,7 +72,7 @@ func (ts *testWireSubscriber) NextMsg() *testMessageHolder {
 // SendBatchFlowControl invokes the periodic background batch flow control. Note
 // that the periodic task is disabled in tests.
 func (ts *testWireSubscriber) SendBatchFlowControl() {
-	ts.subs.sendPendingFlowControl()
+	ts.subs.sendBatchFlowControl()
 }
 
 func TestWireSubscriberReconnect(t *testing.T) {

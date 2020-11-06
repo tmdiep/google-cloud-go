@@ -21,7 +21,9 @@ import (
 
 	"google.golang.org/api/option"
 	"google.golang.org/api/option/internaloption"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -114,10 +116,10 @@ const (
 func defaultClientOptions(region string) []option.ClientOption {
 	return []option.ClientOption{
 		internaloption.WithDefaultEndpoint(region + pubsubLiteDefaultEndpoint),
-		// option.WithGRPCConnectionPool(4),
-		// option.WithGRPCDialOption(grpc.WithKeepaliveParams(keepalive.ClientParameters{
-		// 	Time: 5 * time.Minute,
-		// })),
+		//option.WithGRPCConnectionPool(4),
+		option.WithGRPCDialOption(grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time: 5 * time.Minute,
+		})),
 	}
 }
 

@@ -60,7 +60,7 @@ var DefaultPublishSettings = PublishSettings{
 	DelayThreshold: 10 * time.Millisecond,
 	CountThreshold: 100,
 	ByteThreshold:  1e6,
-	Timeout:        60 * time.Second,
+	Timeout:        10 * time.Minute,
 	// By default set to a high limit that is not likely to occur, but prevents
 	// OOM errors in clients.
 	BufferedByteLimit: 1 << 30, // 1 GiB
@@ -78,7 +78,7 @@ type ReceiveSettings struct {
 var DefaultReceiveSettings = ReceiveSettings{
 	MaxOutstandingMessages: 1000,
 	MaxOutstandingBytes:    1e9,
-	Timeout:                60 * time.Second,
+	Timeout:                10 * time.Minute,
 }
 
 func validatePublishSettings(settings PublishSettings) error {

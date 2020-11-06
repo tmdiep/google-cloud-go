@@ -66,11 +66,11 @@ func main() {
 		subscriber := harness.StartSubscriber(onReceive)
 		subscribers = append(subscribers, subscriber)
 
-		go func() {
-			log.Printf("Subscriber%d listening to messages...", i)
+		go func(id int) {
+			log.Printf("Subscriber%d listening to messages...", id)
 			err := subscriber.WaitStopped()
-			log.Fatalf("Subscriber%d stopped with error: %v, time elapsed: %v", i, err, time.Now().Sub(start))
-		}()
+			log.Fatalf("Subscriber%d stopped with error: %v, time elapsed: %v", id, err, time.Now().Sub(start))
+		}(i)
 	}
 
 	// Setup publisher.

@@ -88,3 +88,7 @@ func TestCommitterStreamReconnect(t *testing.T) {
 	// Then send the retryable error, which results in reconnect.
 	close(block)
 }
+
+// To test:
+// Stop flushes commits
+// Invalid server respondes
