@@ -85,17 +85,17 @@ func (pt *pollingPeriodicTask) poll() {
 	}
 }
 
-// nullPeriodicTask can be used by unit tests to disable the background task
+// disabledPeriodicTask can be used by unit tests to disable the background task
 // polling and have more control over when the task executes.
-type nullPeriodicTask struct{}
+type disabledPeriodicTask struct{}
 
-func (nt *nullPeriodicTask) Start()  {}
-func (nt *nullPeriodicTask) Pause()  {}
-func (nt *nullPeriodicTask) Resume() {}
-func (nt *nullPeriodicTask) Stop()   {}
+func (dt *disabledPeriodicTask) Start()  {}
+func (dt *disabledPeriodicTask) Pause()  {}
+func (dt *disabledPeriodicTask) Resume() {}
+func (dt *disabledPeriodicTask) Stop()   {}
 
-type nullPeriodicTaskFactory struct{}
+type disabledPeriodicTaskFactory struct{}
 
-func (nf *nullPeriodicTaskFactory) New(period time.Duration, task func()) periodicTask {
-	return new(nullPeriodicTask)
+func (df *disabledPeriodicTaskFactory) New(period time.Duration, task func()) periodicTask {
+	return new(disabledPeriodicTask)
 }
