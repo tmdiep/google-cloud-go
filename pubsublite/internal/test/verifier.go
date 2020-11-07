@@ -15,6 +15,7 @@ package test
 
 import (
 	"container/list"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ const (
 type Barrier struct {
 	// Used to block until the server is ready to send the response.
 	serverBlock chan struct{}
-	// Released when the client wants the server to send the response.
+	// Used to block until the client wants the server to send the response.
 	clientBlock chan struct{}
 	err         error
 }
@@ -202,7 +203,11 @@ func (v *RPCVerifier) Flush() {
 	for elem := v.rpcs.Front(); elem != nil; elem = elem.Next() {
 		v.numCalls++
 		rpc, _ := elem.Value.(*rpcMetadata)
-		v.t.Errorf("call(%d): did not receive expected request:\n%v", v.numCalls, rpc.wantRequest)
+		if rpc.wantRequest != nil {
+			v.t.Errorf("call(%d): did not receive expected request:\n%v", v.numCalls, rpc.wantRequest)
+		} else {
+			v.t.Errorf("call(%d): unsent response:\n%v, err = (%v)", v.numCalls, rpc.retResponse, rpc.retErr)
+		}
 	}
 	v.rpcs.Init()
 }
@@ -239,17 +244,21 @@ func (sv *streamVerifiers) Pop() (*RPCVerifier, error) {
 	return v, nil
 }
 
-// keyedStreamVerifiers stores indexed streamVerifiers.
+func (sv *streamVerifiers) Flush() {
+	for elem := sv.verifiers.Front(); elem != nil; elem = elem.Next() {
+		v, _ := elem.Value.(*RPCVerifier)
+		v.Flush()
+	}
+}
+
+// keyedStreamVerifiers stores indexed streamVerifiers. Examples of keys:
+// {topic path, partition}.
 type keyedStreamVerifiers struct {
 	verifiers map[string]*streamVerifiers
 }
 
 func newKeyedStreamVerifiers() *keyedStreamVerifiers {
 	return &keyedStreamVerifiers{verifiers: make(map[string]*streamVerifiers)}
-}
-
-func (kv *keyedStreamVerifiers) Reset() {
-	kv.verifiers = make(map[string]*streamVerifiers)
 }
 
 func (kv *keyedStreamVerifiers) Push(key string, v *RPCVerifier) {
@@ -267,4 +276,97 @@ func (kv *keyedStreamVerifiers) Pop(key string) (*RPCVerifier, error) {
 		return nil, status.Error(codes.FailedPrecondition, "mockserver: unexpected connection with no configured responses")
 	}
 	return sv.Pop()
+}
+
+func (kv *keyedStreamVerifiers) Flush() {
+	for _, sv := range kv.verifiers {
+		sv.Flush()
+	}
+}
+
+// Verifiers contains RPCVerifiers for unary RPCs and streaming RPCs.
+type Verifiers struct {
+	t  *testing.T
+	mu sync.Mutex
+
+	// Global list of verifiers for all unary RPCs.
+	GlobalVerifier *RPCVerifier
+	// Stream verifiers by key.
+	streamVerifiers       *keyedStreamVerifiers
+	activeStreamVerifiers []*RPCVerifier
+}
+
+// NewVerifiers creates a new instance of Verifiers for a test.
+func NewVerifiers(t *testing.T) *Verifiers {
+	return &Verifiers{
+		t:               t,
+		GlobalVerifier:  NewRPCVerifier(t),
+		streamVerifiers: newKeyedStreamVerifiers(),
+	}
+}
+
+type streamType string
+
+const (
+	publishStreamType    streamType = "publish"
+	subscribeStreamType  streamType = "subscribe"
+	commitStreamType     streamType = "commit"
+	assignmentStreamType streamType = "assignment"
+)
+
+func keyPartition(st streamType, path string, partition int) string {
+	return fmt.Sprintf("%s:%s:%d", st, path, partition)
+}
+
+func key(st streamType, path string) string {
+	return fmt.Sprintf("%s:%s", st, path)
+}
+
+// AddPublishStream adds verifiers for a publish stream.
+func (tv *Verifiers) AddPublishStream(topic string, partition int, streamVerifier *RPCVerifier) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	tv.streamVerifiers.Push(keyPartition(publishStreamType, topic, partition), streamVerifier)
+}
+
+// AddSubscribeStream adds verifiers for a subscribe stream.
+func (tv *Verifiers) AddSubscribeStream(subscription string, partition int, streamVerifier *RPCVerifier) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	tv.streamVerifiers.Push(keyPartition(subscribeStreamType, subscription, partition), streamVerifier)
+}
+
+// AddCommitStream adds verifiers for a commit stream.
+func (tv *Verifiers) AddCommitStream(subscription string, partition int, streamVerifier *RPCVerifier) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	tv.streamVerifiers.Push(keyPartition(commitStreamType, subscription, partition), streamVerifier)
+}
+
+// AddAssignmentStream adds verifiers for an assignment stream.
+func (tv *Verifiers) AddAssignmentStream(subscription string, streamVerifier *RPCVerifier) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	tv.streamVerifiers.Push(key(assignmentStreamType, subscription), streamVerifier)
+}
+
+func (tv *Verifiers) popStreamVerifier(key string) (*RPCVerifier, error) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	v, err := tv.streamVerifiers.Pop(key)
+	if v != nil {
+		tv.activeStreamVerifiers = append(tv.activeStreamVerifiers, v)
+	}
+	return v, err
+}
+
+func (tv *Verifiers) flush() {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+
+	tv.GlobalVerifier.Flush()
+	tv.streamVerifiers.Flush()
+	for _, v := range tv.activeStreamVerifiers {
+		v.Flush()
+	}
 }

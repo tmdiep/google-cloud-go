@@ -89,14 +89,13 @@ func TestWireSubscriberReconnect(t *testing.T) {
 	wantMsg2 := seqMsgWithOffsetAndSize(68, 100)
 	msgResp2 := msgSubResp(wantMsg2)
 
-	mockServer.OnTestStart(nil)
-	defer mockServer.OnTestEnd()
+	verifiers := test.NewVerifiers(t)
 
 	stream1 := test.NewRPCVerifier(t)
 	stream1.Push(initSubReq(subscription), initSubResp(), nil)
 	stream1.Push(flowControlSubReq(flowControlTokens{Bytes: 1000, Messages: 16}), msgResp1, nil)
 	stream1.Push(nil, nil, status.Error(codes.Unavailable, "server unavailable"))
-	mockServer.AddSubscribeStream(subscription.Path, subscription.Partition, stream1)
+	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream1)
 
 	// When reconnected, the wireSubscriber should seek to msg2 and have
 	// subtracted flow control tokens.
@@ -104,7 +103,10 @@ func TestWireSubscriberReconnect(t *testing.T) {
 	stream2.Push(initSubReq(subscription), initSubResp(), nil)
 	stream2.Push(seekReq(68), seekResp(68), nil)
 	stream2.Push(flowControlSubReq(flowControlTokens{Bytes: 800, Messages: 15}), msgResp2, nil)
-	mockServer.AddSubscribeStream(subscription.Path, subscription.Partition, stream2)
+	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream2)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
 
 	cmt := newTestWireSubscriber(t, subscription, settings, acks)
 	defer cmt.StopVerifyNoError()

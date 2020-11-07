@@ -18,13 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"cloud.google.com/go/internal/uid"
+	"github.com/google/uuid"
 )
 
 // MsgQueue is a helper for checking whether a set of messages make a full
 // round trip from publisher to subscriber.
 type MsgQueue struct {
-	msgIDs *uid.Space
 	msgMap map[string]bool
 	done   chan struct{}
 	mu     sync.Mutex
@@ -32,7 +31,6 @@ type MsgQueue struct {
 
 func NewMsgQueue() *MsgQueue {
 	return &MsgQueue{
-		msgIDs: uid.NewSpace("hello", nil),
 		msgMap: make(map[string]bool),
 		done:   make(chan struct{}),
 	}
@@ -42,7 +40,7 @@ func (mq *MsgQueue) AddMsg() string {
 	mq.mu.Lock()
 	defer mq.mu.Unlock()
 
-	msg := mq.msgIDs.New()
+	msg := uuid.New().String()
 	mq.msgMap[msg] = true
 	return msg
 }

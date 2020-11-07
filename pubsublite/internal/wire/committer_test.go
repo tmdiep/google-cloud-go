@@ -57,21 +57,23 @@ func TestCommitterStreamReconnect(t *testing.T) {
 	acks.Push(ack1)
 	acks.Push(ack2)
 
-	mockServer.OnTestStart(nil)
-	defer mockServer.OnTestEnd()
+	verifiers := test.NewVerifiers(t)
 
 	// Simulate a transient error that results in a reconnect.
 	stream1 := test.NewRPCVerifier(t)
 	stream1.Push(initCommitReq(subscription), initCommitResp(), nil)
 	block := stream1.PushWithBlock(commitReq(34), nil, status.Error(codes.Unavailable, "server unavailable"))
-	mockServer.AddCommitStream(subscription.Path, subscription.Partition, stream1)
+	verifiers.AddCommitStream(subscription.Path, subscription.Partition, stream1)
 
 	// When the stream reconnects, the latest commit offset should be sent to the
 	// server.
 	stream2 := test.NewRPCVerifier(t)
 	stream2.Push(initCommitReq(subscription), initCommitResp(), nil)
 	stream2.Push(commitReq(56), commitResp(1), nil)
-	mockServer.AddCommitStream(subscription.Path, subscription.Partition, stream2)
+	verifiers.AddCommitStream(subscription.Path, subscription.Partition, stream2)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
 
 	cmt := newTestCommitter(t, subscription, acks)
 	defer cmt.StopVerifyNoError()
