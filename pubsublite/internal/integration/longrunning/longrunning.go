@@ -34,7 +34,7 @@ var (
 
 const (
 	sleepPeriod    = 60 * time.Second
-	msgWaitTimeout = 30 * time.Second
+	msgWaitTimeout = 2 * time.Minute
 )
 
 func main() {

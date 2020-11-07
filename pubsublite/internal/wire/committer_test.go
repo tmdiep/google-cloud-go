@@ -86,7 +86,7 @@ func TestCommitterStreamReconnect(t *testing.T) {
 	cmt.SendBatchCommit()
 
 	// Then send the retryable error, which results in reconnect.
-	close(block)
+	block.Release()
 }
 
 // To test:

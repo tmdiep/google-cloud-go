@@ -141,8 +141,8 @@ func TestRetryableStreamStopWhileConnecting(t *testing.T) {
 		t.Errorf("Stream status change: got %d, want %d", got, want)
 	}
 
+	block.Release()
 	parent.Stream.Stop()
-	close(block)
 
 	// The stream should transition to terminated and the client stream should be
 	// discarded.
@@ -163,10 +163,10 @@ func TestRetryableStreamStopAbortsRetries(t *testing.T) {
 	mockServer.OnTestStart(nil)
 	defer mockServer.OnTestEnd()
 
-	// Unavailable is a retryable error, but the stream should not be retried
-	// because the publisher is stopped.
+	// Aborted is a retryable error, but the stream should not be retried because
+	// the publisher is stopped.
 	stream := test.NewRPCVerifier(t)
-	block := stream.PushWithBlock(parent.InitialReq, nil, status.Error(codes.Unavailable, ""))
+	block := stream.PushWithBlock(parent.InitialReq, nil, status.Error(codes.Aborted, "abort retry"))
 	mockServer.AddPublishStream(parent.Topic.Path, parent.Topic.Partition, stream)
 
 	parent.Stream.Start()
@@ -174,8 +174,8 @@ func TestRetryableStreamStopAbortsRetries(t *testing.T) {
 		t.Errorf("Stream status change: got %d, want %d", got, want)
 	}
 
+	block.Release()
 	parent.Stream.Stop()
-	close(block)
 
 	// The stream should transition to terminated and the client stream should be
 	// discarded.
@@ -269,9 +269,9 @@ func TestRetryableStreamConnectTimeout(t *testing.T) {
 		t.Errorf("Stream status change: got %d, want %d", got, want)
 	}
 
-	// Send the initial server response well after timeout.
+	// Send the initial server response well after the timeout setting.
 	time.Sleep(10 * time.Millisecond)
-	close(block)
+	block.Release()
 
 	if got, want := parent.NextStatus(), streamTerminated; got != want {
 		t.Errorf("Stream status change: got %d, want %d", got, want)

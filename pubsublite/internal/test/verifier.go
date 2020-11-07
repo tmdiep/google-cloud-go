@@ -30,26 +30,70 @@ const (
 	blockWaitTimeout = 30 * time.Second
 )
 
-type rpcMetadata struct {
-	wantRequest   interface{}
-	retResponse   interface{}
-	retErr        error
-	blockResponse chan struct{}
+// Barrier is used to perform two-way synchronization betwen the server and
+// client (test) to ensure tests are deterministic.
+type Barrier struct {
+	// Used to block until the server is ready to send the response.
+	serverBlock chan struct{}
+	// Released when the client wants the server to send the response.
+	clientBlock chan struct{}
+	err         error
 }
 
-// wait until the `blockResponse` is released by the test, or a timeout occurs.
-// Returns immediately if there was no block.
-func (r *rpcMetadata) wait() error {
-	if r.blockResponse == nil {
-		return nil
+func newBarrier() *Barrier {
+	return &Barrier{
+		serverBlock: make(chan struct{}),
+		clientBlock: make(chan struct{}),
 	}
+}
+
+// Release should be called by the test.
+func (b *Barrier) Release() {
+	// Wait for the server to reach the barrier.
+	select {
+	case <-time.After(blockWaitTimeout):
+		// Note: avoid returning a retryable code to quickly terminate the test.
+		b.err = status.Errorf(codes.FailedPrecondition, "mockserver: server did not reach barrier within %v", blockWaitTimeout)
+	case <-b.serverBlock:
+	}
+
+	// Then close the client block.
+	close(b.clientBlock)
+}
+
+func (b *Barrier) serverWait() error {
+	if b.err != nil {
+		return b.err
+	}
+
+	// Close the server block to signal the server reaching the point where it is
+	// ready to send the response.
+	close(b.serverBlock)
+
+	// Wait for the test to release the client block.
 	select {
 	case <-time.After(blockWaitTimeout):
 		// Note: avoid returning a retryable code to quickly terminate the test.
 		return status.Errorf(codes.FailedPrecondition, "mockserver: test did not unblock response within %v", blockWaitTimeout)
-	case <-r.blockResponse:
+	case <-b.clientBlock:
 		return nil
 	}
+}
+
+type rpcMetadata struct {
+	wantRequest interface{}
+	retResponse interface{}
+	retErr      error
+	barrier     *Barrier
+}
+
+// wait until the barrier is released by the test, or a timeout occurs.
+// Returns immediately if there was no block.
+func (r *rpcMetadata) wait() error {
+	if r.barrier == nil {
+		return nil
+	}
+	return r.barrier.serverWait()
 }
 
 // RPCVerifier stores an queue of requests expected from the client, and the
@@ -85,18 +129,18 @@ func (v *RPCVerifier) Push(wantRequest interface{}, retResponse interface{}, ret
 // PushWithBlock is like Push, but returns a channel that the test should close
 // when it would like the response to be sent to the client. This is useful for
 // synchronizing with work that needs to be done on the client.
-func (v *RPCVerifier) PushWithBlock(wantRequest interface{}, retResponse interface{}, retErr error) chan struct{} {
+func (v *RPCVerifier) PushWithBlock(wantRequest interface{}, retResponse interface{}, retErr error) *Barrier {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	block := make(chan struct{})
+	barrier := newBarrier()
 	v.rpcs.PushBack(&rpcMetadata{
-		wantRequest:   wantRequest,
-		retResponse:   retResponse,
-		retErr:        retErr,
-		blockResponse: block,
+		wantRequest: wantRequest,
+		retResponse: retResponse,
+		retErr:      retErr,
+		barrier:     barrier,
 	})
-	return block
+	return barrier
 }
 
 // Pop validates the received request with the next {request, response, error}

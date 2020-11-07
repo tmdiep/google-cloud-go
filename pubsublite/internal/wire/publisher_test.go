@@ -191,7 +191,7 @@ func TestPartitionPublisherSpuriousPublishResponse(t *testing.T) {
 	}
 
 	// Send after startup to ensure the test is deterministic.
-	close(block)
+	block.Release()
 
 	if gotErr, wantErr := pub.FinalError(), errPublishQueueEmpty; !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, wantErr)
@@ -398,7 +398,7 @@ func TestPartitionPublisherBufferOverflow(t *testing.T) {
 	result2 := pub.Publish(msg2)
 	// Delay the server response for the first Publish to verify that it is
 	// allowed to complete.
-	close(block)
+	block.Release()
 	// This message arrives after the publisher has already stopped, so its error
 	// message is ErrServiceStopped.
 	result3 := pub.Publish(msg3)
@@ -468,7 +468,7 @@ func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
 	result2 := pub.Publish(msg2)
 	// Delay the server response for the first Publish to ensure it is allowed to
 	// complete.
-	close(block)
+	block.Release()
 	// This message arrives after the publisher has already stopped.
 	result3 := pub.Publish(msg3)
 
@@ -509,7 +509,7 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 	result1 := pub.Publish(msg1)
 	result2 := pub.Publish(msg2)
 	result3 := pub.Publish(msg3)
-	close(block)
+	block.Release()
 
 	result1.ValidateResult(topic.Partition, 4)
 
@@ -578,7 +578,7 @@ func TestPartitionPublisherStopFlushesMessages(t *testing.T) {
 	result2 := pub.Publish(msg2)
 	result3 := pub.Publish(msg3)
 	pub.Stop()
-	close(block)
+	block.Release()
 	result4 := pub.Publish(msg4)
 
 	// First 2 messages should be allowed to complete.
