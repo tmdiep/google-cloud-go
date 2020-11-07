@@ -30,10 +30,10 @@ import (
 var (
 	messageCount    = flag.Int("message_count", 5, "the number of messages to publish and receive per cycle, per partition")
 	subscriberCount = flag.Int("subscriber_count", 2, "the number of subscriber clients to create (only applies when assignments are enabled)")
+	sleepPeriod     = flag.Duration("sleep", time.Minute, "the duration to sleep between cycles")
 )
 
 const (
-	sleepPeriod    = 60 * time.Second
 	msgWaitTimeout = 2 * time.Minute
 )
 
@@ -89,8 +89,10 @@ func main() {
 			publisher.Publish(&pb.PubSubMessage{Data: []byte(msgQueue.AddMsg())}, onPublished)
 		}
 
-		msgQueue.Wait(msgWaitTimeout)
+		if err := msgQueue.Wait(msgWaitTimeout); err != nil {
+			log.Fatalf("Test failed: %v, time elapsed: %v", err, time.Now().Sub(start))
+		}
 		log.Printf("Time elapsed: %v", time.Now().Sub(start))
-		time.Sleep(sleepPeriod)
+		time.Sleep(*sleepPeriod)
 	}
 }

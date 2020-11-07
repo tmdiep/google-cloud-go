@@ -14,7 +14,7 @@
 package integration
 
 import (
-	"log"
+	"fmt"
 	"sync"
 	"time"
 
@@ -60,12 +60,14 @@ func (mq *MsgQueue) RemoveMsg(msg string) bool {
 	return exists
 }
 
-func (mq *MsgQueue) Wait(timeout time.Duration) {
+func (mq *MsgQueue) Wait(timeout time.Duration) error {
 	select {
 	case <-time.After(timeout):
-		log.Fatalf("Failed to receive %d messages", len(mq.msgMap))
+		err := fmt.Errorf("failed to receive %d messages", len(mq.msgMap))
 		mq.clear()
+		return err
 	case <-mq.done:
+		return nil
 	}
 }
 
