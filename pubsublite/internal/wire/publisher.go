@@ -116,6 +116,126 @@ func (b *publishBatch) ToPublishRequest() *pb.PublishRequest {
 	}
 }
 
+type publishMessageBatcher struct {
+	// Immutable after creation.
+	partition int
+
+	// Used to batch messages.
+	msgBundler *bundler.Bundler
+	// FIFO queue of in-flight batches of published messages. Results have not yet
+	// been received from the server.
+	publishQueue *list.List // Value = *publishBatch
+	// Used for error checking, to ensure the server returns increasing offsets
+	// for published messages.
+	minExpectedNextOffset int64
+	// The buffer size is managed by this publisher rather than the bundler due to
+	// the in-flight publish queue.
+	availableBufferBytes int
+}
+
+func newPublishMessageBatcher(settings *PublishSettings, partition int, onNewBatch func(*publishBatch)) *publishMessageBatcher {
+	batcher := &publishMessageBatcher{
+		partition:            partition,
+		publishQueue:         list.New(),
+		availableBufferBytes: settings.BufferedByteLimit,
+	}
+
+	msgBundler := bundler.NewBundler(&messageHolder{}, func(item interface{}) {
+		msgs, _ := item.([]*messageHolder)
+		if len(msgs) == 0 {
+			// This should not occur.
+			return
+		}
+		// The publishMessageBatcher is accessed by the singlePartitionPublisher and
+		// Bundler handler func. Route a new batch via the singlePartitionPublisher
+		// so that only a single mutex is required.
+		onNewBatch(&publishBatch{msgHolders: msgs})
+	})
+	msgBundler.DelayThreshold = settings.DelayThreshold
+	msgBundler.BundleCountThreshold = settings.CountThreshold
+	msgBundler.BundleByteThreshold = settings.ByteThreshold
+	msgBundler.BundleByteLimit = MaxPublishRequestBytes
+	msgBundler.HandlerLimit = 1                                    // Handle batches serially for ordering
+	msgBundler.BufferedByteLimit = settings.BufferedByteLimit * 10 // Handled in the publisher
+
+	batcher.msgBundler = msgBundler
+	return batcher
+}
+
+func (b *publishMessageBatcher) AddMessage(msg *pb.PubSubMessage, onResult PublishResultFunc) error {
+	msgSize := proto.Size(msg)
+	switch {
+	case msgSize > MaxPublishMessageBytes:
+		return fmt.Errorf("pubsublite: serialized message size is %d bytes, maximum allowed size is MaxPublishMessageBytes (%d)", msgSize, MaxPublishMessageBytes)
+	case msgSize > b.availableBufferBytes:
+		return ErrOverflow
+	}
+
+	holder := &messageHolder{msg: msg, size: msgSize, onResult: onResult}
+	if err := b.msgBundler.Add(holder, msgSize); err != nil {
+		// As we've already checked the size of the message and overflow, the
+		// bundler should not return an error.
+		return fmt.Errorf("pubsublite: failed to batch message: %v", err)
+	}
+	b.availableBufferBytes -= msgSize
+	return nil
+}
+
+func (b *publishMessageBatcher) AddBatch(batch *publishBatch) {
+	b.publishQueue.PushBack(batch)
+}
+
+func (b *publishMessageBatcher) OnPublishResponse(firstOffset int64) error {
+	frontElem := b.publishQueue.Front()
+	if frontElem == nil {
+		return errPublishQueueEmpty
+	}
+	if firstOffset < b.minExpectedNextOffset {
+		return fmt.Errorf("pubsublite: server returned publish response with inconsistent start offset = %d, expected >= %d", firstOffset, b.minExpectedNextOffset)
+	}
+
+	batch, _ := frontElem.Value.(*publishBatch)
+	for i, msgHolder := range batch.msgHolders {
+		// Messages are ordered, so the offset of each message is firstOffset + i.
+		pm := &PublishMetadata{Partition: b.partition, Offset: firstOffset + int64(i)}
+		msgHolder.onResult(pm, nil)
+		b.availableBufferBytes += msgHolder.size
+	}
+
+	b.minExpectedNextOffset = firstOffset + int64(len(batch.msgHolders))
+	b.publishQueue.Remove(frontElem)
+	return nil
+}
+
+func (b *publishMessageBatcher) getInFlightBatches(clear bool) []*publishBatch {
+	var batches []*publishBatch
+	for elem := b.publishQueue.Front(); elem != nil; elem = elem.Next() {
+		if batch, ok := elem.Value.(*publishBatch); ok {
+			batches = append(batches, batch)
+		}
+	}
+	if clear {
+		b.publishQueue.Init()
+	}
+	return batches
+}
+
+func (b *publishMessageBatcher) InFlightBatches() []*publishBatch {
+	return b.getInFlightBatches(false)
+}
+
+func (b *publishMessageBatcher) ReleaseInFlightBatches() []*publishBatch {
+	return b.getInFlightBatches(true)
+}
+
+func (b *publishMessageBatcher) Flush() {
+	b.msgBundler.Flush()
+}
+
+func (b *publishMessageBatcher) Done() bool {
+	return b.publishQueue.Len() == 0
+}
+
 // singlePartitionPublisher publishes messages to a single topic partition.
 //
 // The life of a successfully published message is as follows:
@@ -139,20 +259,9 @@ type singlePartitionPublisher struct {
 	initialReq *pb.PublishRequest
 
 	// Fields below must be guarded with mutex.
-	stream *retryableStream
-
-	// Used to batch messages.
-	msgBundler *bundler.Bundler
-	// FIFO queue of in-flight batches of published messages. Results have not yet
-	// been received from the server.
-	publishQueue *list.List // Value = *publishBatch
-	// Used for error checking, to ensure the server returns increasing offsets
-	// for published messages.
-	minExpectedNextOffset int64
-	// The buffer size is managed by this publisher rather than the bundler due to
-	// the in-flight publish queue.
-	availableBufferBytes int
-	enableSendToStream   bool
+	stream             *retryableStream
+	batcher            *publishMessageBatcher
+	enableSendToStream bool
 
 	abstractService
 }
@@ -178,22 +287,8 @@ func (f *singlePartitionPublisherFactory) New(partition int) *singlePartitionPub
 				},
 			},
 		},
-		publishQueue:         list.New(),
-		availableBufferBytes: f.settings.BufferedByteLimit,
 	}
-
-	msgBundler := bundler.NewBundler(&messageHolder{}, func(item interface{}) {
-		msgs, _ := item.([]*messageHolder)
-		pp.handleBatch(msgs)
-	})
-	msgBundler.DelayThreshold = f.settings.DelayThreshold
-	msgBundler.BundleCountThreshold = f.settings.CountThreshold
-	msgBundler.BundleByteThreshold = f.settings.ByteThreshold
-	msgBundler.BundleByteLimit = MaxPublishRequestBytes
-	msgBundler.HandlerLimit = 1                                      // Handle batches serially for ordering
-	msgBundler.BufferedByteLimit = f.settings.BufferedByteLimit * 10 // Handled in the publisher
-
-	pp.msgBundler = msgBundler
+	pp.batcher = newPublishMessageBatcher(&f.settings, partition, pp.onNewBatch)
 	pp.stream = newRetryableStream(f.ctx, pp, f.settings.Timeout, reflect.TypeOf(pb.PublishResponse{}))
 	return pp
 }
@@ -221,24 +316,12 @@ func (pp *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onResult Publ
 	defer pp.mu.Unlock()
 
 	processMessage := func() error {
-		msgSize := proto.Size(msg)
-		err := pp.unsafeCheckServiceStatus()
-		switch {
-		case err != nil:
+		if err := pp.unsafeCheckServiceStatus(); err != nil {
 			return err
-		case msgSize > MaxPublishMessageBytes:
-			return fmt.Errorf("pubsublite: serialized message size is %d bytes, maximum allowed size is MaxPublishMessageBytes (%d)", msgSize, MaxPublishMessageBytes)
-		case msgSize > pp.availableBufferBytes:
-			return ErrOverflow
 		}
-
-		holder := &messageHolder{msg: msg, size: msgSize, onResult: onResult}
-		if err := pp.msgBundler.Add(holder, msgSize); err != nil {
-			// As we've already checked the size of the message and overflow, the
-			// bundler should not return an error.
-			return fmt.Errorf("pubsublite: failed to batch message: %v", err)
+		if err := pp.batcher.AddMessage(msg, onResult); err != nil {
+			return err
 		}
-		pp.availableBufferBytes -= msgSize
 		return nil
 	}
 
@@ -248,7 +331,6 @@ func (pp *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onResult Publ
 		pp.unsafeInitiateShutdown(serviceTerminating, err)
 		onResult(nil, err)
 	}
-	return
 }
 
 func (pp *singlePartitionPublisher) newStream(ctx context.Context) (grpc.ClientStream, error) {
@@ -279,42 +361,32 @@ func (pp *singlePartitionPublisher) onStreamStatusChange(status streamStatus) {
 
 	case streamConnected:
 		pp.unsafeUpdateStatus(serviceActive, nil)
+		pp.enableSendToStream = true
 
 		// To ensure messages are sent in order, we should send everything in
 		// publishQueue to the stream immediately after reconnecting, before any new
 		// batches.
-		reenableSend := true
-		for elem := pp.publishQueue.Front(); elem != nil; elem = elem.Next() {
-			if batch, ok := elem.Value.(*publishBatch); ok {
-				// If an error occurs during send, the gRPC stream will close and the
-				// retryableStream will transition to `streamReconnecting` or
-				// `streamTerminated`.
-				if !pp.stream.Send(batch.ToPublishRequest()) {
-					reenableSend = false
-					break
-				}
+		batches := pp.batcher.InFlightBatches()
+		for _, batch := range batches {
+			// If an error occurs during send, the gRPC stream will close and the
+			// retryableStream will transition to `streamReconnecting` or
+			// `streamTerminated`.
+			if !pp.stream.Send(batch.ToPublishRequest()) {
+				pp.enableSendToStream = false
+				break
 			}
 		}
-		pp.enableSendToStream = reenableSend
 
 	case streamTerminated:
 		pp.unsafeInitiateShutdown(serviceTerminated, pp.stream.Error())
 	}
 }
 
-// handleBatch is the bundler's handler func.
-func (pp *singlePartitionPublisher) handleBatch(messages []*messageHolder) {
-	if len(messages) == 0 {
-		// This should not occur.
-		return
-	}
-
+func (pp *singlePartitionPublisher) onNewBatch(batch *publishBatch) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
 
-	batch := &publishBatch{msgHolders: messages}
-	pp.publishQueue.PushBack(batch)
-
+	pp.batcher.AddBatch(batch)
 	if pp.enableSendToStream {
 		// Note: if the underlying stream is reconnecting or Send() fails, the
 		// entire publish queue will be sent to the stream in order once the
@@ -332,25 +404,10 @@ func (pp *singlePartitionPublisher) onResponse(response interface{}) {
 		if pubResponse.GetMessageResponse() == nil {
 			return errInvalidMsgPubResponse
 		}
-		frontElem := pp.publishQueue.Front()
-		if frontElem == nil {
-			return errPublishQueueEmpty
-		}
 		firstOffset := pubResponse.GetMessageResponse().GetStartCursor().GetOffset()
-		if firstOffset < pp.minExpectedNextOffset {
-			return fmt.Errorf("pubsublite: server returned publish response with inconsistent start offset = %d, expected >= %d", firstOffset, pp.minExpectedNextOffset)
+		if err := pp.batcher.OnPublishResponse(firstOffset); err != nil {
+			return err
 		}
-
-		batch, _ := frontElem.Value.(*publishBatch)
-		for i, msgHolder := range batch.msgHolders {
-			// Messages are ordered, so the offset of each message is firstOffset + i.
-			pm := &PublishMetadata{Partition: pp.topic.Partition, Offset: firstOffset + int64(i)}
-			msgHolder.onResult(pm, nil)
-			pp.availableBufferBytes += msgHolder.size
-		}
-
-		pp.minExpectedNextOffset = firstOffset + int64(len(batch.msgHolders))
-		pp.publishQueue.Remove(frontElem)
 		pp.unsafeCheckDone()
 		return nil
 	}
@@ -389,12 +446,12 @@ func (pp *singlePartitionPublisher) unsafeInitiateShutdown(targetStatus serviceS
 		pp.stream.Stop()
 	}
 
-	// msgBundler.Flush invokes handleBatch() in a goroutine and blocks.
-	// handleBatch() also acquires the mutex, so it cannot be held here.
+	// Bundler.Flush() blocks and invokes onNewBatch(), which acquires the mutex,
+	// so it cannot be held here.
 	// Updating the publisher status above prevents any new messages from being
 	// added to the bundler after flush.
 	pp.mu.Unlock()
-	pp.msgBundler.Flush()
+	pp.batcher.Flush()
 	pp.mu.Lock()
 
 	// If flushing pending messages, close the stream if there's nothing left to
@@ -406,21 +463,19 @@ func (pp *singlePartitionPublisher) unsafeInitiateShutdown(targetStatus serviceS
 
 	// Otherwise set the error message for all pending messages and clear the
 	// publish queue.
-	for elem := pp.publishQueue.Front(); elem != nil; elem = elem.Next() {
-		if batch, ok := elem.Value.(*publishBatch); ok {
-			for _, msgHolder := range batch.msgHolders {
-				msgHolder.onResult(nil, err)
-			}
+	batches := pp.batcher.ReleaseInFlightBatches()
+	for _, batch := range batches {
+		for _, msgHolder := range batch.msgHolders {
+			msgHolder.onResult(nil, err)
 		}
 	}
-	pp.publishQueue.Init()
 }
 
 // unsafeCheckDone must be called with singlePartitionPublisher.mu held.
 func (pp *singlePartitionPublisher) unsafeCheckDone() {
 	// If a shutdown was in progress, close the stream once all queued messages
 	// have been published.
-	if pp.status == serviceTerminating && pp.publishQueue.Len() == 0 {
+	if pp.status == serviceTerminating && pp.batcher.Done() {
 		pp.stream.Stop()
 	}
 }
