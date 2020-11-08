@@ -29,7 +29,8 @@ var (
 	zone             = flag.String("zone", "", "the cloud zone where the topic/subscription resources are located")
 	topicID          = flag.String("topic", "", "the topic to publish to")
 	subscriptionID   = flag.String("subscription", "", "the subscription to receive from")
-	enableAssignment = flag.Bool("enable_assignment", false, "use partition assignment for subscribers")
+	enableAssignment = flag.Bool("assignment", false, "use partition assignment for subscribers")
+	publishBatchSize = flag.Int("publish_batch", 100, "publish batch size")
 )
 
 type TestHarness struct {
@@ -82,6 +83,7 @@ func (th *TestHarness) init() {
 	th.subscription = pubsublite.SubscriptionPath{Project: proj, Zone: *zone, SubscriptionID: subsID}
 
 	th.PublishSettings = wire.DefaultPublishSettings
+	th.PublishSettings.CountThreshold = *publishBatchSize
 	th.ReceiveSettings = wire.DefaultReceiveSettings
 	th.EnableAssignment = *enableAssignment
 }

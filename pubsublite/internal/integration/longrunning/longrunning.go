@@ -12,13 +12,31 @@
 // See the License for the specific language governing permissions and
 
 /*
-longrunning attempts to publish and subscribe for as long as possible.
+longrunning attempts to publish and subscribe for as long as possible. It
+supports a few options for running various test cases.
+
+Example simple usage:
+  go run longrunning.go --project=<project> --topic=<topic id> --zone=<zone>
+
+Example for testing subscriber partition assignment (must use topic with
+multiple partitions):
+  go run longrunning.go --project=<project> --topic=<topic id> --zone=<zone> --assignment=true
+
+Example for testing ordering (must use topic with 1 partition):
+  go run longrunning.go --project=<project> --topic=<topic id> --zone=<zone> --message_count=100 --publish_batch=5 --sleep=5s
+
+Example for testing throughput:
+  go run longrunning.go --project=<project> --topic=<topic id> --zone=<zone> --message_count=100 --sleep=0s --verbose=false
 */
 package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"cloud.google.com/go/pubsublite/internal/integration"
@@ -31,19 +49,25 @@ var (
 	messageCount    = flag.Int("message_count", 5, "the number of messages to publish and receive per cycle, per partition")
 	subscriberCount = flag.Int("subscriber_count", 2, "the number of subscriber clients to create (only applies when assignments are enabled)")
 	sleepPeriod     = flag.Duration("sleep", time.Minute, "the duration to sleep between cycles")
+	verbose         = flag.Bool("verbose", true, "whether to log verbose messages")
 )
 
-const (
-	msgWaitTimeout = 2 * time.Minute
-)
+const msgWaitTimeout = 2 * time.Minute
+
+func parseMsgIndex(msg string) int64 {
+	pos := strings.LastIndex(msg, "/")
+	if pos >= 0 {
+		if n, err := strconv.ParseInt(msg[pos+1:], 10, 64); err == nil {
+			return n
+		}
+	}
+	return -1
+}
 
 func main() {
-	start := time.Now()
 	harness := integration.NewTestHarness()
 	partitionCount := harness.TopicPartitions()
-	msgQueue := integration.NewMsgQueue()
 	numSubscribers := 1
-
 	if harness.EnableAssignment {
 		if partitionCount < *subscriberCount {
 			log.Fatalf("Topic requires at least %d partitions to assign to subscribers, but only has %d partitions", *subscriberCount, partitionCount)
@@ -51,13 +75,32 @@ func main() {
 		numSubscribers = *subscriberCount
 	}
 
+	start := time.Now()
+	msgTracker := integration.NewMsgTracker()
+	msgPrefix := fmt.Sprintf("hello-%d", start.Unix())
+	lastMsgIdx := int64(-1)
+
 	// Setup subscribers.
-	onReceive := func(msg *pb.SequencedMessage, ack wire.AckConsumer) {
+	onReceive := func(seqMsg *pb.SequencedMessage, ack wire.AckConsumer) {
 		ack.Ack()
 
-		str := string(msg.GetMessage().GetData())
-		if msgQueue.RemoveMsg(str) {
-			log.Printf("Received: (offset=%d) %s", msg.GetCursor().GetOffset(), str)
+		msg := string(seqMsg.GetMessage().GetData())
+		if !msgTracker.Remove(msg) {
+			return
+		}
+
+		if *verbose {
+			log.Printf("Received: (offset=%d) %s", seqMsg.GetCursor().GetOffset(), msg)
+		}
+
+		// Validating ordering can only be done with 1 partition as the msg receiver
+		// does not have the partition number.
+		if partitionCount == 1 {
+			idx := parseMsgIndex(msg)
+			if idx <= atomic.LoadInt64(&lastMsgIdx) {
+				log.Fatalf("Message ordering failed, last idx: %d, got idx: %d", lastMsgIdx, idx)
+			}
+			atomic.StoreInt64(&lastMsgIdx, idx)
 		}
 	}
 
@@ -79,20 +122,34 @@ func main() {
 		if err != nil {
 			log.Fatalf("Publish error: %v, time elapsed: %v", err, time.Now().Sub(start))
 		}
-		log.Printf("Published: (partition=%d, offset=%d)", pm.Partition, pm.Offset)
+		if *verbose {
+			log.Printf("Published: (partition=%d, offset=%d)", pm.Partition, pm.Offset)
+		}
 	}
 
 	// Main publishing loop.
+	var totalMsgCount int64
 	log.Printf("Starting test...")
-	for {
-		for i := 0; i < *messageCount*partitionCount; i++ {
-			publisher.Publish(&pb.PubSubMessage{Data: []byte(msgQueue.AddMsg())}, onPublished)
-		}
 
-		if err := msgQueue.Wait(msgWaitTimeout); err != nil {
+	for {
+		cycleStart := time.Now()
+		cycleMsgCount := *messageCount * partitionCount
+
+		for i := 0; i < cycleMsgCount; i++ {
+			msg := fmt.Sprintf("%s/%d", msgPrefix, totalMsgCount)
+			msgTracker.Add(msg)
+			totalMsgCount++
+			publisher.Publish(&pb.PubSubMessage{Data: []byte(msg)}, onPublished)
+		}
+		if err := msgTracker.Wait(msgWaitTimeout); err != nil {
 			log.Fatalf("Test failed: %v, time elapsed: %v", err, time.Now().Sub(start))
 		}
-		log.Printf("Time elapsed: %v", time.Now().Sub(start))
-		time.Sleep(*sleepPeriod)
+
+		now := time.Now()
+		log.Printf("Cycle elapsed: %v, cycle messages: %d, total elapsed: %v, total messages: %d", now.Sub(cycleStart), cycleMsgCount, now.Sub(start), totalMsgCount)
+
+		if *sleepPeriod > 0 {
+			time.Sleep(*sleepPeriod)
+		}
 	}
 }

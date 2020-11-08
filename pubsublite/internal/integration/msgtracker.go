@@ -17,60 +17,55 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
 )
 
-// MsgQueue is a helper for checking whether a set of messages make a full
+// MsgTracker is a helper for checking whether a set of messages make a full
 // round trip from publisher to subscriber.
-type MsgQueue struct {
+type MsgTracker struct {
 	msgMap map[string]bool
 	done   chan struct{}
 	mu     sync.Mutex
 }
 
-func NewMsgQueue() *MsgQueue {
-	return &MsgQueue{
+func NewMsgTracker() *MsgTracker {
+	return &MsgTracker{
 		msgMap: make(map[string]bool),
 		done:   make(chan struct{}),
 	}
 }
 
-func (mq *MsgQueue) AddMsg() string {
-	mq.mu.Lock()
-	defer mq.mu.Unlock()
-
-	msg := uuid.New().String()
-	mq.msgMap[msg] = true
-	return msg
+func (mt *MsgTracker) Add(msg string) {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	mt.msgMap[msg] = true
 }
 
-func (mq *MsgQueue) RemoveMsg(msg string) bool {
-	mq.mu.Lock()
-	defer mq.mu.Unlock()
+func (mt *MsgTracker) Remove(msg string) bool {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
 
-	_, exists := mq.msgMap[msg]
-	delete(mq.msgMap, msg)
-	if len(mq.msgMap) == 0 {
+	_, exists := mt.msgMap[msg]
+	delete(mt.msgMap, msg)
+	if len(mt.msgMap) == 0 {
 		var s struct{}
-		mq.done <- s
+		mt.done <- s
 	}
 	return exists
 }
 
-func (mq *MsgQueue) Wait(timeout time.Duration) error {
+func (mt *MsgTracker) Wait(timeout time.Duration) error {
 	select {
 	case <-time.After(timeout):
-		err := fmt.Errorf("failed to receive %d messages", len(mq.msgMap))
-		mq.clear()
+		err := fmt.Errorf("failed to receive %d messages", len(mt.msgMap))
+		mt.clear()
 		return err
-	case <-mq.done:
+	case <-mt.done:
 		return nil
 	}
 }
 
-func (mq *MsgQueue) clear() {
-	mq.mu.Lock()
-	defer mq.mu.Unlock()
-	mq.msgMap = make(map[string]bool)
+func (mt *MsgTracker) clear() {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	mt.msgMap = make(map[string]bool)
 }
