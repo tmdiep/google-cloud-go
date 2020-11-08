@@ -188,8 +188,6 @@ func (a *assigner) unsafeInitiateShutdown(targetStatus serviceStatus, err error)
     return
   }
 
-  //log.Printf("pubsublite: assigner terminating with status=%d, err=%v", targetStatus, err)
-
   // No data to send. Immediately terminate the stream.
   a.stream.Stop()
 }

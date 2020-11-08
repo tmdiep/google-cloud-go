@@ -181,7 +181,7 @@ func TestPartitionPublisherSpuriousPublishResponse(t *testing.T) {
 	// If the server has sent a MessagePublishResponse when no messages were
 	// published, the client treats this as a permanent failure (bug on the
 	// server).
-	block := stream.PushWithBlock(nil, msgPubResp(0), nil)
+	barrier := stream.PushWithBarrier(nil, msgPubResp(0), nil)
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -193,7 +193,7 @@ func TestPartitionPublisherSpuriousPublishResponse(t *testing.T) {
 	}
 
 	// Send after startup to ensure the test is deterministic.
-	block.Release()
+	barrier.Release()
 
 	if gotErr, wantErr := pub.FinalError(), errPublishQueueEmpty; !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, wantErr)
@@ -389,7 +389,7 @@ func TestPartitionPublisherBufferOverflow(t *testing.T) {
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
-	block := stream.PushWithBlock(msgPubReq(msg1), msgPubResp(0), nil)
+	barrier := stream.PushWithBarrier(msgPubReq(msg1), msgPubResp(0), nil)
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -406,7 +406,7 @@ func TestPartitionPublisherBufferOverflow(t *testing.T) {
 	result2 := pub.Publish(msg2)
 	// Delay the server response for the first Publish to verify that it is
 	// allowed to complete.
-	block.Release()
+	barrier.Release()
 	// This message arrives after the publisher has already stopped, so its error
 	// message is ErrServiceStopped.
 	result3 := pub.Publish(msg3)
@@ -461,7 +461,7 @@ func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
-	block := stream.PushWithBlock(msgPubReq(msg1), msgPubResp(0), nil)
+	barrier := stream.PushWithBarrier(msgPubReq(msg1), msgPubResp(0), nil)
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -478,7 +478,7 @@ func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
 	result2 := pub.Publish(msg2)
 	// Delay the server response for the first Publish to ensure it is allowed to
 	// complete.
-	block.Release()
+	barrier.Release()
 	// This message arrives after the publisher has already stopped.
 	result3 := pub.Publish(msg3)
 
@@ -502,7 +502,7 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
-	block := stream.PushWithBlock(msgPubReq(msg1), msgPubResp(4), nil)
+	barrier := stream.PushWithBarrier(msgPubReq(msg1), msgPubResp(4), nil)
 	// The server returns an inconsistent cursor offset for msg2, which causes the
 	// publisher to fail permanently (bug on the server).
 	stream.Push(msgPubReq(msg2), msgPubResp(4), nil)
@@ -520,7 +520,7 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 	result1 := pub.Publish(msg1)
 	result2 := pub.Publish(msg2)
 	result3 := pub.Publish(msg3)
-	block.Release()
+	barrier.Release()
 
 	result1.ValidateResult(topic.Partition, 4)
 
@@ -573,7 +573,7 @@ func TestPartitionPublisherStopFlushesMessages(t *testing.T) {
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
-	block := stream.PushWithBlock(msgPubReq(msg1), msgPubResp(5), nil)
+	barrier := stream.PushWithBarrier(msgPubReq(msg1), msgPubResp(5), nil)
 	stream.Push(msgPubReq(msg2), msgPubResp(6), nil)
 	stream.Push(msgPubReq(msg3), nil, finalErr)
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
@@ -590,7 +590,7 @@ func TestPartitionPublisherStopFlushesMessages(t *testing.T) {
 	result2 := pub.Publish(msg2)
 	result3 := pub.Publish(msg3)
 	pub.Stop()
-	block.Release()
+	barrier.Release()
 	result4 := pub.Publish(msg4)
 
 	// First 2 messages should be allowed to complete.

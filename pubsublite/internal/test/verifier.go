@@ -127,10 +127,10 @@ func (v *RPCVerifier) Push(wantRequest interface{}, retResponse interface{}, ret
 	})
 }
 
-// PushWithBlock is like Push, but returns a channel that the test should close
-// when it would like the response to be sent to the client. This is useful for
-// synchronizing with work that needs to be done on the client.
-func (v *RPCVerifier) PushWithBlock(wantRequest interface{}, retResponse interface{}, retErr error) *Barrier {
+// PushWithBarrier is like Push, but returns a barrier that the test should call
+// Release when it would like the response to be sent to the client. This is
+// useful for synchronizing with work that needs to be done on the client.
+func (v *RPCVerifier) PushWithBarrier(wantRequest interface{}, retResponse interface{}, retErr error) *Barrier {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -252,7 +252,7 @@ func (sv *streamVerifiers) Flush() {
 }
 
 // keyedStreamVerifiers stores indexed streamVerifiers. Examples of keys:
-// {topic path, partition}.
+// "streamType:topic_path:partition".
 type keyedStreamVerifiers struct {
 	verifiers map[string]*streamVerifiers
 }
@@ -305,6 +305,7 @@ func NewVerifiers(t *testing.T) *Verifiers {
 	}
 }
 
+// streamType is used as a key prefix for keyedStreamVerifiers.
 type streamType string
 
 const (

@@ -148,7 +148,7 @@ func TestRetryableStreamStopWhileConnecting(t *testing.T) {
 
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
-	block := stream.PushWithBlock(pub.InitialReq, initPubResp(), nil)
+	barrier := stream.PushWithBarrier(pub.InitialReq, initPubResp(), nil)
 	verifiers.AddPublishStream(pub.Topic.Path, pub.Topic.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -159,7 +159,7 @@ func TestRetryableStreamStopWhileConnecting(t *testing.T) {
 		t.Errorf("Stream status change: got %d, want %d", got, want)
 	}
 
-	block.Release()
+	barrier.Release()
 	pub.Stream.Stop()
 
 	// The stream should transition to terminated and the client stream should be
@@ -182,7 +182,7 @@ func TestRetryableStreamStopAbortsRetries(t *testing.T) {
 	stream := test.NewRPCVerifier(t)
 	// Aborted is a retryable error, but the stream should not be retried because
 	// the publisher is stopped.
-	block := stream.PushWithBlock(pub.InitialReq, nil, status.Error(codes.Aborted, "abort retry"))
+	barrier := stream.PushWithBarrier(pub.InitialReq, nil, status.Error(codes.Aborted, "abort retry"))
 	verifiers.AddPublishStream(pub.Topic.Path, pub.Topic.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -193,7 +193,7 @@ func TestRetryableStreamStopAbortsRetries(t *testing.T) {
 		t.Errorf("Stream status change: got %d, want %d", got, want)
 	}
 
-	block.Release()
+	barrier.Release()
 	pub.Stream.Stop()
 
 	// The stream should transition to terminated and the client stream should be
@@ -282,7 +282,7 @@ func TestRetryableStreamConnectTimeout(t *testing.T) {
 
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
-	block := stream.PushWithBlock(pub.InitialReq, nil, wantErr)
+	barrier := stream.PushWithBarrier(pub.InitialReq, nil, wantErr)
 	verifiers.AddPublishStream(pub.Topic.Path, pub.Topic.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -295,7 +295,7 @@ func TestRetryableStreamConnectTimeout(t *testing.T) {
 
 	// Send the initial server response well after the timeout setting.
 	time.Sleep(10 * timeout)
-	block.Release()
+	barrier.Release()
 
 	if got, want := pub.NextStatus(), streamTerminated; got != want {
 		t.Errorf("Stream status change: got %d, want %d", got, want)
@@ -315,7 +315,7 @@ func TestRetryableStreamSendReceive(t *testing.T) {
 
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
-	block := stream.PushWithBlock(pub.InitialReq, initPubResp(), nil)
+	barrier := stream.PushWithBarrier(pub.InitialReq, initPubResp(), nil)
 	stream.Push(req, wantResp, nil)
 	verifiers.AddPublishStream(pub.Topic.Path, pub.Topic.Partition, stream)
 
@@ -332,7 +332,7 @@ func TestRetryableStreamSendReceive(t *testing.T) {
 		t.Error("Stream send should return false")
 	}
 
-	block.Release()
+	barrier.Release()
 	if got, want := pub.NextStatus(), streamConnected; got != want {
 		t.Errorf("Stream status change: got %d, want %d", got, want)
 	}

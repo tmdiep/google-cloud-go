@@ -62,7 +62,7 @@ func TestCommitterStreamReconnect(t *testing.T) {
 	// Simulate a transient error that results in a reconnect.
 	stream1 := test.NewRPCVerifier(t)
 	stream1.Push(initCommitReq(subscription), initCommitResp(), nil)
-	block := stream1.PushWithBlock(commitReq(34), nil, status.Error(codes.Unavailable, "server unavailable"))
+	barrier := stream1.PushWithBarrier(commitReq(34), nil, status.Error(codes.Unavailable, "server unavailable"))
 	verifiers.AddCommitStream(subscription.Path, subscription.Partition, stream1)
 
 	// When the stream reconnects, the latest commit offset should be sent to the
@@ -88,7 +88,7 @@ func TestCommitterStreamReconnect(t *testing.T) {
 	cmt.SendBatchCommit()
 
 	// Then send the retryable error, which results in reconnect.
-	block.Release()
+	barrier.Release()
 }
 
 // To test:
