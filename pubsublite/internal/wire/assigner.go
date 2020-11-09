@@ -27,10 +27,6 @@ import (
   pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
-var (
-  errOutstandingAssignment = errors.New("pubsublite: received partition assignment from the server while there was an assignment outstanding")
-)
-
 type partitionAssignment struct {
   // A set of partition numbers.
   partitions map[int]bool
@@ -59,6 +55,9 @@ func (pa *partitionAssignment) Contains(partition int) bool {
   return pa.partitions[partition]
 }
 
+// A function that generates a 16-byte UUID.
+type generateUUIDFunc func() (uuid.UUID, error)
+
 // partitionAssignmentReceiver must enact the received partition assignment from
 // the server, or otherwise return an error, which will break the stream. The
 // receiver must not call the assigner, as this would result in a deadlock.
@@ -73,15 +72,11 @@ type assigner struct {
   // Fields below must be guarded with mutex.
   stream *retryableStream
 
-  // An assignment was received from the server and needs to be acked by the
-  // receiver.
-  pendingAssignment *pb.PartitionAssignment
-
   abstractService
 }
 
-func newAssigner(ctx context.Context, partitionClient *vkit.PartitionAssignmentClient, settings ReceiveSettings, subscriptionPath string, receiver partitionAssignmentReceiver) (*assigner, error) {
-  clientID, err := uuid.NewRandom()
+func newAssigner(ctx context.Context, partitionClient *vkit.PartitionAssignmentClient, genUUID generateUUIDFunc, settings ReceiveSettings, subscriptionPath string, receiver partitionAssignmentReceiver) (*assigner, error) {
+  clientID, err := genUUID()
   if err != nil {
     return nil, fmt.Errorf("pubsublite: failed to generate client UUID: %v", err)
   }
@@ -122,18 +117,14 @@ func (a *assigner) newStream(ctx context.Context) (grpc.ClientStream, error) {
   return a.partitionClient.AssignPartitions(ctx)
 }
 
-func (a *assigner) initialRequest() interface{} {
-  return a.initialReq
+func (a *assigner) initialRequest() (interface{}, bool) {
+  // No initial response expected.
+  return a.initialReq, false
 }
 
-func (a *assigner) validateInitialResponse(response interface{}) error {
-  a.mu.Lock()
-  defer a.mu.Unlock()
-
-  // The initial stream response returns an assignment. Store and notify
-  // receiver once the stream transitions to the streamConnected state.
-  a.pendingAssignment, _ = response.(*pb.PartitionAssignment)
-  return nil
+func (a *assigner) validateInitialResponse(_ interface{}) error {
+  // Should not be called.
+  return errors.New("pubsublite: unexpected initial response")
 }
 
 func (a *assigner) onStreamStatusChange(status streamStatus) {
@@ -143,9 +134,6 @@ func (a *assigner) onStreamStatusChange(status streamStatus) {
   switch status {
   case streamConnected:
     a.unsafeUpdateStatus(serviceActive, nil)
-    if err := a.unsafeHandlePendingAssignment(); err != nil {
-      a.unsafeInitiateShutdown(serviceTerminated, err)
-    }
 
   case streamTerminated:
     a.unsafeInitiateShutdown(serviceTerminated, a.stream.Error())
@@ -156,30 +144,23 @@ func (a *assigner) onResponse(response interface{}) {
   a.mu.Lock()
   defer a.mu.Unlock()
 
-  processResponse := func() error {
-    if a.pendingAssignment != nil {
-      return errOutstandingAssignment
-    }
-    a.pendingAssignment, _ = response.(*pb.PartitionAssignment)
-    return a.unsafeHandlePendingAssignment()
-  }
-  if err := processResponse(); err != nil {
+  assignment, _ := response.(*pb.PartitionAssignment)
+  if err := a.handleAssignment(assignment); err != nil {
     a.unsafeInitiateShutdown(serviceTerminated, err)
   }
 }
 
-func (a *assigner) unsafeHandlePendingAssignment() error {
-  if err := a.receiveAssignment(newPartitionAssignment(a.pendingAssignment)); err != nil {
+func (a *assigner) handleAssignment(assignment *pb.PartitionAssignment) error {
+  if err := a.receiveAssignment(newPartitionAssignment(assignment)); err != nil {
     return err
   }
 
-  log.Printf("pubsublite: subscriber partition assignments: %v", a.pendingAssignment)
+  log.Printf("pubsublite: subscriber partition assignments: %v", assignment.Partitions)
   a.stream.Send(&pb.PartitionAssignmentRequest{
     Request: &pb.PartitionAssignmentRequest_Ack{
       Ack: &pb.PartitionAssignmentAck{},
     },
   })
-  a.pendingAssignment = nil
   return nil
 }
 
@@ -187,7 +168,6 @@ func (a *assigner) unsafeInitiateShutdown(targetStatus serviceStatus, err error)
   if !a.unsafeUpdateStatus(targetStatus, err) {
     return
   }
-
   // No data to send. Immediately terminate the stream.
   a.stream.Stop()
 }

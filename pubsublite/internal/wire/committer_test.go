@@ -22,7 +22,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// testCommitter wraps a commiter for ease of testing.
+// testCommitter wraps a committer for ease of testing.
 type testCommitter struct {
 	cmt *committer
 	serviceTestProxy
@@ -36,7 +36,7 @@ func newTestCommitter(t *testing.T, subscription subscriptionPartition, acks *ac
 	}
 
 	tc := &testCommitter{
-		cmt: newCommitter(ctx, cursorClient, defaultTestReceiveSettings, subscription, acks, true),
+		cmt: newCommitter(ctx, cursorClient, testReceiveSettings(), subscription, acks, true),
 	}
 	tc.initAndStart(t, tc.cmt, "Committer")
 	return tc
@@ -52,7 +52,6 @@ func TestCommitterStreamReconnect(t *testing.T) {
 	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
 	ack1 := newAckConsumer(33, 0, nil)
 	ack2 := newAckConsumer(55, 0, nil)
-
 	acks := newAckTracker()
 	acks.Push(ack1)
 	acks.Push(ack2)
@@ -76,7 +75,6 @@ func TestCommitterStreamReconnect(t *testing.T) {
 	defer mockServer.OnTestEnd()
 
 	cmt := newTestCommitter(t, subscription, acks)
-	defer cmt.StopVerifyNoError()
 	if gotErr := cmt.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -89,8 +87,166 @@ func TestCommitterStreamReconnect(t *testing.T) {
 
 	// Then send the retryable error, which results in reconnect.
 	barrier.Release()
+	cmt.StopVerifyNoError()
 }
 
-// To test:
-// Stop flushes commits
-// Invalid server respondes
+func TestCommitterStopFlushesCommits(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	ack1 := newAckConsumer(33, 0, nil)
+	ack2 := newAckConsumer(55, 0, nil)
+	acks := newAckTracker()
+	acks.Push(ack1)
+	acks.Push(ack2)
+
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initCommitReq(subscription), initCommitResp(), nil)
+	stream.Push(commitReq(34), commitResp(1), nil)
+	stream.Push(commitReq(56), commitResp(1), nil)
+	verifiers.AddCommitStream(subscription.Path, subscription.Partition, stream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	cmt := newTestCommitter(t, subscription, acks)
+	if gotErr := cmt.StartError(); gotErr != nil {
+		t.Errorf("Start() got err: (%v)", gotErr)
+	}
+
+	ack1.Ack()
+	cmt.Stop() // Stop should flush the first offset
+	ack2.Ack() // Acks after Stop() are still processed
+	cmt.SendBatchCommit()
+	// Committer terminates when all acks are processed.
+	if gotErr := cmt.FinalError(); gotErr != nil {
+		t.Errorf("Final err: (%v), want: <nil>", gotErr)
+	}
+}
+
+func TestCommitterPermanentStreamError(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	acks := newAckTracker()
+	wantErr := status.Error(codes.FailedPrecondition, "failed")
+
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initCommitReq(subscription), nil, wantErr)
+	verifiers.AddCommitStream(subscription.Path, subscription.Partition, stream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	cmt := newTestCommitter(t, subscription, acks)
+	if gotErr := cmt.StartError(); !test.ErrorEqual(gotErr, wantErr) {
+		t.Errorf("Start() got err: (%v), want: (%v)", gotErr, wantErr)
+	}
+}
+
+func TestCommitterInvalidInitialResponse(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	acks := newAckTracker()
+
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initCommitReq(subscription), commitResp(1234), nil) // Invalid initial response
+	verifiers.AddCommitStream(subscription.Path, subscription.Partition, stream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	cmt := newTestCommitter(t, subscription, acks)
+
+	wantErr := errInvalidInitialCommitResponse
+	if gotErr := cmt.StartError(); !test.ErrorEqual(gotErr, wantErr) {
+		t.Errorf("Start() got err: (%v), want: (%v)", gotErr, wantErr)
+	}
+	if gotErr := cmt.FinalError(); !test.ErrorEqual(gotErr, wantErr) {
+		t.Errorf("Final err: (%v), want: (%v)", gotErr, wantErr)
+	}
+}
+
+func TestCommitterInvalidCommitResponse(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	ack := newAckConsumer(33, 0, nil)
+	acks := newAckTracker()
+	acks.Push(ack)
+
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initCommitReq(subscription), initCommitResp(), nil)
+	stream.Push(commitReq(34), initCommitResp(), nil) // Invalid commit response
+	verifiers.AddCommitStream(subscription.Path, subscription.Partition, stream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	cmt := newTestCommitter(t, subscription, acks)
+	if gotErr := cmt.StartError(); gotErr != nil {
+		t.Errorf("Start() got err: (%v)", gotErr)
+	}
+
+	ack.Ack()
+	cmt.SendBatchCommit()
+
+	if gotErr, wantErr := cmt.FinalError(), errInvalidCommitResponse; !test.ErrorEqual(gotErr, wantErr) {
+		t.Errorf("Final err: (%v), want: (%v)", gotErr, wantErr)
+	}
+}
+
+func TestCommitterExcessConfirmedOffsets(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	ack := newAckConsumer(33, 0, nil)
+	acks := newAckTracker()
+	acks.Push(ack)
+
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initCommitReq(subscription), initCommitResp(), nil)
+	stream.Push(commitReq(34), commitResp(2), nil) // More confirmed offsets than committed
+	verifiers.AddCommitStream(subscription.Path, subscription.Partition, stream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	cmt := newTestCommitter(t, subscription, acks)
+	if gotErr := cmt.StartError(); gotErr != nil {
+		t.Errorf("Start() got err: (%v)", gotErr)
+	}
+
+	ack.Ack()
+	cmt.SendBatchCommit()
+
+	wantMsg := "server acknowledged 2 cursor commits"
+	if gotErr := cmt.FinalError(); !test.ErrorHasMsg(gotErr, wantMsg) {
+		t.Errorf("Final err: (%v), want msg: (%v)", gotErr, wantMsg)
+	}
+}
+
+func TestCommitterZeroConfirmedOffsets(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	ack := newAckConsumer(33, 0, nil)
+	acks := newAckTracker()
+	acks.Push(ack)
+
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initCommitReq(subscription), initCommitResp(), nil)
+	stream.Push(commitReq(34), commitResp(0), nil) // Zero confirmed offsets (invalid)
+	verifiers.AddCommitStream(subscription.Path, subscription.Partition, stream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	cmt := newTestCommitter(t, subscription, acks)
+	if gotErr := cmt.StartError(); gotErr != nil {
+		t.Errorf("Start() got err: (%v)", gotErr)
+	}
+
+	ack.Ack()
+	cmt.SendBatchCommit()
+
+	wantMsg := "server acknowledged an invalid commit count"
+	if gotErr := cmt.FinalError(); !test.ErrorHasMsg(gotErr, wantMsg) {
+		t.Errorf("Final err: (%v), want msg: (%v)", gotErr, wantMsg)
+	}
+}

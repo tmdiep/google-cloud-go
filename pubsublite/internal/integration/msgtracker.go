@@ -15,8 +15,12 @@ package integration
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 // MsgTracker is a helper for checking whether a set of messages make a full
@@ -68,4 +72,57 @@ func (mt *MsgTracker) clear() {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
 	mt.msgMap = make(map[string]bool)
+}
+
+type OrderingValidator struct {
+	totalMsgCount int64
+	received      map[string]int64
+	mu            sync.Mutex
+}
+
+func NewOrderingValidator() *OrderingValidator {
+	return &OrderingValidator{
+		received: make(map[string]int64),
+	}
+}
+
+func parseMsgIndex(msg string) int64 {
+	pos := strings.LastIndex(msg, "/")
+	if pos >= 0 {
+		if n, err := strconv.ParseInt(msg[pos+1:], 10, 64); err == nil {
+			return n
+		}
+	}
+	return -1
+}
+
+func (ov *OrderingValidator) NextPublishedMsg(prefix string, partition int) *pb.PubSubMessage {
+	ov.mu.Lock()
+	defer ov.mu.Unlock()
+
+	ov.totalMsgCount++
+	return &pb.PubSubMessage{
+		Key:  []byte(fmt.Sprintf("key%d", partition)),
+		Data: []byte(fmt.Sprintf("%s/%d", prefix, ov.totalMsgCount)),
+	}
+}
+
+func (ov *OrderingValidator) ReceiveMsg(msg *pb.PubSubMessage) error {
+	ov.mu.Lock()
+	defer ov.mu.Unlock()
+
+	partition := string(msg.Key)
+	nextMinIdx, _ := ov.received[partition]
+	idx := parseMsgIndex(string(msg.Data))
+	if idx < nextMinIdx {
+		return fmt.Errorf("message ordering failed for partition %s, expected idx >= %d, got idx: %d", partition, nextMinIdx, idx)
+	}
+	ov.received[partition] = idx + 1
+	return nil
+}
+
+func (ov *OrderingValidator) TotalMsgCount() int64 {
+	ov.mu.Lock()
+	defer ov.mu.Unlock()
+	return ov.totalMsgCount
 }

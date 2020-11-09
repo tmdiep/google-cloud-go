@@ -35,10 +35,10 @@ var (
 const commitCursorPeriod = 50 * time.Millisecond
 
 // committer wraps a commit cursor stream for a subscription and partition.
-// A background task periodically reads the latest desired cursor offset from
-// the ackTracker and sends a commit request to the stream if the cursor needs
-// to be updated. The commitCursorTracker is used to manage in-flight commit
-// requests.
+// A background task periodically effectively reads the latest desired cursor
+// offset from the `ackTracker` and sends a commit request to the stream if the
+// cursor needs to be updated. The `commitCursorTracker` is used to manage
+// in-flight commit requests.
 type committer struct {
 	// Immutable after creation.
 	cursorClient *vkit.CursorClient
@@ -79,7 +79,7 @@ func newCommitter(ctx context.Context, cursor *vkit.CursorClient, settings Recei
 	return c
 }
 
-// Start attempts to establish a commit stream connection.
+// Start attempts to establish a streaming commit cursor connection.
 func (c *committer) Start() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -102,8 +102,8 @@ func (c *committer) newStream(ctx context.Context) (grpc.ClientStream, error) {
 	return c.cursorClient.StreamingCommitCursor(ctx)
 }
 
-func (c *committer) initialRequest() interface{} {
-	return c.initialReq
+func (c *committer) initialRequest() (interface{}, bool) {
+	return c.initialReq, true
 }
 
 func (c *committer) validateInitialResponse(response interface{}) error {
@@ -121,44 +121,17 @@ func (c *committer) onStreamStatusChange(status streamStatus) {
 	switch status {
 	case streamConnected:
 		c.unsafeUpdateStatus(serviceActive, nil)
-		// Once the stream connects, immediately send the latest desired commit
-		// offset.
-		c.cursorTracker.ClearPending() // Just in case
+		// Once the stream connects, clear unacknowledged commits and immediately
+		// send the latest desired commit offset.
+		c.cursorTracker.ClearPending()
 		c.unsafeCommitOffsetToStream()
 		c.pollCommits.Start()
 
 	case streamReconnecting:
-		// Clear unacknowledged committed offsets when the stream breaks.
-		c.cursorTracker.ClearPending()
 		c.pollCommits.Stop()
 
 	case streamTerminated:
 		c.unsafeInitiateShutdown(serviceTerminated, c.stream.Error())
-	}
-}
-
-// commitOffsetToStream is called by the periodic background task.
-func (c *committer) commitOffsetToStream() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.unsafeCommitOffsetToStream()
-}
-
-func (c *committer) unsafeCommitOffsetToStream() {
-	nextOffset := c.cursorTracker.NextOffset()
-	if nextOffset == nilCursorOffset {
-		return
-	}
-
-	req := &pb.StreamingCommitCursorRequest{
-		Request: &pb.StreamingCommitCursorRequest_Commit{
-			Commit: &pb.SequencedCommitCursorRequest{
-				Cursor: &pb.Cursor{Offset: nextOffset},
-			},
-		},
-	}
-	if c.stream.Send(req) {
-		c.cursorTracker.AddPending(nextOffset)
 	}
 }
 
@@ -189,6 +162,31 @@ func (c *committer) onResponse(response interface{}) {
 	}
 }
 
+// commitOffsetToStream is called by the periodic background task.
+func (c *committer) commitOffsetToStream() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unsafeCommitOffsetToStream()
+}
+
+func (c *committer) unsafeCommitOffsetToStream() {
+	nextOffset := c.cursorTracker.NextOffset()
+	if nextOffset == nilCursorOffset {
+		return
+	}
+
+	req := &pb.StreamingCommitCursorRequest{
+		Request: &pb.StreamingCommitCursorRequest_Commit{
+			Commit: &pb.SequencedCommitCursorRequest{
+				Cursor: &pb.Cursor{Offset: nextOffset},
+			},
+		},
+	}
+	if c.stream.Send(req) {
+		c.cursorTracker.AddPending(nextOffset)
+	}
+}
+
 func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
 	if !c.unsafeUpdateStatus(targetStatus, err) {
 		return
@@ -200,19 +198,20 @@ func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error
 		c.unsafeCheckDone()
 		return
 	}
-
 	// Otherwise immediately terminate the stream.
 	c.unsafeTerminate()
 }
 
 func (c *committer) unsafeCheckDone() {
-	if c.status == serviceTerminating && c.cursorTracker.Done() {
+	// If the user stops the subscriber, they will no longer receive messages, but
+	// the commit stream remains open to process acks for outstanding messages.
+	if c.status == serviceTerminating && c.cursorTracker.Done() && c.acks.Done() {
 		c.unsafeTerminate()
 	}
 }
 
 func (c *committer) unsafeTerminate() {
+	c.acks.Release()
 	c.pollCommits.Stop()
 	c.stream.Stop()
-	c.acks.Release()
 }

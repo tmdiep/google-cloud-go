@@ -18,7 +18,6 @@ import (
 	"log"
 	"os"
 	"testing"
-	"time"
 
 	"cloud.google.com/go/pubsublite/internal/test"
 	"google.golang.org/api/option"
@@ -29,24 +28,10 @@ var (
 	// Initialized in TestMain.
 	mockServer     test.MockServer
 	testClientOpts []option.ClientOption
-
-	// Intended for unit tests.
-	defaultTestPublishSettings PublishSettings
-	defaultTestReceiveSettings ReceiveSettings
 )
 
 func TestMain(m *testing.M) {
 	flag.Parse()
-
-	defaultTestPublishSettings = DefaultPublishSettings
-	// Send 1 message at a time to make tests deterministic.
-	defaultTestPublishSettings.CountThreshold = 1
-	// Send messages with minimal delay to speed up tests.
-	defaultTestPublishSettings.DelayThreshold = time.Millisecond
-	defaultTestPublishSettings.Timeout = 5 * time.Second
-
-	defaultTestReceiveSettings = DefaultReceiveSettings
-	defaultTestReceiveSettings.Timeout = 5 * time.Second
 
 	testServer, err := test.NewServer()
 	if err != nil {

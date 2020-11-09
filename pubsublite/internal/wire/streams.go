@@ -52,14 +52,21 @@ type streamHandler interface {
 	// newStream implementations must create the client stream with the given
 	// (cancellable) context.
 	newStream(context.Context) (grpc.ClientStream, error)
-	initialRequest() interface{}
+	// initialRequest should return the initial request and whether an initial
+	// response is expected.
+	initialRequest() (interface{}, bool)
 	validateInitialResponse(interface{}) error
 
 	// onStreamStatusChange is used to notify stream handlers when the stream has
-	// changed state. In particular, the `streamTerminated` state must be handled.
-	// retryableStream.Error() returns the error that caused the stream to
-	// terminate. Stream handlers should perform any necessary reset of state upon
-	// `streamConnected`.
+	// changed state. A `streamReconnecting` status change is fired before
+	// attempting to connect a new stream. A `streamConnected` status change is
+	// fired when the stream is successfully connected. These are followed by
+	// onResponse() calls when responses are received from the server. These
+	// events are guaranteed to occur in this order.
+	//
+	// A final `streamTerminated` status change is fired when a permanent error
+	// occurs. retryableStream.Error() returns the error that caused the stream to
+	// terminate.
 	onStreamStatusChange(streamStatus)
 	// onResponse forwards a response received on the stream to the stream
 	// handler.
@@ -139,8 +146,10 @@ func (rs *retryableStream) Send(request interface{}) (sent bool) {
 			// stream. Nothing to do here.
 			break
 		case isRetryableSendError(err):
+			log.Printf("pubsublite: (send:%v) reconnecting stream", rs.responseType)
 			go rs.connectStream()
 		default:
+			log.Printf("pubsublite: (send:%v) terminating stream", rs.responseType)
 			rs.mu.Unlock() // terminate acquires the mutex.
 			rs.terminate(err)
 			return
@@ -266,30 +275,38 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 			if err != nil {
 				return r.RetryRecv(err)
 			}
-			if err = newStream.SendMsg(rs.handler.initialRequest()); err != nil {
+			initReq, needsResponse := rs.handler.initialRequest()
+			if err = newStream.SendMsg(initReq); err != nil {
 				return r.RetrySend(err)
 			}
-			response := reflect.New(rs.responseType).Interface()
-			if err = newStream.RecvMsg(response); err != nil {
-				return r.RetryRecv(err)
-			}
-			if err = rs.handler.validateInitialResponse(response); err != nil {
-				// An unexpected initial response from the server is a permanent error.
-				return 0, false
+			if needsResponse {
+				response := reflect.New(rs.responseType).Interface()
+				if err = newStream.RecvMsg(response); err != nil {
+					log.Printf("pubsublite: (init:%v) waited to receive initial response", rs.responseType)
+					return r.RetryRecv(err)
+				}
+				if err = rs.handler.validateInitialResponse(response); err != nil {
+					// An unexpected initial response from the server is a permanent error.
+					return 0, false
+				}
 			}
 
 			// We have a valid connection and should break from the outer loop.
-			log.Printf("pubsublite: connected stream (%v)", rs.responseType)
 			return 0, false
 		}()
 
 		if !shouldRetry {
+			if newStream == nil {
+				log.Printf("pubsublite: (init:%v) aborting stream retries due to error: %v", rs.responseType, err)
+			} else {
+				log.Printf("pubsublite: (init:%v) connected stream", rs.responseType)
+			}
 			break
 		}
 		if rs.Status() == streamTerminated {
 			break
 		}
-		log.Printf("pubsublite: retrying stream (%v) connection due to error: %v", rs.responseType, err)
+		log.Printf("pubsublite: (init:%v) retrying stream connection due to error: %v", rs.responseType, err)
 		if err = gax.Sleep(rs.ctx, backoff); err != nil {
 			break
 		}
@@ -312,10 +329,10 @@ func (rs *retryableStream) listen(recvStream grpc.ClientStream) {
 		}
 		if err != nil {
 			if isRetryableRecvError(err) {
-				log.Printf("pubsublite: reconnecting stream (%v) due to error: %v", rs.responseType, err)
+				log.Printf("pubsublite: (listen:%v) reconnecting stream due to error: %v", rs.responseType, err)
 				go rs.connectStream()
 			} else {
-				log.Printf("pubsublite: terminating stream (%v) due to error: %v", rs.responseType, err)
+				log.Printf("pubsublite: (listen:%v) terminating stream due to error: %v", rs.responseType, err)
 				rs.terminate(err)
 			}
 			break

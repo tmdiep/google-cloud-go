@@ -26,17 +26,59 @@ import (
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
-// testWireSubscriber wraps a commiter for ease of testing.
-type testWireSubscriber struct {
-	t        *testing.T
-	subs     *wireSubscriber
-	received chan *testMessageHolder
-	serviceTestProxy
+func testSubscriberSettings() ReceiveSettings {
+	settings := testReceiveSettings()
+	settings.MaxOutstandingMessages = 10
+	settings.MaxOutstandingBytes = 1000
+	return settings
+}
+
+// initFlowControlReq returns the first expected flow control request when
+// testSubscriberSettings are used.
+func initFlowControlReq() *pb.SubscribeRequest {
+	return flowControlSubReq(flowControlTokens{Bytes: 1000, Messages: 10})
 }
 
 type testMessageHolder struct {
 	Msg *pb.SequencedMessage
 	Ack AckConsumer
+}
+
+type testMessageReceiver struct {
+	t        *testing.T
+	received chan *testMessageHolder
+}
+
+func newTestMessageReceiver(t *testing.T) *testMessageReceiver {
+	return &testMessageReceiver{
+		t:        t,
+		received: make(chan *testMessageHolder, 5),
+	}
+}
+
+func (tr *testMessageReceiver) onMessages(msg *pb.SequencedMessage, ack AckConsumer) {
+	tr.received <- &testMessageHolder{Msg: msg, Ack: ack}
+}
+
+func (tr *testMessageReceiver) ValidateMsg(want *pb.SequencedMessage) AckConsumer {
+	select {
+	case <-time.After(serviceTestWaitTimeout):
+		tr.t.Errorf("Message (%v) not received within %v", want, serviceTestWaitTimeout)
+		return nil
+	case got := <-tr.received:
+		if !proto.Equal(got.Msg, want) {
+			tr.t.Errorf("Received message: got (%v), want (%v)", got.Msg, want)
+		}
+		return got.Ack
+	}
+}
+
+// testWireSubscriber wraps a wireSubscriber for ease of testing.
+type testWireSubscriber struct {
+	Receiver *testMessageReceiver
+	t        *testing.T
+	subs     *wireSubscriber
+	serviceTestProxy
 }
 
 func newTestWireSubscriber(t *testing.T, subscription subscriptionPartition, settings ReceiveSettings, acks *ackTracker) *testWireSubscriber {
@@ -47,26 +89,12 @@ func newTestWireSubscriber(t *testing.T, subscription subscriptionPartition, set
 	}
 
 	ts := &testWireSubscriber{
+		Receiver: newTestMessageReceiver(t),
 		t:        t,
-		received: make(chan *testMessageHolder, 1),
 	}
-	ts.subs = newWireSubscriber(ctx, subsClient, settings, ts.onMessages, subscription, acks, true)
+	ts.subs = newWireSubscriber(ctx, subsClient, settings, ts.Receiver.onMessages, subscription, acks, true)
 	ts.initAndStart(t, ts.subs, "Subscriber")
 	return ts
-}
-
-func (ts *testWireSubscriber) onMessages(msg *pb.SequencedMessage, ack AckConsumer) {
-	ts.received <- &testMessageHolder{Msg: msg, Ack: ack}
-}
-
-func (ts *testWireSubscriber) NextMsg() *testMessageHolder {
-	select {
-	case <-time.After(serviceTestProxyWaitTimeout):
-		ts.t.Errorf("%s message not received within %v", ts.name, serviceTestProxyWaitTimeout)
-		return nil
-	case next := <-ts.received:
-		return next
-	}
 }
 
 // SendBatchFlowControl invokes the periodic background batch flow control. Note
@@ -78,22 +106,15 @@ func (ts *testWireSubscriber) SendBatchFlowControl() {
 func TestWireSubscriberReconnect(t *testing.T) {
 	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
 	acks := newAckTracker()
-
-	// Settings determine the initial flow control request.
-	settings := defaultTestReceiveSettings
-	settings.MaxOutstandingMessages = 16
-	settings.MaxOutstandingBytes = 1000
-
 	wantMsg1 := seqMsgWithOffsetAndSize(67, 200)
-	msgResp1 := msgSubResp(wantMsg1)
 	wantMsg2 := seqMsgWithOffsetAndSize(68, 100)
-	msgResp2 := msgSubResp(wantMsg2)
+	permanentErr := status.Error(codes.FailedPrecondition, "permanent failure")
 
 	verifiers := test.NewVerifiers(t)
 
 	stream1 := test.NewRPCVerifier(t)
 	stream1.Push(initSubReq(subscription), initSubResp(), nil)
-	stream1.Push(flowControlSubReq(flowControlTokens{Bytes: 1000, Messages: 16}), msgResp1, nil)
+	stream1.Push(initFlowControlReq(), msgSubResp(wantMsg1), nil)
 	stream1.Push(nil, nil, status.Error(codes.Unavailable, "server unavailable"))
 	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream1)
 
@@ -102,44 +123,252 @@ func TestWireSubscriberReconnect(t *testing.T) {
 	stream2 := test.NewRPCVerifier(t)
 	stream2.Push(initSubReq(subscription), initSubResp(), nil)
 	stream2.Push(seekReq(68), seekResp(68), nil)
-	stream2.Push(flowControlSubReq(flowControlTokens{Bytes: 800, Messages: 15}), msgResp2, nil)
+	stream2.Push(flowControlSubReq(flowControlTokens{Bytes: 800, Messages: 9}), msgSubResp(wantMsg2), nil)
+	// Terminates on permanent error.
+	stream2.Push(nil, nil, permanentErr)
 	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream2)
 
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	cmt := newTestWireSubscriber(t, subscription, settings, acks)
-	defer cmt.StopVerifyNoError()
-	if gotErr := cmt.StartError(); gotErr != nil {
+	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+
+	if gotErr := subs.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
-
-	got := cmt.NextMsg()
-	if got != nil && !proto.Equal(got.Msg, wantMsg1) {
-		t.Errorf("Message 1 got: (%v), want: (%v)", got.Msg, wantMsg1)
-	}
-	got = cmt.NextMsg()
-	if got != nil && !proto.Equal(got.Msg, wantMsg2) {
-		t.Errorf("Message 2 got: (%v), want: (%v)", got.Msg, wantMsg2)
+	subs.Receiver.ValidateMsg(wantMsg1)
+	subs.Receiver.ValidateMsg(wantMsg2)
+	if gotErr, wantErr := subs.FinalError(), permanentErr; !test.ErrorEqual(gotErr, wantErr) {
+		t.Errorf("Final err: (%v), want: (%v)", gotErr, wantErr)
 	}
 }
 
-/*
-func TestSinglePartitionSubscriberStartStop(t *testing.T) {
+func TestWireSubscriberInvalidInitialResponse(t *testing.T) {
 	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
 	acks := newAckTracker()
 
-	mockServer.OnTestStart(nil)
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initSubReq(subscription), seekResp(0), nil)
+	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream)
+
+	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	stream := test.NewRPCVerifier(t)
-	stream.Push(initCommitReq(subscription), initCommitResp(), nil)
-	mockServer.AddCommitStream(subscription.Path, subscription.Partition, stream)
+	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+	if gotErr, wantErr := subs.StartError(), errInvalidInitialSubscribeResponse; !test.ErrorEqual(gotErr, wantErr) {
+		t.Errorf("Start got err: (%v), want: (%v)", gotErr, wantErr)
+	}
+}
 
-	cmt := newTestCommitter(t, subscription, acks)
-	if gotErr := cmt.StartError(); gotErr != nil {
+func TestWireSubscriberDuplicateInitialResponse(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	acks := newAckTracker()
+
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initSubReq(subscription), initSubResp(), nil)
+	stream.Push(initFlowControlReq(), initSubResp(), nil) // Second initial response
+	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+	if gotErr := subs.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
-	cmt.StopVerifyNoError()
+	if gotErr, wantErr := subs.FinalError(), errInvalidSubscribeResponse; !test.ErrorEqual(gotErr, wantErr) {
+		t.Errorf("Final err: (%v), want: (%v)", gotErr, wantErr)
+	}
 }
-*/
+
+func TestWireSubscriberSpuriousSeekResponse(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	acks := newAckTracker()
+
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initSubReq(subscription), initSubResp(), nil)
+	stream.Push(initFlowControlReq(), seekResp(1), nil) // No seek requested
+	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+	if gotErr := subs.StartError(); gotErr != nil {
+		t.Errorf("Start() got err: (%v)", gotErr)
+	}
+	if gotErr, wantErr := subs.FinalError(), errNoInFlightSeek; !test.ErrorEqual(gotErr, wantErr) {
+		t.Errorf("Final err: (%v), want: (%v)", gotErr, wantErr)
+	}
+}
+
+func TestWireSubscriberNoMessages(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	acks := newAckTracker()
+
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initSubReq(subscription), initSubResp(), nil)
+	barrier := stream.PushWithBarrier(initFlowControlReq(), msgSubResp(), nil) // No messages in response
+	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+	if gotErr := subs.StartError(); gotErr != nil {
+		t.Errorf("Start() got err: (%v)", gotErr)
+	}
+	barrier.Release() // To ensure tests are deterministic
+	if gotErr, wantErr := subs.FinalError(), errServerNoMessages; !test.ErrorEqual(gotErr, wantErr) {
+		t.Errorf("Final err: (%v), want: (%v)", gotErr, wantErr)
+	}
+}
+
+func TestWireSubscriberMessagesOutOfOrder(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	acks := newAckTracker()
+	msg1 := seqMsgWithOffsetAndSize(56, 100)
+	msg2 := seqMsgWithOffsetAndSize(55, 100)
+
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initSubReq(subscription), initSubResp(), nil)
+	stream.Push(initFlowControlReq(), msgSubResp(msg1), nil)
+	stream.Push(nil, msgSubResp(msg2), nil)
+	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+	if gotErr := subs.StartError(); gotErr != nil {
+		t.Errorf("Start() got err: (%v)", gotErr)
+	}
+
+	subs.Receiver.ValidateMsg(msg1)
+	if gotErr, wantMsg := subs.FinalError(), "start offset = 55, expected >= 57"; !test.ErrorHasMsg(gotErr, wantMsg) {
+		t.Errorf("Final err: (%v), want msg: %q", gotErr, wantMsg)
+	}
+}
+
+func TestWireSubscriberFlowControlOverflow(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	acks := newAckTracker()
+	msg1 := seqMsgWithOffsetAndSize(56, 900)
+	msg2 := seqMsgWithOffsetAndSize(57, 101) // Overflows ReceiveSettings.MaxOutstandingBytes = 1000
+
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initSubReq(subscription), initSubResp(), nil)
+	stream.Push(initFlowControlReq(), msgSubResp(msg1), nil)
+	stream.Push(nil, msgSubResp(msg2), nil)
+	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+	if gotErr := subs.StartError(); gotErr != nil {
+		t.Errorf("Start() got err: (%v)", gotErr)
+	}
+
+	subs.Receiver.ValidateMsg(msg1)
+	if gotErr, wantErr := subs.FinalError(), errTokenCounterBytesNegative; !test.ErrorEqual(gotErr, wantErr) {
+		t.Errorf("Final err: (%v), want: (%v)", gotErr, wantErr)
+	}
+}
+
+func newTestSinglePartitionSubscriber(t *testing.T, receiver *testMessageReceiver, subscription subscriptionPartition) *singlePartitionSubscriber {
+	ctx := context.Background()
+	subsClient, err := newSubscriberClient(ctx, "ignored", testClientOpts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursorClient, err := newCursorClient(ctx, "ignored", testClientOpts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := &singlePartitionSubscriberFactory{
+		ctx:              ctx,
+		subsClient:       subsClient,
+		cursorClient:     cursorClient,
+		settings:         testSubscriberSettings(),
+		subscriptionPath: subscription.Path,
+		receiver:         receiver.onMessages,
+		disableTasks:     true,
+	}
+	subs := f.New(subscription.Partition)
+	subs.Start()
+	return subs
+}
+
+func TestSinglePartitionSubscriberStartStop(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	receiver := newTestMessageReceiver(t)
+
+	verifiers := test.NewVerifiers(t)
+
+	// Verifies the behavior of the wireSubscriber and committer when they are
+	// stopped before any messages are received.
+	subStream := test.NewRPCVerifier(t)
+	subStream.Push(initSubReq(subscription), initSubResp(), nil)
+	barrier := subStream.PushWithBarrier(initFlowControlReq(), nil, nil)
+	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, subStream)
+
+	cmtStream := test.NewRPCVerifier(t)
+	cmtStream.Push(initCommitReq(subscription), initCommitResp(), nil)
+	verifiers.AddCommitStream(subscription.Path, subscription.Partition, cmtStream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	subs := newTestSinglePartitionSubscriber(t, receiver, subscription)
+	if gotErr := subs.WaitStarted(); gotErr != nil {
+		t.Errorf("Start() got err: (%v)", gotErr)
+	}
+
+	barrier.Release() // To ensure the test is deterministic (i.e. flow control req received)
+	subs.Stop()
+	if gotErr := subs.WaitStopped(); gotErr != nil {
+		t.Errorf("Stop() got err: (%v)", gotErr)
+	}
+}
+
+func TestSinglePartitionSubscriberSimpleMsgAck(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	receiver := newTestMessageReceiver(t)
+	msg1 := seqMsgWithOffsetAndSize(22, 100)
+	msg2 := seqMsgWithOffsetAndSize(23, 200)
+
+	verifiers := test.NewVerifiers(t)
+
+	subStream := test.NewRPCVerifier(t)
+	subStream.Push(initSubReq(subscription), initSubResp(), nil)
+	subStream.Push(initFlowControlReq(), msgSubResp(msg1, msg2), nil)
+	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, subStream)
+
+	cmtStream := test.NewRPCVerifier(t)
+	cmtStream.Push(initCommitReq(subscription), initCommitResp(), nil)
+	cmtStream.Push(commitReq(24), commitResp(1), nil)
+	verifiers.AddCommitStream(subscription.Path, subscription.Partition, cmtStream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	subs := newTestSinglePartitionSubscriber(t, receiver, subscription)
+	if gotErr := subs.WaitStarted(); gotErr != nil {
+		t.Errorf("Start() got err: (%v)", gotErr)
+	}
+
+	receiver.ValidateMsg(msg1).Ack()
+	receiver.ValidateMsg(msg2).Ack()
+	subs.Stop()
+	if gotErr := subs.WaitStopped(); gotErr != nil {
+		t.Errorf("Stop() got err: (%v)", gotErr)
+	}
+}

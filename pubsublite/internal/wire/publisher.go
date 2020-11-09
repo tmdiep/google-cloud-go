@@ -50,44 +50,6 @@ func (pm *PublishMetadata) String() string {
 // PublishResultFunc receives the result of a publish.
 type PublishResultFunc func(*PublishMetadata, error)
 
-// Publisher is the client interface exported from this package for publishing
-// messages.
-type Publisher interface {
-	Publish(*pb.PubSubMessage, PublishResultFunc)
-
-	Start()
-	WaitStarted() error
-	Stop()
-	WaitStopped() error
-}
-
-// NewPublisher creates a new client for publishing messages.
-func NewPublisher(ctx context.Context, settings PublishSettings, region, topicPath string, opts ...option.ClientOption) (Publisher, error) {
-	if err := ValidateRegion(region); err != nil {
-		return nil, err
-	}
-	if err := validatePublishSettings(settings); err != nil {
-		return nil, err
-	}
-	pubClient, err := newPublisherClient(ctx, region, opts...)
-	if err != nil {
-		return nil, err
-	}
-	adminClient, err := NewAdminClient(ctx, region, opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	msgRouter := newDefaultMessageRouter(rand.New(rand.NewSource(time.Now().UnixNano())))
-	pubFactory := &singlePartitionPublisherFactory{
-		ctx:       ctx,
-		pubClient: pubClient,
-		settings:  settings,
-		topicPath: topicPath,
-	}
-	return newRoutingPublisher(adminClient, msgRouter, pubFactory), nil
-}
-
 // messageHolder stores a message to be published, with associated metadata.
 type messageHolder struct {
 	msg      *pb.PubSubMessage
@@ -116,10 +78,10 @@ func (b *publishBatch) ToPublishRequest() *pb.PublishRequest {
 	}
 }
 
+// publishMessageBatcher manages batching of messages, as well as in-flight
+// published batches.
 type publishMessageBatcher struct {
-	// Immutable after creation.
 	partition int
-
 	// Used to batch messages.
 	msgBundler *bundler.Bundler
 	// FIFO queue of in-flight batches of published messages. Results have not yet
@@ -128,8 +90,8 @@ type publishMessageBatcher struct {
 	// Used for error checking, to ensure the server returns increasing offsets
 	// for published messages.
 	minExpectedNextOffset int64
-	// The buffer size is managed by this publisher rather than the bundler due to
-	// the in-flight publish queue.
+	// The available buffer size is managed by this publisher rather than the
+	// bundler due to the in-flight publish queue.
 	availableBufferBytes int
 }
 
@@ -147,16 +109,16 @@ func newPublishMessageBatcher(settings *PublishSettings, partition int, onNewBat
 			return
 		}
 		// The publishMessageBatcher is accessed by the singlePartitionPublisher and
-		// Bundler handler func. Route a new batch via the singlePartitionPublisher
-		// so that only a single mutex is required.
+		// Bundler handler func. Relay a new batch via the singlePartitionPublisher
+		// so that only the publisher's mutex is required.
 		onNewBatch(&publishBatch{msgHolders: msgs})
 	})
 	msgBundler.DelayThreshold = settings.DelayThreshold
 	msgBundler.BundleCountThreshold = settings.CountThreshold
 	msgBundler.BundleByteThreshold = settings.ByteThreshold
 	msgBundler.BundleByteLimit = MaxPublishRequestBytes
-	msgBundler.HandlerLimit = 1                                    // Handle batches serially for ordering
-	msgBundler.BufferedByteLimit = settings.BufferedByteLimit * 10 // Handled in the publisher
+	msgBundler.HandlerLimit = 1                                   // Handle batches serially for ordering
+	msgBundler.BufferedByteLimit = settings.BufferedByteLimit * 2 // Effectively disabled, handled in the batcher
 
 	batcher.msgBundler = msgBundler
 	return batcher
@@ -240,16 +202,16 @@ func (b *publishMessageBatcher) Done() bool {
 //
 // The life of a successfully published message is as follows:
 // - Publish() receives the message from the user.
-// - It is added to `msgBundler`, which performs batching in accordance with
-//   user-configured PublishSettings.
-// - handleBatch() receives new message batches from the bundler. The batch is
-//   added to `publishQueue` and sent to the gRPC stream, if connected. If the
-//   stream is currently reconnecting, the entire `publishQueue` is resent to
-//   the stream immediately after it has reconnected within
+// - It is added to `batcher.msgBundler`, which performs batching in accordance
+//   with user-configured PublishSettings.
+// - onNewBatch() receives new message batches from the bundler. The batch is
+//   added to `batcher.publishQueue` (in-flight batches) and sent to the publish
+//   stream, if connected. If the stream is currently reconnecting, the entire
+//   queue is resent to the stream immediately after it has reconnected, in
 //   onStreamStatusChange().
-// - onResponse() receives the first cursor offset for the front batch in
-//   `publishQueue`. It assigns the cursor offsets for each message and
-//   releases the publish result to the user.
+// - onResponse() receives the first cursor offset for the first batch in
+//   `batcher.publishQueue`. It assigns the cursor offsets for each message and
+//   releases the publish results to the user.
 //
 // See comments for unsafeInitiateShutdown() for error scenarios.
 type singlePartitionPublisher struct {
@@ -337,8 +299,8 @@ func (pp *singlePartitionPublisher) newStream(ctx context.Context) (grpc.ClientS
 	return pp.pubClient.Publish(addTopicRoutingMetadata(ctx, pp.topic))
 }
 
-func (pp *singlePartitionPublisher) initialRequest() interface{} {
-	return pp.initialReq
+func (pp *singlePartitionPublisher) initialRequest() (interface{}, bool) {
+	return pp.initialReq, true
 }
 
 func (pp *singlePartitionPublisher) validateInitialResponse(response interface{}) error {
@@ -480,6 +442,8 @@ func (pp *singlePartitionPublisher) unsafeCheckDone() {
 	}
 }
 
+// routingPublisher publishes messages to N topic partitions, each managed by a
+// singlePartitionPublisher.
 type routingPublisher struct {
 	// Immutable after creation.
 	ctx         context.Context
@@ -570,4 +534,42 @@ func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*singlePart
 		return nil, err
 	}
 	return pub, nil
+}
+
+// Publisher is the client interface exported from this package for publishing
+// messages.
+type Publisher interface {
+	Publish(*pb.PubSubMessage, PublishResultFunc)
+
+	Start()
+	WaitStarted() error
+	Stop()
+	WaitStopped() error
+}
+
+// NewPublisher creates a new client for publishing messages.
+func NewPublisher(ctx context.Context, settings PublishSettings, region, topicPath string, opts ...option.ClientOption) (Publisher, error) {
+	if err := ValidateRegion(region); err != nil {
+		return nil, err
+	}
+	if err := validatePublishSettings(settings); err != nil {
+		return nil, err
+	}
+	pubClient, err := newPublisherClient(ctx, region, opts...)
+	if err != nil {
+		return nil, err
+	}
+	adminClient, err := NewAdminClient(ctx, region, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	msgRouter := newDefaultMessageRouter(rand.New(rand.NewSource(time.Now().UnixNano())))
+	pubFactory := &singlePartitionPublisherFactory{
+		ctx:       ctx,
+		pubClient: pubClient,
+		settings:  settings,
+		topicPath: topicPath,
+	}
+	return newRoutingPublisher(adminClient, msgRouter, pubFactory), nil
 }

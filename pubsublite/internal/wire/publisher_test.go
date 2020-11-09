@@ -27,20 +27,30 @@ import (
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
-const publisherWaitTimeout = 30 * time.Second
+func testPublishSettings() PublishSettings {
+	settings := DefaultPublishSettings
+	// Send 1 message at a time to make tests deterministic.
+	settings.CountThreshold = 1
+	// Send messages with minimal delay to speed up tests.
+	settings.DelayThreshold = time.Millisecond
+	settings.Timeout = 5 * time.Second
+	return settings
+}
 
 // publishResultReceiver provides convenience methods for receiving and
 // validating Publish results.
 type publishResultReceiver struct {
 	done   chan struct{}
+	msg    string
 	t      *testing.T
 	got    *PublishMetadata
 	gotErr error
 }
 
-func newPublishResultReceiver(t *testing.T) *publishResultReceiver {
+func newPublishResultReceiver(t *testing.T, msg string) *publishResultReceiver {
 	return &publishResultReceiver{
 		t:    t,
+		msg:  msg,
 		done: make(chan struct{}),
 	}
 }
@@ -53,8 +63,8 @@ func (r *publishResultReceiver) set(pm *PublishMetadata, err error) {
 
 func (r *publishResultReceiver) wait() bool {
 	select {
-	case <-time.After(publisherWaitTimeout):
-		r.t.Errorf("Publish result not available within %v", publisherWaitTimeout)
+	case <-time.After(serviceTestWaitTimeout):
+		r.t.Errorf("Publish(%q) result not available within %v", r.msg, serviceTestWaitTimeout)
 		return false
 	case <-r.done:
 		return true
@@ -66,9 +76,9 @@ func (r *publishResultReceiver) ValidateResult(wantPartition int, wantOffset int
 		return
 	}
 	if r.gotErr != nil {
-		r.t.Errorf("Publish() error: (%v), want: partition=%d,offset=%d", r.gotErr, wantPartition, wantOffset)
+		r.t.Errorf("Publish(%q) error: (%v), want: partition=%d,offset=%d", r.msg, r.gotErr, wantPartition, wantOffset)
 	} else if r.got.Partition != wantPartition || r.got.Offset != wantOffset {
-		r.t.Errorf("Publish() got: partition=%d,offset=%d, want: partition=%d,offset=%d", r.got.Partition, r.got.Offset, wantPartition, wantOffset)
+		r.t.Errorf("Publish(%q) got: partition=%d,offset=%d, want: partition=%d,offset=%d", r.msg, r.got.Partition, r.got.Offset, wantPartition, wantOffset)
 	}
 }
 
@@ -77,7 +87,7 @@ func (r *publishResultReceiver) ValidateError(wantErr error) {
 		return
 	}
 	if !test.ErrorEqual(r.gotErr, wantErr) {
-		r.t.Errorf("Publish() error: (%v), want: (%v)", r.gotErr, wantErr)
+		r.t.Errorf("Publish(%q) error: (%v), want: (%v)", r.msg, r.gotErr, wantErr)
 	}
 }
 
@@ -86,7 +96,7 @@ func (r *publishResultReceiver) ValidateErrorCode(wantCode codes.Code) {
 		return
 	}
 	if !test.ErrorHasCode(r.gotErr, wantCode) {
-		r.t.Errorf("Publish() error: (%v), want code: %v", r.gotErr, wantCode)
+		r.t.Errorf("Publish(%q) error: (%v), want code: %v", r.msg, r.gotErr, wantCode)
 	}
 }
 
@@ -95,7 +105,7 @@ func (r *publishResultReceiver) ValidateErrorMsg(wantStr string) {
 		return
 	}
 	if !test.ErrorHasMsg(r.gotErr, wantStr) {
-		r.t.Errorf("Publish() error: (%v), want msg: %q", r.gotErr, wantStr)
+		r.t.Errorf("Publish(%q) error: (%v), want msg: %q", r.msg, r.gotErr, wantStr)
 	}
 }
 
@@ -126,7 +136,7 @@ func newTestPartitionPublisher(t *testing.T, topic topicPartition, settings Publ
 }
 
 func (tp *testPartitionPublisher) Publish(msg *pb.PubSubMessage) *publishResultReceiver {
-	result := newPublishResultReceiver(tp.t)
+	result := newPublishResultReceiver(tp.t, string(msg.Data))
 	tp.pub.Publish(msg, result.set)
 	return result
 }
@@ -161,7 +171,7 @@ func TestPartitionPublisherInvalidInitialResponse(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
+	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
 
 	wantErr := errInvalidInitialPubResponse
 	if gotErr := pub.StartError(); !test.ErrorEqual(gotErr, wantErr) {
@@ -187,7 +197,7 @@ func TestPartitionPublisherSpuriousPublishResponse(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
+	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -202,7 +212,7 @@ func TestPartitionPublisherSpuriousPublishResponse(t *testing.T) {
 
 func TestPartitionPublisherBatching(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
-	settings := defaultTestPublishSettings
+	settings := testPublishSettings()
 	settings.DelayThreshold = time.Minute // Batching delay disabled, tested elsewhere
 	settings.CountThreshold = 3
 	settings.ByteThreshold = 50
@@ -265,7 +275,7 @@ func TestPartitionPublisherBatching(t *testing.T) {
 
 func TestPartitionPublisherBatchingDelay(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
-	settings := defaultTestPublishSettings
+	settings := testPublishSettings()
 	settings.CountThreshold = 100
 	settings.DelayThreshold = 5 * time.Millisecond
 
@@ -324,7 +334,7 @@ func TestPartitionPublisherResendMessages(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
+	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
 	defer pub.StopVerifyNoError()
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
@@ -357,7 +367,7 @@ func TestPartitionPublisherPublishPermanentError(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
+	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -379,7 +389,7 @@ func TestPartitionPublisherPublishPermanentError(t *testing.T) {
 
 func TestPartitionPublisherBufferOverflow(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
-	settings := defaultTestPublishSettings
+	settings := testPublishSettings()
 	settings.BufferedByteLimit = 15
 
 	msg1 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'1'}, 10)}
@@ -422,7 +432,7 @@ func TestPartitionPublisherBufferOverflow(t *testing.T) {
 
 func TestPartitionPublisherBufferRefill(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
-	settings := defaultTestPublishSettings
+	settings := testPublishSettings()
 	settings.BufferedByteLimit = 15
 
 	msg1 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'1'}, 10)}
@@ -467,7 +477,7 @@ func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
+	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -512,7 +522,7 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
+	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -547,7 +557,7 @@ func TestPartitionPublisherInvalidServerPublishResponse(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
+	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -581,7 +591,7 @@ func TestPartitionPublisherStopFlushesMessages(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, defaultTestPublishSettings)
+	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -625,7 +635,7 @@ func newTestRoutingPublisher(t *testing.T, topicPath string, settings PublishSet
 	}
 
 	source := &test.FakeSource{Ret: fakeSourceVal}
-	msgRouter := &roundRobinMsgRouter{rng: rand.New(source)}
+	msgRouter := newDefaultMessageRouter(rand.New(source))
 	pubFactory := &singlePartitionPublisherFactory{
 		ctx:       ctx,
 		pubClient: pubClient,
@@ -638,7 +648,7 @@ func newTestRoutingPublisher(t *testing.T, topicPath string, settings PublishSet
 }
 
 func (tp *testRoutingPublisher) Publish(msg *pb.PubSubMessage) *publishResultReceiver {
-	result := newPublishResultReceiver(tp.t)
+	result := newPublishResultReceiver(tp.t, string(msg.Data))
 	tp.pub.Publish(msg, result.set)
 	return result
 }
@@ -670,7 +680,7 @@ func TestRoutingPublisherStartOnce(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestRoutingPublisher(t, topic, defaultTestPublishSettings, 0)
+	pub := newTestRoutingPublisher(t, topic, testPublishSettings(), 0)
 	defer pub.Stop()
 
 	t.Run("First succeeds", func(t *testing.T) {
@@ -703,7 +713,7 @@ func TestRoutingPublisherPartitionCountFail(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestRoutingPublisher(t, topic, defaultTestPublishSettings, 0)
+	pub := newTestRoutingPublisher(t, topic, testPublishSettings(), 0)
 
 	if gotErr := pub.WaitStarted(); !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Start() got err: (%v), want err: (%v)", gotErr, wantErr)
@@ -728,7 +738,7 @@ func TestRoutingPublisherPartitionCountInvalid(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestRoutingPublisher(t, topic, defaultTestPublishSettings, 0)
+	pub := newTestRoutingPublisher(t, topic, testPublishSettings(), 0)
 
 	wantMsg := "topic has invalid number of partitions"
 	if gotErr := pub.WaitStarted(); !test.ErrorHasMsg(gotErr, wantMsg) {
@@ -743,9 +753,11 @@ func TestRoutingPublisherPartitionCountInvalid(t *testing.T) {
 	pub.Start()
 }
 
-func TestRoutingPublisherMultiPartitionRoundRobin(t *testing.T) {
+func TestRoutingPublisherRoundRobin(t *testing.T) {
 	topic := "projects/123456/locations/us-central1-b/topics/my-topic"
 	numPartitions := 3
+
+	// Messages have no ordering key, so the roundRobinMsgRouter is used.
 	msg1 := &pb.PubSubMessage{Data: []byte{'1'}}
 	msg2 := &pb.PubSubMessage{Data: []byte{'2'}}
 	msg3 := &pb.PubSubMessage{Data: []byte{'3'}}
@@ -755,30 +767,30 @@ func TestRoutingPublisherMultiPartitionRoundRobin(t *testing.T) {
 	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), topicPartitionsResp(numPartitions), nil)
 
 	// Partition 0.
-	stream1 := test.NewRPCVerifier(t)
-	stream1.Push(initPubReq(topicPartition{topic, 0}), initPubResp(), nil)
-	stream1.Push(msgPubReq(msg3), msgPubResp(34), nil)
-	verifiers.AddPublishStream(topic, 0, stream1)
+	stream0 := test.NewRPCVerifier(t)
+	stream0.Push(initPubReq(topicPartition{topic, 0}), initPubResp(), nil)
+	stream0.Push(msgPubReq(msg3), msgPubResp(34), nil)
+	verifiers.AddPublishStream(topic, 0, stream0)
 
 	// Partition 1.
-	stream2 := test.NewRPCVerifier(t)
-	stream2.Push(initPubReq(topicPartition{topic, 1}), initPubResp(), nil)
-	stream2.Push(msgPubReq(msg1), msgPubResp(41), nil)
-	stream2.Push(msgPubReq(msg4), msgPubResp(42), nil)
-	verifiers.AddPublishStream(topic, 1, stream2)
+	stream1 := test.NewRPCVerifier(t)
+	stream1.Push(initPubReq(topicPartition{topic, 1}), initPubResp(), nil)
+	stream1.Push(msgPubReq(msg1), msgPubResp(41), nil)
+	stream1.Push(msgPubReq(msg4), msgPubResp(42), nil)
+	verifiers.AddPublishStream(topic, 1, stream1)
 
 	// Partition 2.
-	stream3 := test.NewRPCVerifier(t)
-	stream3.Push(initPubReq(topicPartition{topic, 2}), initPubResp(), nil)
-	stream3.Push(msgPubReq(msg2), msgPubResp(78), nil)
-	verifiers.AddPublishStream(topic, 2, stream3)
+	stream2 := test.NewRPCVerifier(t)
+	stream2.Push(initPubReq(topicPartition{topic, 2}), initPubResp(), nil)
+	stream2.Push(msgPubReq(msg2), msgPubResp(78), nil)
+	verifiers.AddPublishStream(topic, 2, stream2)
 
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
 	// Note: The fake source is initialized with value=1, so partition-1 publisher
-	// will be the first chosen by the round robin message router.
-	pub := newTestRoutingPublisher(t, topic, defaultTestPublishSettings, 1)
+	// will be the first chosen by the roundRobinMsgRouter.
+	pub := newTestRoutingPublisher(t, topic, testPublishSettings(), 1)
 	if err := pub.WaitStarted(); err != nil {
 		t.Errorf("Start() got err: (%v)", err)
 	}
@@ -795,7 +807,71 @@ func TestRoutingPublisherMultiPartitionRoundRobin(t *testing.T) {
 	result4.ValidateResult(1, 42)
 
 	if err := pub.WaitStopped(); err != nil {
-		t.Errorf("routingPublisher.Error() got: (%v), want: <nil>", err)
+		t.Errorf("Stop() got err: (%v)", err)
+	}
+}
+
+func TestRoutingPublisherHashing(t *testing.T) {
+	topic := "projects/123456/locations/us-central1-b/topics/my-topic"
+	numPartitions := 3
+
+	key0 := []byte("bar") // hashes to partition 0
+	key1 := []byte("baz") // hashes to partition 1
+	key2 := []byte("foo") // hashes to partition 2
+
+	// Messages have ordering key, so the hashingMsgRouter is used.
+	msg1 := &pb.PubSubMessage{Data: []byte{'1'}, Key: key2}
+	msg2 := &pb.PubSubMessage{Data: []byte{'2'}, Key: key0}
+	msg3 := &pb.PubSubMessage{Data: []byte{'3'}, Key: key2}
+	msg4 := &pb.PubSubMessage{Data: []byte{'4'}, Key: key1}
+	msg5 := &pb.PubSubMessage{Data: []byte{'5'}, Key: key0}
+
+	verifiers := test.NewVerifiers(t)
+	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), topicPartitionsResp(numPartitions), nil)
+
+	// Partition 0.
+	stream0 := test.NewRPCVerifier(t)
+	stream0.Push(initPubReq(topicPartition{topic, 0}), initPubResp(), nil)
+	stream0.Push(msgPubReq(msg2), msgPubResp(20), nil)
+	stream0.Push(msgPubReq(msg5), msgPubResp(21), nil)
+	verifiers.AddPublishStream(topic, 0, stream0)
+
+	// Partition 1.
+	stream1 := test.NewRPCVerifier(t)
+	stream1.Push(initPubReq(topicPartition{topic, 1}), initPubResp(), nil)
+	stream1.Push(msgPubReq(msg4), msgPubResp(40), nil)
+	verifiers.AddPublishStream(topic, 1, stream1)
+
+	// Partition 2.
+	stream2 := test.NewRPCVerifier(t)
+	stream2.Push(initPubReq(topicPartition{topic, 2}), initPubResp(), nil)
+	stream2.Push(msgPubReq(msg1), msgPubResp(10), nil)
+	stream2.Push(msgPubReq(msg3), msgPubResp(11), nil)
+	verifiers.AddPublishStream(topic, 2, stream2)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	pub := newTestRoutingPublisher(t, topic, testPublishSettings(), 0)
+	if err := pub.WaitStarted(); err != nil {
+		t.Errorf("Start() got err: (%v)", err)
+	}
+
+	result1 := pub.Publish(msg1)
+	result2 := pub.Publish(msg2)
+	result3 := pub.Publish(msg3)
+	result4 := pub.Publish(msg4)
+	result5 := pub.Publish(msg5)
+
+	result1.ValidateResult(2, 10)
+	result2.ValidateResult(0, 20)
+	result3.ValidateResult(2, 11)
+	result4.ValidateResult(1, 40)
+	result5.ValidateResult(0, 21)
+
+	pub.Stop()
+	if err := pub.WaitStopped(); err != nil {
+		t.Errorf("Stop() got err: (%v)", err)
 	}
 }
 
@@ -810,23 +886,23 @@ func TestRoutingPublisherShutdown(t *testing.T) {
 	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), topicPartitionsResp(numPartitions), nil)
 
 	// Partition 0.
-	stream1 := test.NewRPCVerifier(t)
-	stream1.Push(initPubReq(topicPartition{topic, 0}), initPubResp(), nil)
-	stream1.Push(msgPubReq(msg1), msgPubResp(34), nil)
-	verifiers.AddPublishStream(topic, 0, stream1)
+	stream0 := test.NewRPCVerifier(t)
+	stream0.Push(initPubReq(topicPartition{topic, 0}), initPubResp(), nil)
+	stream0.Push(msgPubReq(msg1), msgPubResp(34), nil)
+	verifiers.AddPublishStream(topic, 0, stream0)
 
 	// Partition 1. Fails due to permanent error, which will also shut down
 	// partition-0 publisher, but it should be allowed to flush its pending
 	// messages.
-	stream2 := test.NewRPCVerifier(t)
-	stream2.Push(initPubReq(topicPartition{topic, 1}), initPubResp(), nil)
-	stream2.Push(msgPubReq(msg2), nil, serverErr)
-	verifiers.AddPublishStream(topic, 1, stream2)
+	stream1 := test.NewRPCVerifier(t)
+	stream1.Push(initPubReq(topicPartition{topic, 1}), initPubResp(), nil)
+	stream1.Push(msgPubReq(msg2), nil, serverErr)
+	verifiers.AddPublishStream(topic, 1, stream1)
 
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestRoutingPublisher(t, topic, defaultTestPublishSettings, 0)
+	pub := newTestRoutingPublisher(t, topic, testPublishSettings(), 0)
 	if err := pub.WaitStarted(); err != nil {
 		t.Errorf("Start() got err: (%v)", err)
 	}
@@ -838,7 +914,7 @@ func TestRoutingPublisherShutdown(t *testing.T) {
 	result2.ValidateError(serverErr)
 
 	if gotErr := pub.WaitStopped(); !test.ErrorEqual(gotErr, serverErr) {
-		t.Errorf("routingPublisher.Error() got: (%v), want: (%v)", gotErr, serverErr)
+		t.Errorf("Final error got: (%v), want: (%v)", gotErr, serverErr)
 	}
 }
 
@@ -852,19 +928,19 @@ func TestRoutingPublisherPublishAfterStop(t *testing.T) {
 	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), topicPartitionsResp(numPartitions), nil)
 
 	// Partition 0.
-	stream1 := test.NewRPCVerifier(t)
-	stream1.Push(initPubReq(topicPartition{topic, 0}), initPubResp(), nil)
-	verifiers.AddPublishStream(topic, 0, stream1)
+	stream0 := test.NewRPCVerifier(t)
+	stream0.Push(initPubReq(topicPartition{topic, 0}), initPubResp(), nil)
+	verifiers.AddPublishStream(topic, 0, stream0)
 
 	// Partition 1.
-	stream2 := test.NewRPCVerifier(t)
-	stream2.Push(initPubReq(topicPartition{topic, 1}), initPubResp(), nil)
-	verifiers.AddPublishStream(topic, 1, stream2)
+	stream1 := test.NewRPCVerifier(t)
+	stream1.Push(initPubReq(topicPartition{topic, 1}), initPubResp(), nil)
+	verifiers.AddPublishStream(topic, 1, stream1)
 
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestRoutingPublisher(t, topic, defaultTestPublishSettings, 0)
+	pub := newTestRoutingPublisher(t, topic, testPublishSettings(), 0)
 	if err := pub.WaitStarted(); err != nil {
 		t.Errorf("Start() got err: (%v)", err)
 	}
@@ -877,6 +953,6 @@ func TestRoutingPublisherPublishAfterStop(t *testing.T) {
 	result2.ValidateError(ErrServiceStopped)
 
 	if err := pub.WaitStopped(); err != nil {
-		t.Errorf("routingPublisher.Error() got: (%v), want: <nil>", err)
+		t.Errorf("Stop() got err: (%v)", err)
 	}
 }

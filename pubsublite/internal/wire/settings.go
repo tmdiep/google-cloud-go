@@ -33,7 +33,8 @@ const (
 	MaxPublishRequestBytes = 3500000
 )
 
-// PublishSettings control the batching of published messages.
+// PublishSettings control the batching of published messages. These settings
+// apply per-partition.
 type PublishSettings struct {
 	// Publish a non-empty batch after this delay has passed. Must be > 0.
 	DelayThreshold time.Duration
@@ -48,10 +49,21 @@ type PublishSettings struct {
 
 	// The maximum time that the client will attempt to establish a publish stream
 	// connection to the server. Must be > 0.
+	//
+	// The timeout is exceeded, the publisher will terminate with the last error
+	// that occurred while trying to reconnect. Note that if the timeout duration
+	// is long, ErrOverflow may occur first.
 	Timeout time.Duration
 
 	// The maximum number of bytes that the publisher will keep in memory before
 	// returning ErrOverflow. Must be > 0.
+	//
+	// Note that Pub/Sub Lite topics are provisioned a publishing throughput
+	// capacity, per partition, shared by all publisher clients. Setting a large
+	// buffer size can mitigate transient publish spikes. However, consistently
+	// attempting to publish messages at a much higher rate than the publishing
+	// throughput capacity can cause the buffers to overflow. For more
+	// information, see https://cloud.google.com/pubsub/lite/docs/topics.
 	BufferedByteLimit int
 }
 
@@ -64,21 +76,6 @@ var DefaultPublishSettings = PublishSettings{
 	// By default set to a high limit that is not likely to occur, but prevents
 	// OOM errors in clients.
 	BufferedByteLimit: 1 << 30, // 1 GiB
-}
-
-// ReceiveSettings control the receiving of messages.
-type ReceiveSettings struct {
-	MaxOutstandingMessages int
-	MaxOutstandingBytes    int
-	Timeout                time.Duration
-	Partitions             []int
-}
-
-// DefaultReceiveSettings holds the default values for ReceiveSettings.
-var DefaultReceiveSettings = ReceiveSettings{
-	MaxOutstandingMessages: 1000,
-	MaxOutstandingBytes:    1e9,
-	Timeout:                10 * time.Minute,
 }
 
 func validatePublishSettings(settings PublishSettings) error {
@@ -104,4 +101,33 @@ func validatePublishSettings(settings PublishSettings) error {
 		return errors.New("pubsublite: invalid publish settings. BufferedByteLimit must be > 0")
 	}
 	return nil
+}
+
+// ReceiveSettings control the receiving of messages.
+type ReceiveSettings struct {
+	// MaxOutstandingMessages is the maximum number of unacknowledged messages
+	// (unacknowledged). Must be > 0.
+	MaxOutstandingMessages int
+
+	// MaxOutstandingBytes is the maximum size (in quota bytes) of unacknowledged
+	// messages. Must be > 0.
+	MaxOutstandingBytes int
+
+	// The maximum time that the client will attempt to establish a subscribe
+	// stream connection to the server. Must be > 0.
+	//
+	// The timeout is exceeded, the subscriber will terminate with the last error
+	// that occurred while trying to reconnect.
+	Timeout time.Duration
+
+	// The topic partition numbers (zero-indexed) to receive messages from.
+	// Values must be less than the number of partitions for the topic.
+	Partitions []int
+}
+
+// DefaultReceiveSettings holds the default values for ReceiveSettings.
+var DefaultReceiveSettings = ReceiveSettings{
+	MaxOutstandingMessages: 1000,
+	MaxOutstandingBytes:    1e9,
+	Timeout:                10 * time.Minute,
 }

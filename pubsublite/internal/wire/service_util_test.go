@@ -19,7 +19,13 @@ import (
 	"time"
 )
 
-const serviceTestProxyWaitTimeout = 30 * time.Second
+func testReceiveSettings() ReceiveSettings {
+	settings := DefaultReceiveSettings
+	settings.Timeout = 5 * time.Second
+	return settings
+}
+
+const serviceTestWaitTimeout = 30 * time.Second
 
 // serviceTestProxy wraps a `service` and provides some convenience methods for
 // testing.
@@ -56,8 +62,8 @@ func (sp *serviceTestProxy) Stop()  { sp.service.Stop() }
 // StartError waits for the service to start and returns the error.
 func (sp *serviceTestProxy) StartError() error {
 	select {
-	case <-time.After(serviceTestProxyWaitTimeout):
-		return fmt.Errorf("%s did not start within %v", sp.name, serviceTestProxyWaitTimeout)
+	case <-time.After(serviceTestWaitTimeout):
+		return fmt.Errorf("%s did not start within %v", sp.name, serviceTestWaitTimeout)
 	case <-sp.terminated:
 		return sp.service.Error()
 	case <-sp.started:
@@ -68,8 +74,8 @@ func (sp *serviceTestProxy) StartError() error {
 // FinalError waits for the service to terminate and returns the error.
 func (sp *serviceTestProxy) FinalError() error {
 	select {
-	case <-time.After(serviceTestProxyWaitTimeout):
-		return fmt.Errorf("%s did not terminate within %v", sp.name, serviceTestProxyWaitTimeout)
+	case <-time.After(serviceTestWaitTimeout):
+		return fmt.Errorf("%s did not terminate within %v", sp.name, serviceTestWaitTimeout)
 	case <-sp.terminated:
 		return sp.service.Error()
 	}

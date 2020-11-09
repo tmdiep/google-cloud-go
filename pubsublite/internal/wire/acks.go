@@ -163,6 +163,13 @@ func (at *ackTracker) Release() {
 	at.outstandingAcks.Init()
 }
 
+// Done when there are no outstanding acks.
+func (at *ackTracker) Done() bool {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+	return at.outstandingAcks.Len() == 0
+}
+
 // commitCursorTracker tracks pending and last successful committed offsets.
 // It is only accessed by the committer.
 type commitCursorTracker struct {
