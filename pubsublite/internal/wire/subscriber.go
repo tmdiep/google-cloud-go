@@ -392,6 +392,7 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 	if err := ValidateRegion(region); err != nil {
 		return nil, err
 	}
+	// TODO: validate settings
 	subsClient, err := newSubscriberClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err
