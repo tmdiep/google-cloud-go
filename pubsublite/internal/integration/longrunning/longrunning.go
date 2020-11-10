@@ -126,7 +126,7 @@ func main() {
 		}
 
 		now := time.Now()
-		log.Printf("Cycle elapsed: %v, cycle messages: %d, total elapsed: %v, total messages: %d",
+		log.Printf("*** Cycle elapsed: %v, cycle messages: %d, total elapsed: %v, total messages: %d ****",
 			now.Sub(cycleStart), cycleMsgCount, now.Sub(start), orderingValidator.TotalMsgCount())
 
 		if *sleepPeriod > 0 {

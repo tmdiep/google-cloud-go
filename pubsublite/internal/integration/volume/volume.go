@@ -13,6 +13,9 @@
 
 /*
 volume attempts to publish and receive a high volume of data.
+
+Example simple usage:
+  go run volume.go --project=<project> --topic=<topic id> --zone=<zone>
 */
 package main
 
