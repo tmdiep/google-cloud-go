@@ -470,8 +470,9 @@ type PublishResult struct {
 	err      error
 }
 
-// NewPublishResult is for internal use only.
-func NewPublishResult() (*PublishResult, func(string, err)) {
+// NewPublishResult returns the set() function to enable callers from outside
+// this package to store and call it (e.g. unit tests).
+func NewPublishResult() (*PublishResult, func(string, error)) {
 	result := &PublishResult{ready: make(chan struct{})}
 	return result, result.set
 }

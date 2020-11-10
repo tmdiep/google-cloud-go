@@ -115,11 +115,13 @@ func NewRPCVerifier(t *testing.T) *RPCVerifier {
 	}
 }
 
-// Push appends a new {request, response, error} tuple. Valid combinations:
+// Push appends a new {request, response, error} tuple.
+//
+// Valid combinations for unary and streaming RPCs:
 // - {request, response, nil}
 // - {request, nil, error}
 //
-// For streams only:
+// Additional combinations for streams only:
 // - {nil, response, nil}: send a response without a request (e.g. messages).
 // - {nil, nil, error}: break the stream without a request.
 // - {request, nil, nil}: expect a request, but don't send any response.

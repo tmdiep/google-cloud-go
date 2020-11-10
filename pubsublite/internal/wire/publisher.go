@@ -399,8 +399,6 @@ func (pp *singlePartitionPublisher) unsafeInitiateShutdown(targetStatus serviceS
 		return
 	}
 
-	//log.Printf("pubsublite: singlePartitionPublisher terminating with status=%d, err=%v", targetStatus, err)
-
 	// Close the stream if this is an immediate shutdown. Otherwise leave it open
 	// to send pending messages.
 	if targetStatus == serviceTerminated {

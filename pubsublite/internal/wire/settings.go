@@ -30,6 +30,7 @@ const (
 
 	// MaxPublishRequestBytes is the maximum allowed serialized size of a single
 	// publish request (containing a batch of messages) in bytes.
+	// Maximum bytes per batch at 3.5 MiB to avoid GRPC limit of 4 MiB.
 	MaxPublishRequestBytes = 3500000
 )
 
