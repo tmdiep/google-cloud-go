@@ -34,13 +34,11 @@ type MsgTracker struct {
 func NewMsgTracker() *MsgTracker {
 	return &MsgTracker{
 		msgMap: make(map[string]bool),
-		done:   make(chan struct{}),
+		done:   make(chan struct{}, 1),
 	}
 }
 
 func (mt *MsgTracker) Add(msg string) {
-	mt.mu.Lock()
-	defer mt.mu.Unlock()
 	mt.msgMap[msg] = true
 }
 
@@ -54,6 +52,7 @@ func (mt *MsgTracker) Remove(msg string) bool {
 		var s struct{}
 		mt.done <- s
 	}
+
 	return exists
 }
 

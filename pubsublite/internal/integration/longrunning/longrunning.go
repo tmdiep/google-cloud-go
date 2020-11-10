@@ -114,13 +114,23 @@ func main() {
 	for {
 		cycleStart := time.Now()
 
+		var toPublish []*pb.PubSubMessage
 		for partition := 0; partition < partitionCount; partition++ {
 			for i := 0; i < *messageCount; i++ {
 				msg := orderingValidator.NextPublishedMsg(msgPrefix, partition)
+				toPublish = append(toPublish, msg)
+				if *verbose {
+					log.Printf("Publishing: (key=%s) %s", string(msg.Key), string(msg.Data))
+				}
 				msgTracker.Add(string(msg.Data))
-				publisher.Publish(msg, onPublished)
 			}
 		}
+		// Add all messages for the cycle to the MsgTracker first to avoid Wait()
+		// releasing too early.
+		for _, msg := range toPublish {
+			publisher.Publish(msg, onPublished)
+		}
+
 		if err := msgTracker.Wait(msgWaitTimeout); err != nil {
 			log.Fatalf("Test failed: %v, time elapsed: %v", err, time.Now().Sub(start))
 		}
