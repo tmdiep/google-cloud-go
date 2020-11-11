@@ -73,37 +73,37 @@ func (tr *testMessageReceiver) ValidateMsg(want *pb.SequencedMessage) AckConsume
 	}
 }
 
-// testWireSubscriber wraps a wireSubscriber for ease of testing.
-type testWireSubscriber struct {
+// testSubscribeStream wraps a subscribeStream for ease of testing.
+type testSubscribeStream struct {
 	Receiver *testMessageReceiver
 	t        *testing.T
-	subs     *wireSubscriber
+	subs     *subscribeStream
 	serviceTestProxy
 }
 
-func newTestWireSubscriber(t *testing.T, subscription subscriptionPartition, settings ReceiveSettings, acks *ackTracker) *testWireSubscriber {
+func newTestSubscribeStream(t *testing.T, subscription subscriptionPartition, settings ReceiveSettings, acks *ackTracker) *testSubscribeStream {
 	ctx := context.Background()
 	subsClient, err := newSubscriberClient(ctx, "ignored", testClientOpts...)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	ts := &testWireSubscriber{
+	ts := &testSubscribeStream{
 		Receiver: newTestMessageReceiver(t),
 		t:        t,
 	}
-	ts.subs = newWireSubscriber(ctx, subsClient, settings, ts.Receiver.onMessages, subscription, acks, true)
+	ts.subs = newSubscribeStream(ctx, subsClient, settings, ts.Receiver.onMessages, subscription, acks, true)
 	ts.initAndStart(t, ts.subs, "Subscriber")
 	return ts
 }
 
 // SendBatchFlowControl invokes the periodic background batch flow control. Note
 // that the periodic task is disabled in tests.
-func (ts *testWireSubscriber) SendBatchFlowControl() {
+func (ts *testSubscribeStream) SendBatchFlowControl() {
 	ts.subs.sendBatchFlowControl()
 }
 
-func TestWireSubscriberReconnect(t *testing.T) {
+func TestSubscribeStreamReconnect(t *testing.T) {
 	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
 	acks := newAckTracker()
 	wantMsg1 := seqMsgWithOffsetAndSize(67, 200)
@@ -118,7 +118,7 @@ func TestWireSubscriberReconnect(t *testing.T) {
 	stream1.Push(nil, nil, status.Error(codes.Unavailable, "server unavailable"))
 	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream1)
 
-	// When reconnected, the wireSubscriber should seek to msg2 and have
+	// When reconnected, the subscribeStream should seek to msg2 and have
 	// subtracted flow control tokens.
 	stream2 := test.NewRPCVerifier(t)
 	stream2.Push(initSubReq(subscription), initSubResp(), nil)
@@ -131,7 +131,7 @@ func TestWireSubscriberReconnect(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+	subs := newTestSubscribeStream(t, subscription, testSubscriberSettings(), acks)
 
 	if gotErr := subs.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
@@ -143,7 +143,7 @@ func TestWireSubscriberReconnect(t *testing.T) {
 	}
 }
 
-func TestWireSubscriberInvalidInitialResponse(t *testing.T) {
+func TestSubscribeStreamInvalidInitialResponse(t *testing.T) {
 	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
 	acks := newAckTracker()
 
@@ -155,13 +155,13 @@ func TestWireSubscriberInvalidInitialResponse(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+	subs := newTestSubscribeStream(t, subscription, testSubscriberSettings(), acks)
 	if gotErr, wantErr := subs.StartError(), errInvalidInitialSubscribeResponse; !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Start got err: (%v), want: (%v)", gotErr, wantErr)
 	}
 }
 
-func TestWireSubscriberDuplicateInitialResponse(t *testing.T) {
+func TestSubscribeStreamDuplicateInitialResponse(t *testing.T) {
 	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
 	acks := newAckTracker()
 
@@ -174,7 +174,7 @@ func TestWireSubscriberDuplicateInitialResponse(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+	subs := newTestSubscribeStream(t, subscription, testSubscriberSettings(), acks)
 	if gotErr := subs.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -183,7 +183,7 @@ func TestWireSubscriberDuplicateInitialResponse(t *testing.T) {
 	}
 }
 
-func TestWireSubscriberSpuriousSeekResponse(t *testing.T) {
+func TestSubscribeStreamSpuriousSeekResponse(t *testing.T) {
 	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
 	acks := newAckTracker()
 
@@ -196,7 +196,7 @@ func TestWireSubscriberSpuriousSeekResponse(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+	subs := newTestSubscribeStream(t, subscription, testSubscriberSettings(), acks)
 	if gotErr := subs.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -205,7 +205,7 @@ func TestWireSubscriberSpuriousSeekResponse(t *testing.T) {
 	}
 }
 
-func TestWireSubscriberNoMessages(t *testing.T) {
+func TestSubscribeStreamNoMessages(t *testing.T) {
 	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
 	acks := newAckTracker()
 
@@ -218,7 +218,7 @@ func TestWireSubscriberNoMessages(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+	subs := newTestSubscribeStream(t, subscription, testSubscriberSettings(), acks)
 	if gotErr := subs.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -228,7 +228,7 @@ func TestWireSubscriberNoMessages(t *testing.T) {
 	}
 }
 
-func TestWireSubscriberMessagesOutOfOrder(t *testing.T) {
+func TestSubscribeStreamMessagesOutOfOrder(t *testing.T) {
 	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
 	acks := newAckTracker()
 	msg1 := seqMsgWithOffsetAndSize(56, 100)
@@ -244,7 +244,7 @@ func TestWireSubscriberMessagesOutOfOrder(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+	subs := newTestSubscribeStream(t, subscription, testSubscriberSettings(), acks)
 	if gotErr := subs.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -255,7 +255,7 @@ func TestWireSubscriberMessagesOutOfOrder(t *testing.T) {
 	}
 }
 
-func TestWireSubscriberFlowControlOverflow(t *testing.T) {
+func TestSubscribeStreamFlowControlOverflow(t *testing.T) {
 	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
 	acks := newAckTracker()
 	msg1 := seqMsgWithOffsetAndSize(56, 900)
@@ -271,7 +271,7 @@ func TestWireSubscriberFlowControlOverflow(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	subs := newTestWireSubscriber(t, subscription, testSubscriberSettings(), acks)
+	subs := newTestSubscribeStream(t, subscription, testSubscriberSettings(), acks)
 	if gotErr := subs.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -313,7 +313,7 @@ func TestSinglePartitionSubscriberStartStop(t *testing.T) {
 
 	verifiers := test.NewVerifiers(t)
 
-	// Verifies the behavior of the wireSubscriber and committer when they are
+	// Verifies the behavior of the subscribeStream and committer when they are
 	// stopped before any messages are received.
 	subStream := test.NewRPCVerifier(t)
 	subStream.Push(initSubReq(subscription), initSubResp(), nil)

@@ -119,7 +119,7 @@ func TestValidateReceiveSettings(t *testing.T) {
 		{
 			desc: "valid: max",
 			mutateSettings: func(settings *ReceiveSettings) {
-				settings.Partitions = []int{5, 3, 9, 1, 4}
+				settings.Partitions = []int{5, 3, 9, 1, 4, 0}
 				// These have no max bounds, check large values.
 				settings.MaxOutstandingMessages = 100000
 				settings.MaxOutstandingBytes = 1e10

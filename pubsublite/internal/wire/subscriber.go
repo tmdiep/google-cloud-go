@@ -42,13 +42,13 @@ type MessageReceiverFunc func(*pb.SequencedMessage, AckConsumer)
 // The frequency of sending batch flow control requests.
 const batchFlowControlPeriod = 100 * time.Millisecond
 
-// wireSubscriber directly wraps the subscribe client stream. It passes messages
-// to the message receiver and manages flow control. Flow control tokens are
-// batched and sent to the stream via a periodic background task, although it
-// can be expedited if the user is rapidly acking messages.
+// subscribeStream directly wraps the subscribe client stream. It passes
+// messages to the message receiver and manages flow control. Flow control
+// tokens are batched and sent to the stream via a periodic background task,
+// although it can be expedited if the user is rapidly acking messages.
 //
 // Client-initiated seek unsupported.
-type wireSubscriber struct {
+type subscribeStream struct {
 	// Immutable after creation.
 	subsClient   *vkit.SubscriberClient
 	settings     ReceiveSettings
@@ -67,10 +67,10 @@ type wireSubscriber struct {
 	abstractService
 }
 
-func newWireSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, settings ReceiveSettings,
-	receiver MessageReceiverFunc, subscription subscriptionPartition, acks *ackTracker, disableTasks bool) *wireSubscriber {
+func newSubscribeStream(ctx context.Context, subsClient *vkit.SubscriberClient, settings ReceiveSettings,
+	receiver MessageReceiverFunc, subscription subscriptionPartition, acks *ackTracker, disableTasks bool) *subscribeStream {
 
-	s := &wireSubscriber{
+	s := &subscribeStream{
 		subsClient:   subsClient,
 		settings:     settings,
 		subscription: subscription,
@@ -97,7 +97,7 @@ func newWireSubscriber(ctx context.Context, subsClient *vkit.SubscriberClient, s
 
 // Start establishes a subscribe stream connection and initializes flow control
 // tokens from ReceiveSettings.
-func (s *wireSubscriber) Start() {
+func (s *subscribeStream) Start() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -113,21 +113,21 @@ func (s *wireSubscriber) Start() {
 }
 
 // Stop immediately terminates the subscribe stream.
-func (s *wireSubscriber) Stop() {
+func (s *subscribeStream) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unsafeInitiateShutdown(serviceTerminating, nil)
 }
 
-func (s *wireSubscriber) newStream(ctx context.Context) (grpc.ClientStream, error) {
+func (s *subscribeStream) newStream(ctx context.Context) (grpc.ClientStream, error) {
 	return s.subsClient.Subscribe(addSubscriptionRoutingMetadata(ctx, s.subscription))
 }
 
-func (s *wireSubscriber) initialRequest() (interface{}, bool) {
+func (s *subscribeStream) initialRequest() (interface{}, bool) {
 	return s.initialReq, true
 }
 
-func (s *wireSubscriber) validateInitialResponse(response interface{}) error {
+func (s *subscribeStream) validateInitialResponse(response interface{}) error {
 	subscribeResponse, _ := response.(*pb.SubscribeResponse)
 	if subscribeResponse.GetInitial() == nil {
 		return errInvalidInitialSubscribeResponse
@@ -135,7 +135,7 @@ func (s *wireSubscriber) validateInitialResponse(response interface{}) error {
 	return nil
 }
 
-func (s *wireSubscriber) onStreamStatusChange(status streamStatus) {
+func (s *subscribeStream) onStreamStatusChange(status streamStatus) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -163,7 +163,7 @@ func (s *wireSubscriber) onStreamStatusChange(status streamStatus) {
 	}
 }
 
-func (s *wireSubscriber) onResponse(response interface{}) {
+func (s *subscribeStream) onResponse(response interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -183,7 +183,7 @@ func (s *wireSubscriber) onResponse(response interface{}) {
 	}
 }
 
-func (s *wireSubscriber) unsafeHandleSeekResponse(response *pb.SeekResponse) error {
+func (s *subscribeStream) unsafeHandleSeekResponse(response *pb.SeekResponse) error {
 	if !s.seekInFlight {
 		return errNoInFlightSeek
 	}
@@ -191,7 +191,7 @@ func (s *wireSubscriber) unsafeHandleSeekResponse(response *pb.SeekResponse) err
 	return nil
 }
 
-func (s *wireSubscriber) unsafeHandleMessageResponse(response *pb.MessageResponse) error {
+func (s *subscribeStream) unsafeHandleMessageResponse(response *pb.MessageResponse) error {
 	if len(response.Messages) == 0 {
 		return errServerNoMessages
 	}
@@ -213,32 +213,32 @@ func (s *wireSubscriber) unsafeHandleMessageResponse(response *pb.MessageRespons
 	return nil
 }
 
-func (s *wireSubscriber) onAck(ac *ackConsumer) {
+func (s *subscribeStream) onAck(ac *ackConsumer) {
 	// Don't block the user's goroutine with potentially expensive ack processing.
 	go s.onAckAsync(ac.MsgBytes)
 }
 
-func (s *wireSubscriber) onAckAsync(msgBytes int64) {
+func (s *subscribeStream) onAckAsync(msgBytes int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unsafeAllowFlow(flowControlTokens{Bytes: msgBytes, Messages: 1})
 }
 
 // sendBatchFlowControl is called by the periodic background task.
-func (s *wireSubscriber) sendBatchFlowControl() {
+func (s *subscribeStream) sendBatchFlowControl() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unsafeSendFlowControl(s.flowControl.ReleasePendingRequest())
 }
 
-func (s *wireSubscriber) unsafeAllowFlow(allow flowControlTokens) {
+func (s *subscribeStream) unsafeAllowFlow(allow flowControlTokens) {
 	s.flowControl.OnClientFlow(allow)
 	if s.flowControl.ShouldExpediteBatchRequest() {
 		s.unsafeSendFlowControl(s.flowControl.ReleasePendingRequest())
 	}
 }
 
-func (s *wireSubscriber) unsafeSendFlowControl(req *pb.FlowControlRequest) {
+func (s *subscribeStream) unsafeSendFlowControl(req *pb.FlowControlRequest) {
 	if req == nil {
 		return
 	}
@@ -250,7 +250,7 @@ func (s *wireSubscriber) unsafeSendFlowControl(req *pb.FlowControlRequest) {
 	})
 }
 
-func (s *wireSubscriber) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
+func (s *subscribeStream) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
 	if !s.unsafeUpdateStatus(targetStatus, err) {
 		return
 	}
@@ -261,11 +261,11 @@ func (s *wireSubscriber) unsafeInitiateShutdown(targetStatus serviceStatus, err 
 
 // singlePartitionSubscriber receives messages from a single topic partition.
 // It requires 2 child services:
-// - wireSubscriber to receive messages from the subscribe stream.
+// - subscribeStream to receive messages from the subscribe stream.
 // - committer to commit cursor offsets to the streaming commit cursor stream.
 type singlePartitionSubscriber struct {
 	// These have their own mutexes.
-	subscriber *wireSubscriber
+	subscriber *subscribeStream
 	committer  *committer
 
 	compositeService
@@ -285,7 +285,7 @@ func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSu
 	subscription := subscriptionPartition{Path: f.subscriptionPath, Partition: partition}
 	acks := newAckTracker()
 	commit := newCommitter(f.ctx, f.cursorClient, f.settings, subscription, acks, f.disableTasks)
-	subs := newWireSubscriber(f.ctx, f.subsClient, f.settings, f.receiver, subscription, acks, f.disableTasks)
+	subs := newSubscribeStream(f.ctx, f.subsClient, f.settings, f.receiver, subscription, acks, f.disableTasks)
 	ps := &singlePartitionSubscriber{
 		committer:  commit,
 		subscriber: subs,

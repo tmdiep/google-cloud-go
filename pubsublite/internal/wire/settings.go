@@ -29,13 +29,13 @@ const (
 	MaxPublishMessageBytes = 1000000
 
 	// MaxPublishRequestBytes is the maximum allowed serialized size of a single
-	// publish request (containing a batch of messages) in bytes.
-	// Maximum bytes per batch at 3.5 MiB to avoid GRPC limit of 4 MiB.
+	// publish request (containing a batch of messages) in bytes. Must be lower
+	// than the gRPC limit of 4 MiB.
 	MaxPublishRequestBytes = 3500000
 )
 
 // PublishSettings control the batching of published messages. These settings
-// apply per-partition.
+// apply per partition.
 type PublishSettings struct {
 	// Publish a non-empty batch after this delay has passed. Must be > 0.
 	DelayThreshold time.Duration
@@ -104,7 +104,8 @@ func validatePublishSettings(settings PublishSettings) error {
 	return nil
 }
 
-// ReceiveSettings control the receiving of messages.
+// ReceiveSettings control the receiving of messages. These settings apply
+// per partition.
 type ReceiveSettings struct {
 	// MaxOutstandingMessages is the maximum number of unacknowledged messages.
 	// Must be > 0.
@@ -153,7 +154,7 @@ func validateReceiveSettings(settings ReceiveSettings) error {
 				return fmt.Errorf("pubsublite: invalid partition number %d in receive settings. Partition numbers are zero-indexed", p)
 			}
 			if _, exists := partitionMap[p]; exists {
-				return fmt.Errorf("pubsublite: duplicate partition number %d in receive settings", p)
+				return fmt.Errorf("pubsublite: invalid receive settings. Duplicate partition number %d", p)
 			}
 			partitionMap[p] = void
 		}
