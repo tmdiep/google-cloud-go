@@ -29,30 +29,30 @@ import (
 
 type partitionAssignment struct {
   // A set of partition numbers.
-  partitions map[int]bool
+  partitions map[int]struct{}
+  void       struct{}
 }
 
 func newPartitionAssignment(assignmentpb *pb.PartitionAssignment) *partitionAssignment {
   pa := &partitionAssignment{
-    partitions: make(map[int]bool),
+    partitions: make(map[int]struct{}),
   }
   for _, p := range assignmentpb.Partitions {
-    pa.partitions[int(p)] = true
+    pa.partitions[int(p)] = pa.void
   }
   return pa
 }
 
 func (pa *partitionAssignment) Partitions() (partitions []int) {
-  for p, inSet := range pa.partitions {
-    if inSet {
-      partitions = append(partitions, p)
-    }
+  for p := range pa.partitions {
+    partitions = append(partitions, p)
   }
   return
 }
 
 func (pa *partitionAssignment) Contains(partition int) bool {
-  return pa.partitions[partition]
+  _, exists := pa.partitions[partition]
+  return exists
 }
 
 // A function that generates a 16-byte UUID.

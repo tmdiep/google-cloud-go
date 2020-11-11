@@ -16,7 +16,6 @@ package wire
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"reflect"
 	"time"
@@ -392,7 +391,9 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 	if err := ValidateRegion(region); err != nil {
 		return nil, err
 	}
-	// TODO: validate settings
+	if err := validateReceiveSettings(settings); err != nil {
+		return nil, err
+	}
 	subsClient, err := newSubscriberClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err
@@ -412,28 +413,11 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 	}
 
 	if len(settings.Partitions) > 0 {
-		if err := validatePartitions(settings.Partitions); err != nil {
-			return nil, err
-		}
 		return newMultiPartitionSubscriber(subsFactory), nil
 	}
-
 	partitionClient, err := newPartitionAssignmentClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return newAssigningSubscriber(partitionClient, subsFactory)
-}
-
-func validatePartitions(partitions []int) error {
-	partitionMap := make(map[int]struct{})
-	for _, p := range partitions {
-		if p < 0 {
-			return fmt.Errorf("pubsublite: partition numbers are zero-indexed; invalid partition %d", p)
-		}
-		if _, exists := partitionMap[p]; exists {
-			return fmt.Errorf("pubsublite: duplicate partition number %d", p)
-		}
-	}
-	return nil
 }

@@ -106,8 +106,8 @@ func validatePublishSettings(settings PublishSettings) error {
 
 // ReceiveSettings control the receiving of messages.
 type ReceiveSettings struct {
-	// MaxOutstandingMessages is the maximum number of unacknowledged messages
-	// (unacknowledged). Must be > 0.
+	// MaxOutstandingMessages is the maximum number of unacknowledged messages.
+	// Must be > 0.
 	MaxOutstandingMessages int
 
 	// MaxOutstandingBytes is the maximum size (in quota bytes) of unacknowledged
@@ -122,7 +122,9 @@ type ReceiveSettings struct {
 	Timeout time.Duration
 
 	// The topic partition numbers (zero-indexed) to receive messages from.
-	// Values must be less than the number of partitions for the topic.
+	// Values must be less than the number of partitions for the topic. If not
+	// specified, the client will use the partition assignment service to
+	// determine which partitions it should connect to.
 	Partitions []int
 }
 
@@ -131,4 +133,30 @@ var DefaultReceiveSettings = ReceiveSettings{
 	MaxOutstandingMessages: 1000,
 	MaxOutstandingBytes:    1e9,
 	Timeout:                10 * time.Minute,
+}
+
+func validateReceiveSettings(settings ReceiveSettings) error {
+	if settings.MaxOutstandingMessages <= 0 {
+		return errors.New("pubsublite: invalid receive settings. MaxOutstandingMessages must be > 0")
+	}
+	if settings.MaxOutstandingBytes <= 0 {
+		return errors.New("pubsublite: invalid receive settings. MaxOutstandingBytes must be > 0")
+	}
+	if settings.Timeout <= 0 {
+		return errors.New("pubsublite: invalid receive settings. Timeout duration must be > 0")
+	}
+	if len(settings.Partitions) > 0 {
+		var void struct{}
+		partitionMap := make(map[int]struct{})
+		for _, p := range settings.Partitions {
+			if p < 0 {
+				return fmt.Errorf("pubsublite: invalid partition number %d in receive settings. Partition numbers are zero-indexed", p)
+			}
+			if _, exists := partitionMap[p]; exists {
+				return fmt.Errorf("pubsublite: duplicate partition number %d in receive settings", p)
+			}
+			partitionMap[p] = void
+		}
+	}
+	return nil
 }
