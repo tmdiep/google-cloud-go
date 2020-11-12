@@ -28,7 +28,7 @@ import (
 // topic.
 type PublisherClient struct {
 	settings PublishSettings
-	pub      wire.Publisher
+	wirePub  wire.Publisher
 }
 
 // NewPublisherClient creates a new Cloud Pub/Sub Lite client to publish
@@ -40,15 +40,15 @@ func NewPublisherClient(ctx context.Context, settings PublishSettings, topic pub
 	if err != nil {
 		return nil, err
 	}
-	pub, err := wire.NewPublisher(ctx, settings.toWireSettings(), region, topic.String(), opts...)
+	wirePub, err := wire.NewPublisher(ctx, settings.toWireSettings(), region, topic.String(), opts...)
 	if err != nil {
 		return nil, err
 	}
-	pub.Start()
-	if err := pub.WaitStarted(); err != nil {
+	wirePub.Start()
+	if err := wirePub.WaitStarted(); err != nil {
 		return nil, err
 	}
-	return &PublisherClient{settings: settings, pub: pub}, nil
+	return &PublisherClient{settings: settings, wirePub: wirePub}, nil
 }
 
 // Publish publishes `msg` to the topic asynchronously. Messages are batched and
@@ -64,9 +64,10 @@ func (p *PublisherClient) Publish(ctx context.Context, msg *pubsub.Message) *pub
 	msgpb, err := p.transformMessage(msg)
 	if err != nil {
 		setResult("", err)
+		p.Stop()
 		return result
 	}
-	p.pub.Publish(msgpb, func(pm *wire.PublishMetadata, err error) {
+	p.wirePub.Publish(msgpb, func(pm *wire.PublishMetadata, err error) {
 		if pm != nil {
 			setResult(pm.String(), err)
 		} else {
@@ -80,8 +81,8 @@ func (p *PublisherClient) Publish(ctx context.Context, msg *pubsub.Message) *pub
 // Returns once all outstanding messages have been sent or have failed to be
 // sent.
 func (p *PublisherClient) Stop() {
-	p.pub.Stop()
-	p.pub.WaitStopped()
+	p.wirePub.Stop()
+	p.wirePub.WaitStopped()
 }
 
 func (p *PublisherClient) transformMessage(msg *pubsub.Message) (*pb.PubSubMessage, error) {

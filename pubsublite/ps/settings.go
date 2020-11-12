@@ -18,6 +18,8 @@ import (
 
 	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/pubsublite/internal/wire"
+
+	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 // ErrOverflow occurrs when publish buffers overflow.
@@ -26,8 +28,9 @@ var ErrOverflow = wire.ErrOverflow
 // KeyExtractorFunc is a function that extracts an ordering key from a Message.
 type KeyExtractorFunc func(*pubsub.Message) []byte
 
-// PublishMessageTransformerFunc transforms a Message to a PubSubMessage API
-// proto.
+// PublishMessageTransformerFunc transforms a pubsub.Message to a PubSubMessage
+// API proto. If this returns an error, the pubsub.PublishResult will be
+// errored and the PublisherClient will be stopped.
 type PublishMessageTransformerFunc func(*pubsub.Message) (*pb.PubSubMessage, error)
 
 // PublishSettings control the batching of published messages. These settings
@@ -72,8 +75,8 @@ type PublishSettings struct {
 	// default implementation extracts the key from Message.OrderingKey.
 	KeyExtractor KeyExtractorFunc
 
-	// Optional custom function that transforms a Message to a PubSubMessage API
-	// proto.
+	// Optional custom function that transforms a pubsub.Message to a
+	// PubSubMessage API proto.
 	MessageTransformer PublishMessageTransformerFunc
 }
 
@@ -106,6 +109,17 @@ func (s *PublishSettings) toWireSettings() wire.PublishSettings {
 	return wireSettings
 }
 
+// NackHandler is invoked when pubsub.Message.Nack() is called. Cloud Pub/Sub
+// Lite does not have a concept of 'nack'. If the nack handler implementation
+// returns nil, the message is acknowledged. If an error is returned, the
+// SubscriberClient will be stopped with error.
+type NackHandler func(*pubsub.Message) error
+
+// ReceiveMessageTransformerFunc transforms a PubSubMessage API proto to a
+// pubsub.Message. If this returns an error, the SubscriberClient will be
+// stopped with error.
+type ReceiveMessageTransformerFunc func(*pb.SequencedMessage, *pubsub.Message) error
+
 // ReceiveSettings configure the Receive method.
 type ReceiveSettings struct {
 	// MaxOutstandingMessages is the maximum number of unprocessed messages
@@ -136,6 +150,18 @@ type ReceiveSettings struct {
 	// specified, the client will use the partition assignment service to
 	// determine which partitions it should connect to.
 	Partitions []int
+
+	// Optional custom function to handle pubsub.Message.Nack() calls. If not set,
+	// the default behavior is to immediately fail the SubscriberClient.
+	//
+	// In Cloud Pub/Sub Lite, only a single subscriber for a given subscription is
+	// connected to any partition at a time, and there is no other client that may
+	// be able to handle messages.
+	NackHandler NackHandler
+
+	// Optional custom function that transforms a PubSubMessage API proto to a
+	// pubsub.Message.
+	MessageTransformer ReceiveMessageTransformerFunc
 }
 
 // DefaultReceiveSettings holds the default values for ReceiveSettings.
@@ -146,7 +172,7 @@ var DefaultReceiveSettings = ReceiveSettings{
 }
 
 func (s *ReceiveSettings) toWireSettings() wire.ReceiveSettings {
-	wireSettings := wire.ReceiveSettings // Copy
+	wireSettings := wire.DefaultReceiveSettings // Copy
 	if s.MaxOutstandingMessages > 0 {
 		wireSettings.MaxOutstandingMessages = s.MaxOutstandingMessages
 	}
