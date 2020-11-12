@@ -16,10 +16,22 @@ package ps
 import (
 	"time"
 
+	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/pubsublite/internal/wire"
 )
 
-// PublishSettings control the batching of published messages.
+// ErrOverflow occurrs when publish buffers overflow.
+var ErrOverflow = wire.ErrOverflow
+
+// KeyExtractorFunc is a function that extracts an ordering key from a Message.
+type KeyExtractorFunc func(*pubsub.Message) []byte
+
+// PublishMessageTransformerFunc transforms a Message to a PubSubMessage API
+// proto.
+type PublishMessageTransformerFunc func(*pubsub.Message) (*pb.PubSubMessage, error)
+
+// PublishSettings control the batching of published messages. These settings
+// apply per partition.
 type PublishSettings struct {
 	// Publish a non-empty batch after this delay has passed. If 0,
 	// DefaultPublishSettings.DelayThreshold will be used.
@@ -65,6 +77,15 @@ type PublishSettings struct {
 	MessageTransformer PublishMessageTransformerFunc
 }
 
+// DefaultPublishSettings holds the default values for PublishSettings.
+var DefaultPublishSettings = PublishSettings{
+	DelayThreshold:    wire.DefaultPublishSettings.DelayThreshold,
+	CountThreshold:    wire.DefaultPublishSettings.CountThreshold,
+	ByteThreshold:     wire.DefaultPublishSettings.ByteThreshold,
+	Timeout:           wire.DefaultPublishSettings.Timeout,
+	BufferedByteLimit: wire.DefaultPublishSettings.BufferedByteLimit,
+}
+
 func (s *PublishSettings) toWireSettings() wire.PublishSettings {
 	wireSettings := wire.DefaultPublishSettings // Copy
 	if s.DelayThreshold > 0 {
@@ -83,15 +104,6 @@ func (s *PublishSettings) toWireSettings() wire.PublishSettings {
 		wireSettings.BufferedByteLimit = s.BufferedByteLimit
 	}
 	return wireSettings
-}
-
-// DefaultPublishSettings holds the default values for PublishSettings.
-var DefaultPublishSettings = PublishSettings{
-	DelayThreshold:    wire.DefaultPublishSettings.DelayThreshold,
-	CountThreshold:    wire.DefaultPublishSettings.CountThreshold,
-	ByteThreshold:     wire.DefaultPublishSettings.ByteThreshold,
-	Timeout:           wire.DefaultPublishSettings.Timeout,
-	BufferedByteLimit: wire.DefaultPublishSettings.BufferedByteLimit,
 }
 
 // ReceiveSettings configure the Receive method.
@@ -118,11 +130,31 @@ type ReceiveSettings struct {
 	// that occurred while trying to reconnect. Note that if the timeout duration
 	// is long, ErrOverflow may occur first.
 	Timeout time.Duration
+
+	// The topic partition numbers (zero-indexed) to receive messages from.
+	// Values must be less than the number of partitions for the topic. If not
+	// specified, the client will use the partition assignment service to
+	// determine which partitions it should connect to.
+	Partitions []int
 }
 
 // DefaultReceiveSettings holds the default values for ReceiveSettings.
 var DefaultReceiveSettings = ReceiveSettings{
-	MaxOutstandingMessages: 1000,
-	MaxOutstandingBytes:    1e9,
-	Timeout:                60 * time.Second,
+	MaxOutstandingMessages: wire.DefaultReceiveSettings.MaxOutstandingMessages,
+	MaxOutstandingBytes:    wire.DefaultReceiveSettings.MaxOutstandingBytes,
+	Timeout:                wire.DefaultReceiveSettings.Timeout,
+}
+
+func (s *ReceiveSettings) toWireSettings() wire.ReceiveSettings {
+	wireSettings := wire.ReceiveSettings // Copy
+	if s.MaxOutstandingMessages > 0 {
+		wireSettings.MaxOutstandingMessages = s.MaxOutstandingMessages
+	}
+	if s.MaxOutstandingBytes > 0 {
+		wireSettings.MaxOutstandingBytes = s.MaxOutstandingBytes
+	}
+	if s.Timeout > 0 {
+		wireSettings.Timeout = s.Timeout
+	}
+	return wireSettings
 }

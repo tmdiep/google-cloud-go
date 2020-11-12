@@ -94,3 +94,29 @@ func (p *PublisherClient) transformMessage(msg *pubsub.Message) (*pb.PubSubMessa
 	}
 	return transformPublishedMessage(msg, keyExtractor)
 }
+
+// extractOrderingKey extracts the ordering key from the message for routing
+// during publishing. It is the default KeyExtractorFunc implementation.
+func extractOrderingKey(msg *pubsub.Message) []byte {
+	if len(msg.OrderingKey) == 0 {
+		return nil
+	}
+	return []byte(msg.OrderingKey)
+}
+
+// transformPublishedMessage is the default PublishMessageTransformerFunc
+// implementation.
+func transformPublishedMessage(m *pubsub.Message, extractKey KeyExtractorFunc) (*pb.PubSubMessage, error) {
+	msgpb := &pb.PubSubMessage{
+		Data: m.Data,
+		Key:  extractKey(m),
+	}
+
+	if len(m.Attributes) > 0 {
+		msgpb.Attributes = make(map[string]*pb.AttributeValues)
+		for key, value := range m.Attributes {
+			msgpb.Attributes[key] = &pb.AttributeValues{Values: [][]byte{[]byte(value)}}
+		}
+	}
+	return msgpb, nil
+}
