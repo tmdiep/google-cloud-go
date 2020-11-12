@@ -208,7 +208,18 @@ func (s *subscribeStream) unsafeHandleMessageResponse(response *pb.MessageRespon
 		if err := s.acks.Push(ack); err != nil {
 			return err
 		}
+
+		// Release the mutex before delivering the message to the receiver. This
+		// allows the user to stop the subscriber (which would discard remaining
+		// messages) and other operations (e.g. ack processing, batch flow control)
+		// to occur.
+		s.mu.Unlock()
 		s.receiver(msg, ack)
+
+		s.mu.Lock()
+		if s.status >= serviceTerminating {
+			break
+		}
 	}
 	return nil
 }

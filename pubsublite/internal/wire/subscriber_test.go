@@ -372,3 +372,37 @@ func TestSinglePartitionSubscriberSimpleMsgAck(t *testing.T) {
 		t.Errorf("Stop() got err: (%v)", gotErr)
 	}
 }
+
+func TestSinglePartitionSubscriberStopBetweenMessages(t *testing.T) {
+	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-subs", 0}
+	receiver := newTestMessageReceiver(t)
+	msg1 := seqMsgWithOffsetAndSize(22, 100)
+	msg2 := seqMsgWithOffsetAndSize(33, 200)
+
+	verifiers := test.NewVerifiers(t)
+
+	subStream := test.NewRPCVerifier(t)
+	subStream.Push(initSubReq(subscription), initSubResp(), nil)
+	subStream.Push(initFlowControlReq(), msgSubResp(msg1, msg2), nil)
+	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, subStream)
+
+	cmtStream := test.NewRPCVerifier(t)
+	cmtStream.Push(initCommitReq(subscription), initCommitResp(), nil)
+	cmtStream.Push(commitReq(23), commitResp(1), nil)
+	verifiers.AddCommitStream(subscription.Path, subscription.Partition, cmtStream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	subs := newTestSinglePartitionSubscriber(t, receiver, subscription)
+	if gotErr := subs.WaitStarted(); gotErr != nil {
+		t.Errorf("Start() got err: (%v)", gotErr)
+	}
+
+	receiver.ValidateMsg(msg1).Ack()
+	subs.Stop()
+	// msg2 discarded and never acked. Subscriber terminates.
+	if gotErr := subs.WaitStopped(); gotErr != nil {
+		t.Errorf("Stop() got err: (%v)", gotErr)
+	}
+}
