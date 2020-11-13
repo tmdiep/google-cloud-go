@@ -90,8 +90,8 @@ func (c *committer) Start() {
 	}
 }
 
-// Stop initiates shutdown of the committer. It attempts to send the latest
-// desired commit offset to the server before terminating.
+// Stop initiates shutdown of the committer. The commit stream remains open to
+// process all outstanding acks and send the final commit offset.
 func (c *committer) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -102,8 +102,10 @@ func (c *committer) newStream(ctx context.Context) (grpc.ClientStream, error) {
 	return c.cursorClient.StreamingCommitCursor(ctx)
 }
 
-func (c *committer) initialRequest() (interface{}, bool) {
-	return c.initialReq, true
+func (c *committer) initialRequest() (req interface{}, needsResp bool) {
+	req = c.initialReq
+	needsResp = true
+	return
 }
 
 func (c *committer) validateInitialResponse(response interface{}) error {
@@ -121,8 +123,8 @@ func (c *committer) onStreamStatusChange(status streamStatus) {
 	switch status {
 	case streamConnected:
 		c.unsafeUpdateStatus(serviceActive, nil)
-		// Once the stream connects, clear unacknowledged commits and immediately
-		// send the latest desired commit offset.
+		// Once the stream connects, clear unconfirmed commits and immediately send
+		// the latest desired commit offset.
 		c.cursorTracker.ClearPending()
 		c.unsafeCommitOffsetToStream()
 		c.pollCommits.Start()
@@ -192,7 +194,7 @@ func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error
 		return
 	}
 
-	// If it's a graceful shutdown, expedite sending final commit to the stream.
+	// If it's a graceful shutdown, expedite sending final commits to the stream.
 	if targetStatus == serviceTerminating {
 		c.unsafeCommitOffsetToStream()
 		c.unsafeCheckDone()
@@ -205,7 +207,7 @@ func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error
 func (c *committer) unsafeCheckDone() {
 	// If the user stops the subscriber, they will no longer receive messages, but
 	// the commit stream remains open to process acks for outstanding messages.
-	if c.status == serviceTerminating && c.cursorTracker.Done() && c.acks.Done() {
+	if c.status == serviceTerminating && c.cursorTracker.Done() && c.acks.Empty() {
 		c.unsafeTerminate()
 	}
 }
