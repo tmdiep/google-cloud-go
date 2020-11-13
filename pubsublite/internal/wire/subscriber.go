@@ -50,7 +50,7 @@ const batchFlowControlPeriod = 100 * time.Millisecond
 // Client-initiated seek unsupported.
 type subscribeStream struct {
 	// Immutable after creation.
-	subsClient   *vkit.SubscriberClient
+	subClient    *vkit.SubscriberClient
 	settings     ReceiveSettings
 	subscription subscriptionPartition
 	initialReq   *pb.SubscribeRequest
@@ -67,11 +67,11 @@ type subscribeStream struct {
 	abstractService
 }
 
-func newSubscribeStream(ctx context.Context, subsClient *vkit.SubscriberClient, settings ReceiveSettings,
+func newSubscribeStream(ctx context.Context, subClient *vkit.SubscriberClient, settings ReceiveSettings,
 	receiver MessageReceiverFunc, subscription subscriptionPartition, acks *ackTracker, disableTasks bool) *subscribeStream {
 
 	s := &subscribeStream{
-		subsClient:   subsClient,
+		subClient:    subClient,
 		settings:     settings,
 		subscription: subscription,
 		initialReq: &pb.SubscribeRequest{
@@ -120,7 +120,7 @@ func (s *subscribeStream) Stop() {
 }
 
 func (s *subscribeStream) newStream(ctx context.Context) (grpc.ClientStream, error) {
-	return s.subsClient.Subscribe(addSubscriptionRoutingMetadata(ctx, s.subscription))
+	return s.subClient.Subscribe(addSubscriptionRoutingMetadata(ctx, s.subscription))
 }
 
 func (s *subscribeStream) initialRequest() (interface{}, bool) {
@@ -143,7 +143,8 @@ func (s *subscribeStream) onStreamStatusChange(status streamStatus) {
 	case streamConnected:
 		s.unsafeUpdateStatus(serviceActive, nil)
 
-		// Reinitialize when a new subscribe stream instance is connected.
+		// Reinitialize the offset and flow control tokens when a new subscribe
+		// stream instance is connected.
 		if seekReq := s.offsetTracker.RequestForRestart(); seekReq != nil {
 			if s.stream.Send(&pb.SubscribeRequest{
 				Request: &pb.SubscribeRequest_Seek{Seek: seekReq},
@@ -215,7 +216,6 @@ func (s *subscribeStream) unsafeHandleMessageResponse(response *pb.MessageRespon
 		// to occur.
 		s.mu.Unlock()
 		s.receiver(msg, ack)
-
 		s.mu.Lock()
 		if s.status >= serviceTerminating {
 			break
@@ -232,7 +232,10 @@ func (s *subscribeStream) onAck(ac *ackConsumer) {
 func (s *subscribeStream) onAckAsync(msgBytes int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.unsafeAllowFlow(flowControlTokens{Bytes: msgBytes, Messages: 1})
+
+	if s.status == serviceActive {
+		s.unsafeAllowFlow(flowControlTokens{Bytes: msgBytes, Messages: 1})
+	}
 }
 
 // sendBatchFlowControl is called by the periodic background task.
@@ -253,9 +256,9 @@ func (s *subscribeStream) unsafeSendFlowControl(req *pb.FlowControlRequest) {
 	if req == nil {
 		return
 	}
-	// Note: if Send() fails, the stream will be reconnected and
+	// Note: If Send() returns false, the stream will be reconnected and
 	// flowControlBatcher.RequestForRestart() will be sent when the stream
-	// reconnects.
+	// reconnects. So its return value is ignored.
 	s.stream.Send(&pb.SubscribeRequest{
 		Request: &pb.SubscribeRequest_FlowControl{FlowControl: req},
 	})
@@ -284,7 +287,7 @@ type singlePartitionSubscriber struct {
 
 type singlePartitionSubscriberFactory struct {
 	ctx              context.Context
-	subsClient       *vkit.SubscriberClient
+	subClient        *vkit.SubscriberClient
 	cursorClient     *vkit.CursorClient
 	settings         ReceiveSettings
 	subscriptionPath string
@@ -296,13 +299,13 @@ func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSu
 	subscription := subscriptionPartition{Path: f.subscriptionPath, Partition: partition}
 	acks := newAckTracker()
 	commit := newCommitter(f.ctx, f.cursorClient, f.settings, subscription, acks, f.disableTasks)
-	subs := newSubscribeStream(f.ctx, f.subsClient, f.settings, f.receiver, subscription, acks, f.disableTasks)
+	sub := newSubscribeStream(f.ctx, f.subClient, f.settings, f.receiver, subscription, acks, f.disableTasks)
 	ps := &singlePartitionSubscriber{
 		committer:  commit,
-		subscriber: subs,
+		subscriber: sub,
 	}
 	ps.init()
-	ps.unsafeAddServices(subs, commit)
+	ps.unsafeAddServices(sub, commit)
 	return ps
 }
 
@@ -315,12 +318,12 @@ type multiPartitionSubscriber struct {
 	compositeService
 }
 
-func newMultiPartitionSubscriber(subsFactory *singlePartitionSubscriberFactory) *multiPartitionSubscriber {
+func newMultiPartitionSubscriber(subFactory *singlePartitionSubscriberFactory) *multiPartitionSubscriber {
 	ms := &multiPartitionSubscriber{}
 	ms.init()
 
-	for _, partition := range subsFactory.settings.Partitions {
-		subscriber := subsFactory.New(partition)
+	for _, partition := range subFactory.settings.Partitions {
+		subscriber := subFactory.New(partition)
 		ms.subscribers = append(ms.subscribers, subscriber)
 		ms.unsafeAddServices(subscriber)
 	}
@@ -332,8 +335,8 @@ func newMultiPartitionSubscriber(subsFactory *singlePartitionSubscriberFactory) 
 // singlePartitionSubscribers.
 type assigningSubscriber struct {
 	// Immutable after creation.
-	subsFactory *singlePartitionSubscriberFactory
-	assigner    *assigner
+	subFactory *singlePartitionSubscriberFactory
+	assigner   *assigner
 
 	// Fields below must be guarded with mutex.
 	// Subscribers keyed by partition number. Updated as assignments change.
@@ -342,14 +345,14 @@ type assigningSubscriber struct {
 	compositeService
 }
 
-func newAssigningSubscriber(partitionClient *vkit.PartitionAssignmentClient, subsFactory *singlePartitionSubscriberFactory) (*assigningSubscriber, error) {
+func newAssigningSubscriber(partitionClient *vkit.PartitionAssignmentClient, subFactory *singlePartitionSubscriberFactory) (*assigningSubscriber, error) {
 	as := &assigningSubscriber{
-		subsFactory: subsFactory,
+		subFactory:  subFactory,
 		subscribers: make(map[int]*singlePartitionSubscriber),
 	}
 	as.init()
 
-	assigner, err := newAssigner(subsFactory.ctx, partitionClient, uuid.NewRandom, subsFactory.settings, subsFactory.subscriptionPath, as.handleAssignment)
+	assigner, err := newAssigner(subFactory.ctx, partitionClient, uuid.NewRandom, subFactory.settings, subFactory.subscriptionPath, as.handleAssignment)
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +368,7 @@ func (as *assigningSubscriber) handleAssignment(assignment *partitionAssignment)
 	// Handle new partitions.
 	for _, partition := range assignment.Partitions() {
 		if _, exists := as.subscribers[partition]; !exists {
-			subscriber := as.subsFactory.New(partition)
+			subscriber := as.subFactory.New(partition)
 			if err := as.unsafeAddServices(subscriber); err != nil {
 				// Service is stopping/stopped.
 				return err
@@ -405,7 +408,7 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 	if err := validateReceiveSettings(settings); err != nil {
 		return nil, err
 	}
-	subsClient, err := newSubscriberClient(ctx, region, opts...)
+	subClient, err := newSubscriberClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -414,9 +417,9 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 		return nil, err
 	}
 
-	subsFactory := &singlePartitionSubscriberFactory{
+	subFactory := &singlePartitionSubscriberFactory{
 		ctx:              ctx,
-		subsClient:       subsClient,
+		subClient:        subClient,
 		cursorClient:     cursorClient,
 		settings:         settings,
 		subscriptionPath: subscriptionPath,
@@ -424,11 +427,11 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 	}
 
 	if len(settings.Partitions) > 0 {
-		return newMultiPartitionSubscriber(subsFactory), nil
+		return newMultiPartitionSubscriber(subFactory), nil
 	}
 	partitionClient, err := newPartitionAssignmentClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err
 	}
-	return newAssigningSubscriber(partitionClient, subsFactory)
+	return newAssigningSubscriber(partitionClient, subFactory)
 }

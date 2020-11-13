@@ -115,7 +115,7 @@ type testPartitionPublisher struct {
 	serviceTestProxy
 }
 
-func newTestPartitionPublisher(t *testing.T, topic topicPartition, settings PublishSettings) *testPartitionPublisher {
+func newTestSinglePartitionPublisher(t *testing.T, topic topicPartition, settings PublishSettings) *testPartitionPublisher {
 	ctx := context.Background()
 	pubClient, err := newPublisherClient(ctx, "ignored", testClientOpts...)
 	if err != nil {
@@ -158,7 +158,7 @@ func (tp *testPartitionPublisher) StreamError() error {
 	return tp.pub.stream.Error()
 }
 
-func TestPartitionPublisherInvalidInitialResponse(t *testing.T) {
+func TestSinglePartitionPublisherInvalidInitialResponse(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 
 	verifiers := test.NewVerifiers(t)
@@ -171,7 +171,7 @@ func TestPartitionPublisherInvalidInitialResponse(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
+	pub := newTestSinglePartitionPublisher(t, topic, testPublishSettings())
 
 	wantErr := errInvalidInitialPubResponse
 	if gotErr := pub.StartError(); !test.ErrorEqual(gotErr, wantErr) {
@@ -182,7 +182,7 @@ func TestPartitionPublisherInvalidInitialResponse(t *testing.T) {
 	}
 }
 
-func TestPartitionPublisherSpuriousPublishResponse(t *testing.T) {
+func TestSinglePartitionPublisherSpuriousPublishResponse(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 
 	verifiers := test.NewVerifiers(t)
@@ -197,7 +197,7 @@ func TestPartitionPublisherSpuriousPublishResponse(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
+	pub := newTestSinglePartitionPublisher(t, topic, testPublishSettings())
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -210,7 +210,7 @@ func TestPartitionPublisherSpuriousPublishResponse(t *testing.T) {
 	}
 }
 
-func TestPartitionPublisherBatching(t *testing.T) {
+func TestSinglePartitionPublisherBatching(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 	settings := testPublishSettings()
 	settings.DelayThreshold = time.Minute // Batching delay disabled, tested elsewhere
@@ -241,7 +241,7 @@ func TestPartitionPublisherBatching(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, settings)
+	pub := newTestSinglePartitionPublisher(t, topic, settings)
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -273,7 +273,7 @@ func TestPartitionPublisherBatching(t *testing.T) {
 	}
 }
 
-func TestPartitionPublisherBatchingDelay(t *testing.T) {
+func TestSinglePartitionPublisherBatchingDelay(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 	settings := testPublishSettings()
 	settings.CountThreshold = 100
@@ -294,7 +294,7 @@ func TestPartitionPublisherBatchingDelay(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, settings)
+	pub := newTestSinglePartitionPublisher(t, topic, settings)
 	defer pub.StopVerifyNoError()
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
@@ -308,7 +308,7 @@ func TestPartitionPublisherBatchingDelay(t *testing.T) {
 	result2.ValidateResult(topic.Partition, 1)
 }
 
-func TestPartitionPublisherResendMessages(t *testing.T) {
+func TestSinglePartitionPublisherResendMessages(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 
 	msg1 := &pb.PubSubMessage{Data: []byte{'1'}}
@@ -334,7 +334,7 @@ func TestPartitionPublisherResendMessages(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
+	pub := newTestSinglePartitionPublisher(t, topic, testPublishSettings())
 	defer pub.StopVerifyNoError()
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
@@ -349,7 +349,7 @@ func TestPartitionPublisherResendMessages(t *testing.T) {
 	result3.ValidateResult(topic.Partition, 2)
 }
 
-func TestPartitionPublisherPublishPermanentError(t *testing.T) {
+func TestSinglePartitionPublisherPublishPermanentError(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 	permError := status.Error(codes.NotFound, "topic deleted")
 
@@ -367,7 +367,7 @@ func TestPartitionPublisherPublishPermanentError(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
+	pub := newTestSinglePartitionPublisher(t, topic, testPublishSettings())
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -387,7 +387,7 @@ func TestPartitionPublisherPublishPermanentError(t *testing.T) {
 	}
 }
 
-func TestPartitionPublisherBufferOverflow(t *testing.T) {
+func TestSinglePartitionPublisherBufferOverflow(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 	settings := testPublishSettings()
 	settings.BufferedByteLimit = 15
@@ -405,7 +405,7 @@ func TestPartitionPublisherBufferOverflow(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, settings)
+	pub := newTestSinglePartitionPublisher(t, topic, settings)
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -430,7 +430,7 @@ func TestPartitionPublisherBufferOverflow(t *testing.T) {
 	}
 }
 
-func TestPartitionPublisherBufferRefill(t *testing.T) {
+func TestSinglePartitionPublisherBufferRefill(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 	settings := testPublishSettings()
 	settings.BufferedByteLimit = 15
@@ -448,7 +448,7 @@ func TestPartitionPublisherBufferRefill(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, settings)
+	pub := newTestSinglePartitionPublisher(t, topic, settings)
 	defer pub.StopVerifyNoError()
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
@@ -461,7 +461,7 @@ func TestPartitionPublisherBufferRefill(t *testing.T) {
 	result2.ValidateResult(topic.Partition, 1)
 }
 
-func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
+func TestSinglePartitionPublisherValidatesMaxMsgSize(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 
 	msg1 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'1'}, 10)}
@@ -477,7 +477,7 @@ func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
+	pub := newTestSinglePartitionPublisher(t, topic, testPublishSettings())
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -502,7 +502,7 @@ func TestPartitionPublisherValidatesMaxMsgSize(t *testing.T) {
 	}
 }
 
-func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
+func TestSinglePartitionPublisherInvalidCursorOffsets(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 
 	msg1 := &pb.PubSubMessage{Data: []byte{'1'}}
@@ -514,7 +514,7 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 	stream.Push(initPubReq(topic), initPubResp(), nil)
 	barrier := stream.PushWithBarrier(msgPubReq(msg1), msgPubResp(4), nil)
 	// The server returns an inconsistent cursor offset for msg2, which causes the
-	// publisher to fail permanently (bug on the server).
+	// publisher client to fail permanently.
 	stream.Push(msgPubReq(msg2), msgPubResp(4), nil)
 	stream.Push(msgPubReq(msg3), msgPubResp(5), nil)
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
@@ -522,7 +522,7 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
+	pub := newTestSinglePartitionPublisher(t, topic, testPublishSettings())
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -542,7 +542,7 @@ func TestPartitionPublisherInvalidCursorOffsets(t *testing.T) {
 	}
 }
 
-func TestPartitionPublisherInvalidServerPublishResponse(t *testing.T) {
+func TestSinglePartitionPublisherInvalidServerPublishResponse(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 	msg := &pb.PubSubMessage{Data: []byte{'1'}}
 
@@ -550,14 +550,14 @@ func TestPartitionPublisherInvalidServerPublishResponse(t *testing.T) {
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
 	// Server sends duplicate initial Publish response, which causes the publisher
-	// to fail permanently (bug on the server).
+	// client to fail permanently.
 	stream.Push(msgPubReq(msg), initPubResp(), nil)
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
+	pub := newTestSinglePartitionPublisher(t, topic, testPublishSettings())
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -571,7 +571,7 @@ func TestPartitionPublisherInvalidServerPublishResponse(t *testing.T) {
 	}
 }
 
-func TestPartitionPublisherStopFlushesMessages(t *testing.T) {
+func TestSinglePartitionPublisherStopFlushesMessages(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 	finalErr := status.Error(codes.FailedPrecondition, "invalid message")
 
@@ -591,7 +591,7 @@ func TestPartitionPublisherStopFlushesMessages(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	pub := newTestPartitionPublisher(t, topic, testPublishSettings())
+	pub := newTestSinglePartitionPublisher(t, topic, testPublishSettings())
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -788,7 +788,7 @@ func TestRoutingPublisherRoundRobin(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	// Note: The fake source is initialized with value=1, so partition-1 publisher
+	// Note: The fake source is initialized with value=1, so Partition=1 publisher
 	// will be the first chosen by the roundRobinMsgRouter.
 	pub := newTestRoutingPublisher(t, topic, testPublishSettings(), 1)
 	if err := pub.WaitStarted(); err != nil {
@@ -875,7 +875,7 @@ func TestRoutingPublisherHashing(t *testing.T) {
 	}
 }
 
-func TestRoutingPublisherShutdown(t *testing.T) {
+func TestRoutingPublisherPermanentError(t *testing.T) {
 	topic := "projects/123456/locations/us-central1-b/topics/my-topic"
 	numPartitions := 2
 	msg1 := &pb.PubSubMessage{Data: []byte{'1'}}

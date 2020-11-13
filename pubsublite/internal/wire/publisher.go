@@ -169,25 +169,25 @@ func (b *publishMessageBatcher) OnPublishResponse(firstOffset int64) error {
 	return nil
 }
 
-func (b *publishMessageBatcher) getInFlightBatches(clear bool) []*publishBatch {
+func (b *publishMessageBatcher) OnPermanentError(err error) {
+	for elem := b.publishQueue.Front(); elem != nil; elem = elem.Next() {
+		if batch, ok := elem.Value.(*publishBatch); ok {
+			for _, msgHolder := range batch.msgHolders {
+				msgHolder.onResult(nil, err)
+			}
+		}
+	}
+	b.publishQueue.Init()
+}
+
+func (b *publishMessageBatcher) InFlightBatches() []*publishBatch {
 	var batches []*publishBatch
 	for elem := b.publishQueue.Front(); elem != nil; elem = elem.Next() {
 		if batch, ok := elem.Value.(*publishBatch); ok {
 			batches = append(batches, batch)
 		}
 	}
-	if clear {
-		b.publishQueue.Init()
-	}
 	return batches
-}
-
-func (b *publishMessageBatcher) InFlightBatches() []*publishBatch {
-	return b.getInFlightBatches(false)
-}
-
-func (b *publishMessageBatcher) ReleaseInFlightBatches() []*publishBatch {
-	return b.getInFlightBatches(true)
 }
 
 func (b *publishMessageBatcher) Flush() {
@@ -394,6 +394,8 @@ func (pp *singlePartitionPublisher) onResponse(response interface{}) {
 //   - An inconsistency is detected in the server's publish responses. Assume
 //     there is a bug on the server and terminate the publisher, as correct
 //     processing of messages cannot be guaranteed.
+//
+// Expected to be called with singlePartitionPublisher.mu held.
 func (pp *singlePartitionPublisher) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
 	if !pp.unsafeUpdateStatus(targetStatus, err) {
 		return
@@ -421,14 +423,8 @@ func (pp *singlePartitionPublisher) unsafeInitiateShutdown(targetStatus serviceS
 		return
 	}
 
-	// Otherwise set the error message for all pending messages and clear the
-	// publish queue.
-	batches := pp.batcher.ReleaseInFlightBatches()
-	for _, batch := range batches {
-		for _, msgHolder := range batch.msgHolders {
-			msgHolder.onResult(nil, err)
-		}
-	}
+	// For immediate shtudown set the error message for all pending messages.
+	pp.batcher.OnPermanentError(err)
 }
 
 // unsafeCheckDone must be called with singlePartitionPublisher.mu held.
