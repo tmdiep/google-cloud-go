@@ -200,7 +200,7 @@ func (b *publishMessageBatcher) Done() bool {
 
 // singlePartitionPublisher publishes messages to a single topic partition.
 //
-// The life of a successfully published message is as follows:
+// Life of a successfully published message:
 // - Publish() receives the message from the user.
 // - It is added to `batcher.msgBundler`, which performs batching in accordance
 //   with user-configured PublishSettings.

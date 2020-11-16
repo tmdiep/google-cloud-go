@@ -108,7 +108,7 @@ func (tr *testMessageReceiver) VerifyNoMsgs() {
 	case got := <-tr.received:
 		tr.t.Errorf("Got unexpected message: %v", got.Msg)
 	case <-time.After(20 * time.Millisecond):
-		// Wait some time to ensure no messages received.
+		// Wait to ensure no messages received.
 	}
 }
 
@@ -163,7 +163,7 @@ func TestSubscribeStreamReconnect(t *testing.T) {
 	stream2.Push(initSubReq(subscription), initSubResp(), nil)
 	stream2.Push(seekReq(68), seekResp(68), nil)
 	stream2.Push(flowControlSubReq(flowControlTokens{Bytes: 800, Messages: 9}), msgSubResp(msg2), nil)
-	// Terminate on permanent error.
+	// Subscriber should terminate on permanent error.
 	stream2.Push(nil, nil, permanentErr)
 	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream2)
 
@@ -174,7 +174,6 @@ func TestSubscribeStreamReconnect(t *testing.T) {
 	if gotErr := sub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
-
 	sub.Receiver.ValidateMsg(msg1)
 	sub.Receiver.ValidateMsg(msg2)
 	if gotErr := sub.FinalError(); !test.ErrorEqual(gotErr, permanentErr) {
@@ -193,6 +192,7 @@ func TestSubscribeStreamFlowControlBatching(t *testing.T) {
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initSubReq(subscription), initSubResp(), nil)
 	stream.Push(initFlowControlReq(), msgSubResp(msg1, msg2), nil)
+	// Batch flow control request expected.
 	stream.Push(flowControlSubReq(flowControlTokens{Bytes: 300, Messages: 2}), nil, serverErr)
 	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream)
 
@@ -203,7 +203,6 @@ func TestSubscribeStreamFlowControlBatching(t *testing.T) {
 	if gotErr := sub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
-
 	sub.Receiver.ValidateMsg(msg1)
 	sub.Receiver.ValidateMsg(msg2)
 	sub.sub.onAckAsync(msg1.SizeBytes)
@@ -227,6 +226,7 @@ func TestSubscribeStreamExpediteFlowControl(t *testing.T) {
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initSubReq(subscription), initSubResp(), nil)
 	stream.Push(initFlowControlReq(), msgSubResp(msg1, msg2), nil)
+	// Batch flow control request expected.
 	stream.Push(flowControlSubReq(flowControlTokens{Bytes: 501, Messages: 2}), nil, serverErr)
 	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream)
 
@@ -237,7 +237,6 @@ func TestSubscribeStreamExpediteFlowControl(t *testing.T) {
 	if gotErr := sub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
-
 	sub.Receiver.ValidateMsg(msg1)
 	sub.Receiver.ValidateMsg(msg2)
 	sub.sub.onAckAsync(msg1.SizeBytes)
@@ -254,7 +253,7 @@ func TestSubscribeStreamInvalidInitialResponse(t *testing.T) {
 
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
-	stream.Push(initSubReq(subscription), seekResp(0), nil)
+	stream.Push(initSubReq(subscription), seekResp(0), nil) // Seek instead of init response
 	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -295,7 +294,7 @@ func TestSubscribeStreamSpuriousSeekResponse(t *testing.T) {
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initSubReq(subscription), initSubResp(), nil)
-	stream.Push(initFlowControlReq(), seekResp(1), nil) // No seek requested
+	stream.Push(initFlowControlReq(), seekResp(1), nil) // Seek response with no seek request
 	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -317,7 +316,7 @@ func TestSubscribeStreamNoMessages(t *testing.T) {
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initSubReq(subscription), initSubResp(), nil)
-	barrier := stream.PushWithBarrier(initFlowControlReq(), msgSubResp(), nil) // No messages in response
+	stream.Push(initFlowControlReq(), msgSubResp(), nil) // No messages in response
 	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -327,7 +326,6 @@ func TestSubscribeStreamNoMessages(t *testing.T) {
 	if gotErr := sub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
-	barrier.Release() // To ensure tests are deterministic
 	if gotErr, wantErr := sub.FinalError(), errServerNoMessages; !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Final err: (%v), want: (%v)", gotErr, wantErr)
 	}
@@ -353,7 +351,6 @@ func TestSubscribeStreamMessagesOutOfOrder(t *testing.T) {
 	if gotErr := sub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
-
 	sub.Receiver.ValidateMsg(msg1)
 	if gotErr, msg := sub.FinalError(), "start offset = 55, expected >= 57"; !test.ErrorHasMsg(gotErr, msg) {
 		t.Errorf("Final err: (%v), want msg: %q", gotErr, msg)
@@ -380,7 +377,6 @@ func TestSubscribeStreamFlowControlOverflow(t *testing.T) {
 	if gotErr := sub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
-
 	sub.Receiver.ValidateMsg(msg1)
 	if gotErr, wantErr := sub.FinalError(), errTokenCounterBytesNegative; !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Final err: (%v), want: (%v)", gotErr, wantErr)
@@ -436,7 +432,6 @@ func TestSinglePartitionSubscriberStartStop(t *testing.T) {
 	if gotErr := sub.WaitStarted(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
-
 	barrier.Release() // To ensure the test is deterministic (i.e. flow control req always received)
 	sub.Stop()
 	if gotErr := sub.WaitStopped(); gotErr != nil {
@@ -469,7 +464,6 @@ func TestSinglePartitionSubscriberSimpleMsgAck(t *testing.T) {
 	if gotErr := sub.WaitStarted(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
-
 	receiver.ValidateMsg(msg1).Ack()
 	receiver.ValidateMsg(msg2).Ack()
 	sub.Stop()
@@ -675,12 +669,12 @@ func TestMultiPartitionSubscriberPermanentError(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 	receiver.ValidateMsgs([]*pb.SequencedMessage{msg1, msg3})
-
 	errorBarrier.Release() // Send server error
 	if gotErr := sub.WaitStopped(); !test.ErrorEqual(gotErr, serverErr) {
 		t.Errorf("Final error got: (%v), want: (%v)", gotErr, serverErr)
 	}
 
-	msg2Barrier.Release() // msg2 never received as subscriber has terminated
+	// Verify msg2 never received as subscriber has terminated.
+	msg2Barrier.Release()
 	receiver.VerifyNoMsgs()
 }

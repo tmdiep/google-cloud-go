@@ -168,13 +168,17 @@ func (s *subscribeStream) onResponse(response interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.status >= serviceTerminating {
+		return
+	}
+
 	processResponse := func() error {
 		subscribeResponse, _ := response.(*pb.SubscribeResponse)
 		switch {
 		case subscribeResponse.GetMessages() != nil:
-			return s.unsafeHandleMessageResponse(subscribeResponse.GetMessages())
+			return s.unsafeOnMessageResponse(subscribeResponse.GetMessages())
 		case subscribeResponse.GetSeek() != nil:
-			return s.unsafeHandleSeekResponse(subscribeResponse.GetSeek())
+			return s.unsafeOnSeekResponse(subscribeResponse.GetSeek())
 		default:
 			return errInvalidSubscribeResponse
 		}
@@ -184,7 +188,7 @@ func (s *subscribeStream) onResponse(response interface{}) {
 	}
 }
 
-func (s *subscribeStream) unsafeHandleSeekResponse(response *pb.SeekResponse) error {
+func (s *subscribeStream) unsafeOnSeekResponse(response *pb.SeekResponse) error {
 	if !s.seekInFlight {
 		return errNoInFlightSeek
 	}
@@ -192,7 +196,7 @@ func (s *subscribeStream) unsafeHandleSeekResponse(response *pb.SeekResponse) er
 	return nil
 }
 
-func (s *subscribeStream) unsafeHandleMessageResponse(response *pb.MessageResponse) error {
+func (s *subscribeStream) unsafeOnMessageResponse(response *pb.MessageResponse) error {
 	if len(response.Messages) == 0 {
 		return errServerNoMessages
 	}
@@ -216,6 +220,7 @@ func (s *subscribeStream) unsafeHandleMessageResponse(response *pb.MessageRespon
 		// to occur.
 		s.mu.Unlock()
 		s.receiver(msg, ack)
+
 		s.mu.Lock()
 		if s.status >= serviceTerminating {
 			break
@@ -232,7 +237,6 @@ func (s *subscribeStream) onAck(ac *ackConsumer) {
 func (s *subscribeStream) onAckAsync(msgBytes int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if s.status == serviceActive {
 		s.unsafeAllowFlow(flowControlTokens{Bytes: msgBytes, Messages: 1})
 	}
@@ -278,10 +282,6 @@ func (s *subscribeStream) unsafeInitiateShutdown(targetStatus serviceStatus, err
 // - subscribeStream to receive messages from the subscribe stream.
 // - committer to commit cursor offsets to the streaming commit cursor stream.
 type singlePartitionSubscriber struct {
-	// These have their own mutexes.
-	subscriber *subscribeStream
-	committer  *committer
-
 	compositeService
 }
 
@@ -300,10 +300,7 @@ func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSu
 	acks := newAckTracker()
 	commit := newCommitter(f.ctx, f.cursorClient, f.settings, subscription, acks, f.disableTasks)
 	sub := newSubscribeStream(f.ctx, f.subClient, f.settings, f.receiver, subscription, acks, f.disableTasks)
-	ps := &singlePartitionSubscriber{
-		committer:  commit,
-		subscriber: sub,
-	}
+	ps := new(singlePartitionSubscriber)
 	ps.init()
 	ps.unsafeAddServices(sub, commit)
 	return ps
@@ -312,19 +309,15 @@ func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSu
 // multiPartitionSubscriber receives messages from a fixed set of topic
 // partitions.
 type multiPartitionSubscriber struct {
-	// Immutable after creation.
-	subscribers []*singlePartitionSubscriber
-
 	compositeService
 }
 
 func newMultiPartitionSubscriber(subFactory *singlePartitionSubscriberFactory) *multiPartitionSubscriber {
-	ms := &multiPartitionSubscriber{}
+	ms := new(multiPartitionSubscriber)
 	ms.init()
 
 	for _, partition := range subFactory.settings.Partitions {
 		subscriber := subFactory.New(partition)
-		ms.subscribers = append(ms.subscribers, subscriber)
 		ms.unsafeAddServices(subscriber)
 	}
 	return ms
