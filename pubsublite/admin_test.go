@@ -55,7 +55,7 @@ func TestAdminTopicCRUD(t *testing.T) {
 		RetentionDuration:          InfiniteRetention,
 	}
 
-	// Expected requests
+	// Expected requests and fake responses
 	wantCreateReq := &pb.CreateTopicRequest{
 		Parent:  "projects/my-proj/locations/us-central1-a",
 		TopicId: "my-topic",
@@ -260,7 +260,7 @@ func TestAdminSubscriptionCRUD(t *testing.T) {
 		DeliveryRequirement: DeliverAfterStored,
 	}
 
-	// Expected requests
+	// Expected requests and fake responses
 	wantCreateReq := &pb.CreateSubscriptionRequest{
 		Parent:         "projects/my-proj/locations/us-central1-a",
 		SubscriptionId: "my-subscription",

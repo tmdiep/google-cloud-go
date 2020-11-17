@@ -37,78 +37,6 @@ func testPublishSettings() PublishSettings {
 	return settings
 }
 
-// publishResultReceiver provides convenience methods for receiving and
-// validating Publish results.
-type publishResultReceiver struct {
-	done   chan struct{}
-	msg    string
-	t      *testing.T
-	got    *PublishMetadata
-	gotErr error
-}
-
-func newPublishResultReceiver(t *testing.T, msg string) *publishResultReceiver {
-	return &publishResultReceiver{
-		t:    t,
-		msg:  msg,
-		done: make(chan struct{}),
-	}
-}
-
-func (r *publishResultReceiver) set(pm *PublishMetadata, err error) {
-	r.got = pm
-	r.gotErr = err
-	close(r.done)
-}
-
-func (r *publishResultReceiver) wait() bool {
-	select {
-	case <-time.After(serviceTestWaitTimeout):
-		r.t.Errorf("Publish(%q) result not available within %v", r.msg, serviceTestWaitTimeout)
-		return false
-	case <-r.done:
-		return true
-	}
-}
-
-func (r *publishResultReceiver) ValidateResult(wantPartition int, wantOffset int64) {
-	if !r.wait() {
-		return
-	}
-	if r.gotErr != nil {
-		r.t.Errorf("Publish(%q) error: (%v), want: partition=%d,offset=%d", r.msg, r.gotErr, wantPartition, wantOffset)
-	} else if r.got.Partition != wantPartition || r.got.Offset != wantOffset {
-		r.t.Errorf("Publish(%q) got: partition=%d,offset=%d, want: partition=%d,offset=%d", r.msg, r.got.Partition, r.got.Offset, wantPartition, wantOffset)
-	}
-}
-
-func (r *publishResultReceiver) ValidateError(wantErr error) {
-	if !r.wait() {
-		return
-	}
-	if !test.ErrorEqual(r.gotErr, wantErr) {
-		r.t.Errorf("Publish(%q) error: (%v), want: (%v)", r.msg, r.gotErr, wantErr)
-	}
-}
-
-func (r *publishResultReceiver) ValidateErrorCode(wantCode codes.Code) {
-	if !r.wait() {
-		return
-	}
-	if !test.ErrorHasCode(r.gotErr, wantCode) {
-		r.t.Errorf("Publish(%q) error: (%v), want code: %v", r.msg, r.gotErr, wantCode)
-	}
-}
-
-func (r *publishResultReceiver) ValidateErrorMsg(wantStr string) {
-	if !r.wait() {
-		return
-	}
-	if !test.ErrorHasMsg(r.gotErr, wantStr) {
-		r.t.Errorf("Publish(%q) error: (%v), want msg: %q", r.msg, r.gotErr, wantStr)
-	}
-}
-
 // testPartitionPublisher wraps a singlePartitionPublisher for ease of testing.
 type testPartitionPublisher struct {
 	pub *singlePartitionPublisher
@@ -135,8 +63,8 @@ func newTestSinglePartitionPublisher(t *testing.T, topic topicPartition, setting
 	return tp
 }
 
-func (tp *testPartitionPublisher) Publish(msg *pb.PubSubMessage) *publishResultReceiver {
-	result := newPublishResultReceiver(tp.t, string(msg.Data))
+func (tp *testPartitionPublisher) Publish(msg *pb.PubSubMessage) *testPublishResultReceiver {
+	result := newTestPublishResultReceiver(tp.t, msg)
 	tp.pub.Publish(msg, result.set)
 	return result
 }
@@ -215,27 +143,20 @@ func TestSinglePartitionPublisherBatching(t *testing.T) {
 	settings := testPublishSettings()
 	settings.DelayThreshold = time.Minute // Batching delay disabled, tested elsewhere
 	settings.CountThreshold = 3
-	settings.ByteThreshold = 50
 
-	// Batch 1: count threshold.
+	// Batch 1
 	msg1 := &pb.PubSubMessage{Data: []byte{'1'}}
 	msg2 := &pb.PubSubMessage{Data: []byte{'2'}}
 	msg3 := &pb.PubSubMessage{Data: []byte{'3'}}
 
-	// Batch 2: byte thresholds.
-	msg4 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'4'}, 60)}
-
-	// Batch 3: remainder.
-	msg5 := &pb.PubSubMessage{Data: []byte{'5'}}
-	msg6 := &pb.PubSubMessage{Data: []byte{'6'}}
-	msg7 := &pb.PubSubMessage{Data: []byte{'7'}}
+	// Batch 2
+	msg4 := &pb.PubSubMessage{Data: []byte{'3'}}
 
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
 	stream.Push(msgPubReq(msg1, msg2, msg3), msgPubResp(0), nil)
-	stream.Push(msgPubReq(msg4), msgPubResp(3), nil)
-	stream.Push(msgPubReq(msg5, msg6, msg7), msgPubResp(45), nil)
+	stream.Push(msgPubReq(msg4), msgPubResp(13), nil)
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -250,62 +171,17 @@ func TestSinglePartitionPublisherBatching(t *testing.T) {
 	result2 := pub.Publish(msg2)
 	result3 := pub.Publish(msg3)
 	result4 := pub.Publish(msg4)
-	// Bundler invokes at most 1 handler and may add a message to the end of the
-	// last bundle if the hard limits (BundleByteLimit) aren't reached. Pause to
-	// handle previous bundles.
-	time.Sleep(10 * time.Millisecond)
-	result5 := pub.Publish(msg5)
-	result6 := pub.Publish(msg6)
-	result7 := pub.Publish(msg7)
 	// Stop flushes pending messages.
 	pub.Stop()
 
 	result1.ValidateResult(topic.Partition, 0)
 	result2.ValidateResult(topic.Partition, 1)
 	result3.ValidateResult(topic.Partition, 2)
-	result4.ValidateResult(topic.Partition, 3)
-	result5.ValidateResult(topic.Partition, 45)
-	result6.ValidateResult(topic.Partition, 46)
-	result7.ValidateResult(topic.Partition, 47)
+	result4.ValidateResult(topic.Partition, 13)
 
 	if gotErr := pub.FinalError(); gotErr != nil {
 		t.Errorf("Publisher final err: (%v), want: <nil>", gotErr)
 	}
-}
-
-func TestSinglePartitionPublisherBatchingDelay(t *testing.T) {
-	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
-	settings := testPublishSettings()
-	settings.CountThreshold = 100
-	settings.DelayThreshold = 5 * time.Millisecond
-
-	// Batch 1.
-	msg1 := &pb.PubSubMessage{Data: []byte{'1'}}
-	// Batch 2.
-	msg2 := &pb.PubSubMessage{Data: []byte{'2'}}
-
-	verifiers := test.NewVerifiers(t)
-	stream := test.NewRPCVerifier(t)
-	stream.Push(initPubReq(topic), initPubResp(), nil)
-	stream.Push(msgPubReq(msg1), msgPubResp(0), nil)
-	stream.Push(msgPubReq(msg2), msgPubResp(1), nil)
-	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
-
-	mockServer.OnTestStart(verifiers)
-	defer mockServer.OnTestEnd()
-
-	pub := newTestSinglePartitionPublisher(t, topic, settings)
-	defer pub.StopVerifyNoError()
-	if gotErr := pub.StartError(); gotErr != nil {
-		t.Errorf("Start() got err: (%v)", gotErr)
-	}
-
-	result1 := pub.Publish(msg1)
-	time.Sleep(settings.DelayThreshold * 2)
-	result2 := pub.Publish(msg2)
-
-	result1.ValidateResult(topic.Partition, 0)
-	result2.ValidateResult(topic.Partition, 1)
 }
 
 func TestSinglePartitionPublisherResendMessages(t *testing.T) {
@@ -317,10 +193,12 @@ func TestSinglePartitionPublisherResendMessages(t *testing.T) {
 
 	verifiers := test.NewVerifiers(t)
 
-	// Simulate a transient error that results in a reconnect.
+	// Simulate a transient error that results in a reconnect before any server
+	// publish responses are received.
 	stream1 := test.NewRPCVerifier(t)
 	stream1.Push(initPubReq(topic), initPubResp(), nil)
-	stream1.Push(msgPubReq(msg1), nil, status.Error(codes.Aborted, "server aborted"))
+	stream1.Push(msgPubReq(msg1), nil, nil)
+	stream1.Push(msgPubReq(msg2), nil, status.Error(codes.Aborted, "server aborted"))
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream1)
 
 	// The publisher should re-send pending messages to the second stream.
@@ -393,7 +271,7 @@ func TestSinglePartitionPublisherBufferOverflow(t *testing.T) {
 	settings.BufferedByteLimit = 15
 
 	msg1 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'1'}, 10)}
-	msg2 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'2'}, 10)}
+	msg2 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'2'}, 10)} // Causes overflow
 	msg3 := &pb.PubSubMessage{Data: []byte{'3'}}
 
 	verifiers := test.NewVerifiers(t)
@@ -436,7 +314,7 @@ func TestSinglePartitionPublisherBufferRefill(t *testing.T) {
 	settings.BufferedByteLimit = 15
 
 	msg1 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'1'}, 10)}
-	msg2 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'2'}, 8)}
+	msg2 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'2'}, 10)}
 
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
@@ -457,49 +335,9 @@ func TestSinglePartitionPublisherBufferRefill(t *testing.T) {
 	result1 := pub.Publish(msg1)
 	result1.ValidateResult(topic.Partition, 0)
 
+	// No overflow because msg2 is sent after the response for msg1 is received.
 	result2 := pub.Publish(msg2)
 	result2.ValidateResult(topic.Partition, 1)
-}
-
-func TestSinglePartitionPublisherValidatesMaxMsgSize(t *testing.T) {
-	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
-
-	msg1 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'1'}, 10)}
-	msg2 := &pb.PubSubMessage{Data: bytes.Repeat([]byte{'2'}, MaxPublishMessageBytes+1)}
-	msg3 := &pb.PubSubMessage{Data: []byte{'3'}}
-
-	verifiers := test.NewVerifiers(t)
-	stream := test.NewRPCVerifier(t)
-	stream.Push(initPubReq(topic), initPubResp(), nil)
-	barrier := stream.PushWithBarrier(msgPubReq(msg1), msgPubResp(0), nil)
-	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
-
-	mockServer.OnTestStart(verifiers)
-	defer mockServer.OnTestEnd()
-
-	pub := newTestSinglePartitionPublisher(t, topic, testPublishSettings())
-	if gotErr := pub.StartError(); gotErr != nil {
-		t.Errorf("Start() got err: (%v)", gotErr)
-	}
-
-	result1 := pub.Publish(msg1)
-	// Fails due to over msg size limit, which terminates the publisher, but
-	// pending messages are flushed.
-	result2 := pub.Publish(msg2)
-	// Delay the server response for the first Publish to ensure it is allowed to
-	// complete.
-	barrier.Release()
-	// This message arrives after the publisher has already stopped.
-	result3 := pub.Publish(msg3)
-
-	wantErrMsg := "maximum allowed size is MaxPublishMessageBytes"
-	result1.ValidateResult(topic.Partition, 0)
-	result2.ValidateErrorMsg(wantErrMsg)
-	result3.ValidateError(ErrServiceStopped)
-
-	if gotErr := pub.FinalError(); !test.ErrorHasMsg(gotErr, wantErrMsg) {
-		t.Errorf("Publisher final err: (%v), want msg: %v", gotErr, wantErrMsg)
-	}
 }
 
 func TestSinglePartitionPublisherInvalidCursorOffsets(t *testing.T) {
@@ -647,8 +485,8 @@ func newTestRoutingPublisher(t *testing.T, topicPath string, settings PublishSet
 	return &testRoutingPublisher{t: t, pub: pub}
 }
 
-func (tp *testRoutingPublisher) Publish(msg *pb.PubSubMessage) *publishResultReceiver {
-	result := newPublishResultReceiver(tp.t, string(msg.Data))
+func (tp *testRoutingPublisher) Publish(msg *pb.PubSubMessage) *testPublishResultReceiver {
+	result := newTestPublishResultReceiver(tp.t, msg)
 	tp.pub.Publish(msg, result.set)
 	return result
 }
