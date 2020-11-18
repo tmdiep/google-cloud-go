@@ -354,12 +354,12 @@ func newAssigningSubscriber(partitionClient *vkit.PartitionAssignmentClient, sub
 	return as, nil
 }
 
-func (as *assigningSubscriber) handleAssignment(assignment *partitionAssignment) error {
+func (as *assigningSubscriber) handleAssignment(partitions partitionSet) error {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 
 	// Handle new partitions.
-	for _, partition := range assignment.Partitions() {
+	for _, partition := range partitions.Ints() {
 		if _, exists := as.subscribers[partition]; !exists {
 			subscriber := as.subFactory.New(partition)
 			if err := as.unsafeAddServices(subscriber); err != nil {
@@ -373,7 +373,7 @@ func (as *assigningSubscriber) handleAssignment(assignment *partitionAssignment)
 
 	// Handle removed partitions.
 	for partition, subscriber := range as.subscribers {
-		if !assignment.Contains(partition) {
+		if !partitions.Contains(partition) {
 			as.unsafeRemoveService(subscriber)
 			// Safe to delete map entry during range loop:
 			// https://golang.org/ref/spec#For_statements

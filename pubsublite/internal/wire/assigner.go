@@ -27,31 +27,28 @@ import (
   pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
-type partitionAssignment struct {
-  // A set of partition numbers.
-  partitions map[int]struct{}
-  void       struct{}
-}
+var void struct{}
 
-func newPartitionAssignment(assignmentpb *pb.PartitionAssignment) *partitionAssignment {
-  pa := &partitionAssignment{
-    partitions: make(map[int]struct{}),
-  }
+// partitionSet is a set of partition numbers.
+type partitionSet map[int]struct{}
+
+func newPartitionSet(assignmentpb *pb.PartitionAssignment) partitionSet {
+  partitions := make(map[int]struct{})
   for _, p := range assignmentpb.Partitions {
-    pa.partitions[int(p)] = pa.void
+    partitions[int(p)] = void
   }
-  return pa
+  return partitionSet(partitions)
 }
 
-func (pa *partitionAssignment) Partitions() (partitions []int) {
-  for p := range pa.partitions {
+func (ps partitionSet) Ints() (partitions []int) {
+  for p := range ps {
     partitions = append(partitions, p)
   }
   return
 }
 
-func (pa *partitionAssignment) Contains(partition int) bool {
-  _, exists := pa.partitions[partition]
+func (ps partitionSet) Contains(partition int) bool {
+  _, exists := ps[partition]
   return exists
 }
 
@@ -61,7 +58,7 @@ type generateUUIDFunc func() (uuid.UUID, error)
 // partitionAssignmentReceiver must enact the received partition assignment from
 // the server, or otherwise return an error, which will break the stream. The
 // receiver must not call the assigner, as this would result in a deadlock.
-type partitionAssignmentReceiver func(*partitionAssignment) error
+type partitionAssignmentReceiver func(partitionSet) error
 
 type assigner struct {
   // Immutable after creation.
@@ -151,7 +148,7 @@ func (a *assigner) onResponse(response interface{}) {
 }
 
 func (a *assigner) handleAssignment(assignment *pb.PartitionAssignment) error {
-  if err := a.receiveAssignment(newPartitionAssignment(assignment)); err != nil {
+  if err := a.receiveAssignment(newPartitionSet(assignment)); err != nil {
     return err
   }
 

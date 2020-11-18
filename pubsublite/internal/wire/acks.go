@@ -77,7 +77,7 @@ func (ac *ackConsumer) Clear() {
 }
 
 // Represents an uninitialized cursor offset. A sentinel value is used instead
-// if an optional to simplify cursor comparisons (i.e. -1 works without the need
+// of an optional to simplify cursor comparisons (i.e. -1 works without the need
 // to check for nil and then convert to int64).
 const nilCursorOffset int64 = -1
 

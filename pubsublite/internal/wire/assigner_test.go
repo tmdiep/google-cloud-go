@@ -29,27 +29,27 @@ import (
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
-func TestPartitionAssignment(t *testing.T) {
-	assignment := newPartitionAssignment(&pb.PartitionAssignment{
+func TestPartitionSet(t *testing.T) {
+	partitions := newPartitionSet(&pb.PartitionAssignment{
 		Partitions: []int64{8, 5, 8, 1},
 	})
-	wantPartitions := []int{1, 5, 8}
 
+	wantPartitions := []int{1, 5, 8}
 	for _, partition := range wantPartitions {
-		if !assignment.Contains(partition) {
+		if !partitions.Contains(partition) {
 			t.Errorf("Contains(%d) got false, want true", partition)
 		}
 	}
 	for _, partition := range []int{2, 3, 4, 6, 7} {
-		if assignment.Contains(partition) {
+		if partitions.Contains(partition) {
 			t.Errorf("Contains(%d) got true, want false", partition)
 		}
 	}
 
-	gotPartitions := assignment.Partitions()
+	gotPartitions := partitions.Ints()
 	sort.Ints(gotPartitions)
 	if !testutil.Equal(gotPartitions, wantPartitions) {
-		t.Errorf("Partitions() got %v, want %v", gotPartitions, wantPartitions)
+		t.Errorf("Ints() got %v, want %v", gotPartitions, wantPartitions)
 	}
 }
 
@@ -59,7 +59,7 @@ func fakeGenerateUUID() (uuid.UUID, error) {
 	return fakeUUID, nil
 }
 
-// testAssigner wraps a assigner for ease of testing.
+// testAssigner wraps an assigner for ease of testing.
 type testAssigner struct {
 	// Fake error to simulate receiver unable to handle assignment.
 	RetError error
@@ -82,7 +82,7 @@ func newTestAssigner(t *testing.T, subscription string) *testAssigner {
 		t:          t,
 		partitions: make(chan []int, 1),
 	}
-	asn, err := newAssigner(ctx, assignmentClient, fakeGenerateUUID, testReceiveSettings(), subscription, ta.handleAssignment)
+	asn, err := newAssigner(ctx, assignmentClient, fakeGenerateUUID, testReceiveSettings(), subscription, ta.receiveAssignment)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,8 +91,8 @@ func newTestAssigner(t *testing.T, subscription string) *testAssigner {
 	return ta
 }
 
-func (ta *testAssigner) handleAssignment(assignment *partitionAssignment) error {
-	p := assignment.Partitions()
+func (ta *testAssigner) receiveAssignment(partitions partitionSet) error {
+	p := partitions.Ints()
 	sort.Ints(p)
 	ta.partitions <- p
 
@@ -110,6 +110,30 @@ func (ta *testAssigner) NextPartitions() []int {
 	case p := <-ta.partitions:
 		return p
 	}
+}
+
+func TestAssignerNoInitialResponse(t *testing.T) {
+	subscription := "projects/123456/locations/us-central1-b/subscriptions/my-subs"
+
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	barrier := stream.PushWithBarrier(initAssignmentReq(subscription, fakeUUID[:]), nil, nil)
+	verifiers.AddAssignmentStream(subscription, stream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	asn := newTestAssigner(t, subscription)
+
+	// Assigner starts even though no initial response was received from the
+	// server.
+	if gotErr := asn.StartError(); gotErr != nil {
+		t.Errorf("Start() got err: (%v)", gotErr)
+	}
+	// To ensure test is deterministic, i.e. server must receive initial request
+	// before stopping the client.
+	barrier.Release()
+	asn.StopVerifyNoError()
 }
 
 func TestAssignerReconnect(t *testing.T) {
@@ -172,28 +196,4 @@ func TestAssignerHandlePartitionFailure(t *testing.T) {
 	if gotErr := asn.FinalError(); !test.ErrorEqual(gotErr, asn.RetError) {
 		t.Errorf("Final err: (%v), want: (%v)", gotErr, asn.RetError)
 	}
-}
-
-func TestAssignerNoInitialResponse(t *testing.T) {
-	subscription := "projects/123456/locations/us-central1-b/subscriptions/my-subs"
-
-	verifiers := test.NewVerifiers(t)
-	stream := test.NewRPCVerifier(t)
-	barrier := stream.PushWithBarrier(initAssignmentReq(subscription, fakeUUID[:]), nil, nil)
-	verifiers.AddAssignmentStream(subscription, stream)
-
-	mockServer.OnTestStart(verifiers)
-	defer mockServer.OnTestEnd()
-
-	asn := newTestAssigner(t, subscription)
-
-	// Assigner starts even though no initial response was received from the
-	// server.
-	if gotErr := asn.StartError(); gotErr != nil {
-		t.Errorf("Start() got err: (%v)", gotErr)
-	}
-	// To ensure test is deterministic, i.e. server must receive initial request
-	// before stopping the client.
-	barrier.Release()
-	asn.StopVerifyNoError()
 }
