@@ -507,6 +507,7 @@ func TestSinglePartitionSubscriberPermanentError(t *testing.T) {
 	}
 }
 */
+
 func TestSinglePartitionSubscriberStopBetweenMessages(t *testing.T) {
 	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-sub", 0}
 	msg1 := seqMsgWithOffsetAndSize(22, 100)
