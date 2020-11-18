@@ -82,18 +82,12 @@ func (tp *testPartitionPublisher) FinalError() (err error) {
 	return
 }
 
-func (tp *testPartitionPublisher) StreamError() error {
-	return tp.pub.stream.Error()
-}
-
 func TestSinglePartitionPublisherInvalidInitialResponse(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 
 	verifiers := test.NewVerifiers(t)
-	// If the server sends an invalid initial response, the client treats this as
-	// a permanent failure (bug on the server).
 	stream := test.NewRPCVerifier(t)
-	stream.Push(initPubReq(topic), msgPubResp(0), nil)
+	stream.Push(initPubReq(topic), msgPubResp(0), nil) // Publish response instead of initial response
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -116,10 +110,7 @@ func TestSinglePartitionPublisherSpuriousPublishResponse(t *testing.T) {
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
-	// If the server has sent a MessagePublishResponse when no messages were
-	// published, the client treats this as a permanent failure (bug on the
-	// server).
-	barrier := stream.PushWithBarrier(nil, msgPubResp(0), nil)
+	barrier := stream.PushWithBarrier(nil, msgPubResp(0), nil) // Publish response with no messages
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -132,7 +123,6 @@ func TestSinglePartitionPublisherSpuriousPublishResponse(t *testing.T) {
 
 	// Send after startup to ensure the test is deterministic.
 	barrier.Release()
-
 	if gotErr, wantErr := pub.FinalError(), errPublishQueueEmpty; !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Publisher final err: (%v), want: (%v)", gotErr, wantErr)
 	}
@@ -156,7 +146,7 @@ func TestSinglePartitionPublisherBatching(t *testing.T) {
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
 	stream.Push(msgPubReq(msg1, msg2, msg3), msgPubResp(0), nil)
-	stream.Push(msgPubReq(msg4), msgPubResp(13), nil)
+	stream.Push(msgPubReq(msg4), msgPubResp(33), nil)
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -177,7 +167,7 @@ func TestSinglePartitionPublisherBatching(t *testing.T) {
 	result1.ValidateResult(topic.Partition, 0)
 	result2.ValidateResult(topic.Partition, 1)
 	result3.ValidateResult(topic.Partition, 2)
-	result4.ValidateResult(topic.Partition, 13)
+	result4.ValidateResult(topic.Partition, 33)
 
 	if gotErr := pub.FinalError(); gotErr != nil {
 		t.Errorf("Publisher final err: (%v), want: <nil>", gotErr)
@@ -201,7 +191,7 @@ func TestSinglePartitionPublisherResendMessages(t *testing.T) {
 	stream1.Push(msgPubReq(msg2), nil, status.Error(codes.Aborted, "server aborted"))
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream1)
 
-	// The publisher should re-send pending messages to the second stream.
+	// The publisher should resend all in-flight batches to the second stream.
 	stream2 := test.NewRPCVerifier(t)
 	stream2.Push(initPubReq(topic), initPubResp(), nil)
 	stream2.Push(msgPubReq(msg1), msgPubResp(0), nil)
@@ -236,10 +226,9 @@ func TestSinglePartitionPublisherPublishPermanentError(t *testing.T) {
 	msg3 := &pb.PubSubMessage{Data: []byte{'3'}}
 
 	verifiers := test.NewVerifiers(t)
-	// Simulate a permanent server error that terminates publishing.
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
-	stream.Push(msgPubReq(msg1), nil, permError)
+	stream.Push(msgPubReq(msg1), nil, permError) // Permanent error terminates publisher
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
 
 	mockServer.OnTestStart(verifiers)
@@ -327,7 +316,6 @@ func TestSinglePartitionPublisherBufferRefill(t *testing.T) {
 	defer mockServer.OnTestEnd()
 
 	pub := newTestSinglePartitionPublisher(t, topic, settings)
-	defer pub.StopVerifyNoError()
 	if gotErr := pub.StartError(); gotErr != nil {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
@@ -338,6 +326,8 @@ func TestSinglePartitionPublisherBufferRefill(t *testing.T) {
 	// No overflow because msg2 is sent after the response for msg1 is received.
 	result2 := pub.Publish(msg2)
 	result2.ValidateResult(topic.Partition, 1)
+
+	pub.StopVerifyNoError()
 }
 
 func TestSinglePartitionPublisherInvalidCursorOffsets(t *testing.T) {
@@ -372,6 +362,7 @@ func TestSinglePartitionPublisherInvalidCursorOffsets(t *testing.T) {
 
 	result1.ValidateResult(topic.Partition, 4)
 
+	// msg2 and subsequent messages are errored.
 	wantMsg := "server returned publish response with inconsistent start offset"
 	result2.ValidateErrorMsg(wantMsg)
 	result3.ValidateErrorMsg(wantMsg)
@@ -387,7 +378,7 @@ func TestSinglePartitionPublisherInvalidServerPublishResponse(t *testing.T) {
 	verifiers := test.NewVerifiers(t)
 	stream := test.NewRPCVerifier(t)
 	stream.Push(initPubReq(topic), initPubResp(), nil)
-	// Server sends duplicate initial Publish response, which causes the publisher
+	// Server sends duplicate initial publish response, which causes the publisher
 	// client to fail permanently.
 	stream.Push(msgPubReq(msg), initPubResp(), nil)
 	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
@@ -444,11 +435,11 @@ func TestSinglePartitionPublisherStopFlushesMessages(t *testing.T) {
 	// First 2 messages should be allowed to complete.
 	result1.ValidateResult(topic.Partition, 5)
 	result2.ValidateResult(topic.Partition, 6)
-	// Third message failed with a server error, which should result in the
-	// publisher terminating with an error.
+	// msg3 failed with a server error, which should result in the publisher
+	// terminating with an error.
 	result3.ValidateError(finalErr)
-	// Fourth message was sent after the user called Stop(), so should fail
-	// immediately with ErrServiceStopped.
+	// msg4 was sent after the user called Stop(), so should fail immediately with
+	// ErrServiceStopped.
 	result4.ValidateError(ErrServiceStopped)
 
 	if gotErr := pub.FinalError(); !test.ErrorEqual(gotErr, finalErr) {

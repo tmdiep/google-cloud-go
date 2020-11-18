@@ -152,22 +152,17 @@ func (pp *singlePartitionPublisher) onStreamStatusChange(status streamStatus) {
 
 	switch status {
 	case streamReconnecting:
-		// This prevents handleBatch() from sending any new batches to the stream
-		// before we've had a chance to send the queued batches below.
+		// Prevent onNewBatch() from sending any new batches to the stream.
 		pp.enableSendToStream = false
 
 	case streamConnected:
 		pp.unsafeUpdateStatus(serviceActive, nil)
 		pp.enableSendToStream = true
 
-		// To ensure messages are sent in order, we should send everything in
-		// publishQueue to the stream immediately after reconnecting, before any new
-		// batches.
+		// To ensure messages are sent in order, we should resend in-flight batches
+		// to the stream immediately after reconnecting, before any new batches.
 		batches := pp.batcher.InFlightBatches()
 		for _, batch := range batches {
-			// If an error occurs during send, the gRPC stream will close and the
-			// retryableStream will transition to `streamReconnecting` or
-			// `streamTerminated`.
 			if !pp.stream.Send(batch.ToPublishRequest()) {
 				pp.enableSendToStream = false
 				break
@@ -185,9 +180,9 @@ func (pp *singlePartitionPublisher) onNewBatch(batch *publishBatch) {
 
 	pp.batcher.AddBatch(batch)
 	if pp.enableSendToStream {
-		// Note: if the underlying stream is reconnecting or Send() fails, the
-		// entire publish queue will be sent to the stream in order once the
-		// connection has been established. Thus the return value is ignored.
+		// Note: if the underlying stream is reconnecting or Send() fails, all
+		// in-flight batches will be sent to the stream once the connection has been
+		// re-established. Thus the return value is ignored.
 		pp.stream.Send(batch.ToPublishRequest())
 	}
 }
@@ -244,7 +239,7 @@ func (pp *singlePartitionPublisher) unsafeInitiateShutdown(targetStatus serviceS
 	// Bundler.Flush() blocks and invokes onNewBatch(), which acquires the mutex,
 	// so it cannot be held here.
 	// Updating the publisher status above prevents any new messages from being
-	// added to the bundler after flush.
+	// added to the Bundler after flush.
 	pp.mu.Unlock()
 	pp.batcher.Flush()
 	pp.mu.Lock()
@@ -256,11 +251,11 @@ func (pp *singlePartitionPublisher) unsafeInitiateShutdown(targetStatus serviceS
 		return
 	}
 
-	// For immediate shtudown set the error message for all pending messages.
+	// For immediate shutdown set the error message for all pending messages.
 	pp.batcher.OnPermanentError(err)
 }
 
-// unsafeCheckDone closes the stream once all queued messages have been
+// unsafeCheckDone closes the stream once all pending messages have been
 // published during shutdown.
 func (pp *singlePartitionPublisher) unsafeCheckDone() {
 	if pp.status == serviceTerminating && pp.batcher.Done() {
