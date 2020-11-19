@@ -55,7 +55,7 @@ type singlePartitionPublisher struct {
 	topic      topicPartition
 	initialReq *pb.PublishRequest
 
-	// Fields below must be guarded with mutex.
+	// Fields below must be guarded with mu.
 	stream             *retryableStream
 	batcher            *publishMessageBatcher
 	enableSendToStream bool
@@ -157,17 +157,16 @@ func (pp *singlePartitionPublisher) onStreamStatusChange(status streamStatus) {
 
 	case streamConnected:
 		pp.unsafeUpdateStatus(serviceActive, nil)
-		pp.enableSendToStream = true
 
 		// To ensure messages are sent in order, we should resend in-flight batches
 		// to the stream immediately after reconnecting, before any new batches.
 		batches := pp.batcher.InFlightBatches()
 		for _, batch := range batches {
 			if !pp.stream.Send(batch.ToPublishRequest()) {
-				pp.enableSendToStream = false
-				break
+				return
 			}
 		}
+		pp.enableSendToStream = true
 
 	case streamTerminated:
 		pp.unsafeInitiateShutdown(serviceTerminated, pp.stream.Error())
@@ -258,7 +257,7 @@ func (pp *singlePartitionPublisher) unsafeInitiateShutdown(targetStatus serviceS
 // unsafeCheckDone closes the stream once all pending messages have been
 // published during shutdown.
 func (pp *singlePartitionPublisher) unsafeCheckDone() {
-	if pp.status == serviceTerminating && pp.batcher.Done() {
+	if pp.status == serviceTerminating && pp.batcher.InFlightBatchesEmpty() {
 		pp.stream.Stop()
 	}
 }
