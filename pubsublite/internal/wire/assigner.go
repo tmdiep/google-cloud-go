@@ -60,9 +60,11 @@ type generateUUIDFunc func() (uuid.UUID, error)
 // receiver must not call the assigner, as this would result in a deadlock.
 type partitionAssignmentReceiver func(partitionSet) error
 
+// assigner wraps the partition assignment stream and notifies a receiver when
+// the server sends a new set of partition assignments for a subscriber.
 type assigner struct {
   // Immutable after creation.
-  partitionClient   *vkit.PartitionAssignmentClient
+  assignmentClient  *vkit.PartitionAssignmentClient
   initialReq        *pb.PartitionAssignmentRequest
   receiveAssignment partitionAssignmentReceiver
 
@@ -72,7 +74,7 @@ type assigner struct {
   abstractService
 }
 
-func newAssigner(ctx context.Context, partitionClient *vkit.PartitionAssignmentClient, genUUID generateUUIDFunc, settings ReceiveSettings, subscriptionPath string, receiver partitionAssignmentReceiver) (*assigner, error) {
+func newAssigner(ctx context.Context, assignmentClient *vkit.PartitionAssignmentClient, genUUID generateUUIDFunc, settings ReceiveSettings, subscriptionPath string, receiver partitionAssignmentReceiver) (*assigner, error) {
   clientID, err := genUUID()
   if err != nil {
     return nil, fmt.Errorf("pubsublite: failed to generate client UUID: %v", err)
@@ -80,7 +82,7 @@ func newAssigner(ctx context.Context, partitionClient *vkit.PartitionAssignmentC
   log.Printf("pubsublite: subscription %s using UUID %v for assignment", subscriptionPath, clientID)
 
   a := &assigner{
-    partitionClient: partitionClient,
+    assignmentClient: assignmentClient,
     initialReq: &pb.PartitionAssignmentRequest{
       Request: &pb.PartitionAssignmentRequest_Initial{
         Initial: &pb.InitialPartitionAssignmentRequest{
@@ -111,7 +113,7 @@ func (a *assigner) Stop() {
 }
 
 func (a *assigner) newStream(ctx context.Context) (grpc.ClientStream, error) {
-  return a.partitionClient.AssignPartitions(ctx)
+  return a.assignmentClient.AssignPartitions(ctx)
 }
 
 func (a *assigner) initialRequest() (interface{}, bool) {
@@ -140,6 +142,10 @@ func (a *assigner) onStreamStatusChange(status streamStatus) {
 func (a *assigner) onResponse(response interface{}) {
   a.mu.Lock()
   defer a.mu.Unlock()
+
+  if a.status >= serviceTerminating {
+    return
+  }
 
   assignment, _ := response.(*pb.PartitionAssignment)
   if err := a.handleAssignment(assignment); err != nil {

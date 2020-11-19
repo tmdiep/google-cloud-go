@@ -185,6 +185,7 @@ func TestAssignerHandlePartitionFailure(t *testing.T) {
 	defer mockServer.OnTestEnd()
 
 	asn := newTestAssigner(t, subscription)
+	// Simulates the assigningSubscriber discarding assignments.
 	asn.RetError = errors.New("subscriber shutting down")
 
 	if gotErr := asn.StartError(); gotErr != nil {

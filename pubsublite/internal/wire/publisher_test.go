@@ -492,7 +492,7 @@ func (tp *testRoutingPublisher) WaitStarted() error { return tp.pub.WaitStarted(
 func (tp *testRoutingPublisher) WaitStopped() error { return tp.pub.WaitStopped() }
 
 func TestRoutingPublisherStartOnce(t *testing.T) {
-	topic := "projects/123456/locations/us-central1-b/topics/my-topic"
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
 	numPartitions := 2
 
 	verifiers := test.NewVerifiers(t)
@@ -531,7 +531,7 @@ func TestRoutingPublisherStartOnce(t *testing.T) {
 }
 
 func TestRoutingPublisherPartitionCountFail(t *testing.T) {
-	topic := "projects/123456/locations/us-central1-b/topics/my-topic"
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
 	wantErr := status.Error(codes.NotFound, "no exist")
 
 	// Retrieving the number of partitions results in an error. Startup cannot
@@ -557,7 +557,7 @@ func TestRoutingPublisherPartitionCountFail(t *testing.T) {
 }
 
 func TestRoutingPublisherPartitionCountInvalid(t *testing.T) {
-	topic := "projects/123456/locations/us-central1-b/topics/my-topic"
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
 
 	// The number of partitions returned by the server must be valid, otherwise
 	// startup cannot proceed.
@@ -583,7 +583,7 @@ func TestRoutingPublisherPartitionCountInvalid(t *testing.T) {
 }
 
 func TestRoutingPublisherRoundRobin(t *testing.T) {
-	topic := "projects/123456/locations/us-central1-b/topics/my-topic"
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
 	numPartitions := 3
 
 	// Messages have no ordering key, so the roundRobinMsgRouter is used.
@@ -641,7 +641,7 @@ func TestRoutingPublisherRoundRobin(t *testing.T) {
 }
 
 func TestRoutingPublisherHashing(t *testing.T) {
-	topic := "projects/123456/locations/us-central1-b/topics/my-topic"
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
 	numPartitions := 3
 
 	key0 := []byte("bar") // hashes to partition 0
@@ -705,7 +705,7 @@ func TestRoutingPublisherHashing(t *testing.T) {
 }
 
 func TestRoutingPublisherPermanentError(t *testing.T) {
-	topic := "projects/123456/locations/us-central1-b/topics/my-topic"
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
 	numPartitions := 2
 	msg1 := &pb.PubSubMessage{Data: []byte{'1'}}
 	msg2 := &pb.PubSubMessage{Data: []byte{'2'}}
@@ -748,7 +748,7 @@ func TestRoutingPublisherPermanentError(t *testing.T) {
 }
 
 func TestRoutingPublisherPublishAfterStop(t *testing.T) {
-	topic := "projects/123456/locations/us-central1-b/topics/my-topic"
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
 	numPartitions := 2
 	msg1 := &pb.PubSubMessage{Data: []byte{'1'}}
 	msg2 := &pb.PubSubMessage{Data: []byte{'2'}}
@@ -783,5 +783,27 @@ func TestRoutingPublisherPublishAfterStop(t *testing.T) {
 
 	if err := pub.WaitStopped(); err != nil {
 		t.Errorf("Stop() got err: (%v)", err)
+	}
+}
+
+func TestNewPublisherCreatesImpl(t *testing.T) {
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
+	const region = "us-central1"
+
+	if pub, err := NewPublisher(context.Background(), DefaultPublishSettings, region, topic); err != nil {
+		t.Errorf("NewPublisher() got error: %v", err)
+	} else if _, ok := pub.(*routingPublisher); !ok {
+		t.Error("NewPublisher() did not return a routingPublisher")
+	}
+}
+
+func TestNewPublisherValidatesSettings(t *testing.T) {
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
+	const region = "us-central1"
+
+	settings := DefaultPublishSettings
+	settings.DelayThreshold = 0
+	if _, err := NewPublisher(context.Background(), settings, region, topic); err == nil {
+		t.Error("NewPublisher() did not return error")
 	}
 }

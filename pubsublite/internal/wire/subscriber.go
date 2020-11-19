@@ -178,6 +178,11 @@ func (s *subscribeStream) onResponse(response interface{}) {
 	var err error
 	s.mu.Lock()
 
+	if s.status >= serviceTerminating {
+		s.mu.Unlock()
+		return
+	}
+
 	subscribeResponse, _ := response.(*pb.SubscribeResponse)
 	switch {
 	case subscribeResponse.GetMessages() != nil:
@@ -288,6 +293,9 @@ func (s *subscribeStream) unsafeInitiateShutdown(targetStatus serviceStatus, err
 // - subscribeStream to receive messages from the subscribe stream.
 // - committer to commit cursor offsets to the streaming commit cursor stream.
 type singlePartitionSubscriber struct {
+	subscriber *subscribeStream
+	committer  *committer
+
 	compositeService
 }
 
@@ -306,7 +314,10 @@ func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSu
 	acks := newAckTracker()
 	commit := newCommitter(f.ctx, f.cursorClient, f.settings, subscription, acks, f.disableTasks)
 	sub := newSubscribeStream(f.ctx, f.subClient, f.settings, f.receiver, subscription, acks, f.disableTasks)
-	ps := new(singlePartitionSubscriber)
+	ps := &singlePartitionSubscriber{
+		subscriber: sub,
+		committer:  commit,
+	}
 	ps.init()
 	ps.unsafeAddServices(sub, commit)
 	return ps
@@ -344,14 +355,14 @@ type assigningSubscriber struct {
 	compositeService
 }
 
-func newAssigningSubscriber(partitionClient *vkit.PartitionAssignmentClient, subFactory *singlePartitionSubscriberFactory) (*assigningSubscriber, error) {
+func newAssigningSubscriber(assignmentClient *vkit.PartitionAssignmentClient, genUUID generateUUIDFunc, subFactory *singlePartitionSubscriberFactory) (*assigningSubscriber, error) {
 	as := &assigningSubscriber{
 		subFactory:  subFactory,
 		subscribers: make(map[int]*singlePartitionSubscriber),
 	}
 	as.init()
 
-	assigner, err := newAssigner(subFactory.ctx, partitionClient, uuid.NewRandom, subFactory.settings, subFactory.subscriptionPath, as.handleAssignment)
+	assigner, err := newAssigner(subFactory.ctx, assignmentClient, genUUID, subFactory.settings, subFactory.subscriptionPath, as.handleAssignment)
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +380,7 @@ func (as *assigningSubscriber) handleAssignment(partitions partitionSet) error {
 		if _, exists := as.subscribers[partition]; !exists {
 			subscriber := as.subFactory.New(partition)
 			if err := as.unsafeAddServices(subscriber); err != nil {
-				// Service is stopping/stopped.
+				// Occurs when the assigningSubscriber is stopping/stopped.
 				return err
 			}
 			as.subscribers[partition] = subscriber
@@ -432,5 +443,5 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 	if err != nil {
 		return nil, err
 	}
-	return newAssigningSubscriber(partitionClient, subFactory)
+	return newAssigningSubscriber(partitionClient, uuid.NewRandom, subFactory)
 }
