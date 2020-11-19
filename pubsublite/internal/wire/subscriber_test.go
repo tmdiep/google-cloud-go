@@ -470,84 +470,84 @@ func TestSinglePartitionSubscriberSimpleMsgAck(t *testing.T) {
 
 /*
 func TestSinglePartitionSubscriberPermanentError(t *testing.T) {
-	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-sub", 0}
-	receiver := newTestMessageReceiver(t)
-	msg := seqMsgWithOffsetAndSize(15, 100)
-	serverErr := status.Error(codes.NotFound, "failed")
+       subscription := subscriptionPartition{"projects/123456/locations/uscentral1b/subscriptions/mysub", 0}
+       receiver := newTestMessageReceiver(t)
+       msg := seqMsgWithOffsetAndSize(15, 100)
+       serverErr := status.Error(codes.NotFound, "failed")
 
-	verifiers := test.NewVerifiers(t)
+       verifiers := test.NewVerifiers(t)
 
-	subStream := test.NewRPCVerifier(t)
-	subStream.Push(initSubReq(subscription), initSubResp(), nil)
-	subStream.Push(initFlowControlReq(), msgSubResp(msg), nil)
-	subStream.Push(nil, nil, serverErr)
-	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, subStream)
+       subStream := test.NewRPCVerifier(t)
+       subStream.Push(initSubReq(subscription), initSubResp(), nil)
+       subStream.Push(initFlowControlReq(), msgSubResp(msg), nil)
+       subStream.Push(nil, nil, serverErr)
+       verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, subStream)
 
-	cmtStream := test.NewRPCVerifier(t)
-	cmtStream.Push(initCommitReq(subscription), initCommitResp(), nil)
-	cmtStream.Push(commitReq(16), commitResp(1), nil)
-	verifiers.AddCommitStream(subscription.Path, subscription.Partition, cmtStream)
+       cmtStream := test.NewRPCVerifier(t)
+       cmtStream.Push(initCommitReq(subscription), initCommitResp(), nil)
+       cmtStream.Push(commitReq(16), commitResp(1), nil)
+       verifiers.AddCommitStream(subscription.Path, subscription.Partition, cmtStream)
 
-	mockServer.OnTestStart(verifiers)
-	defer mockServer.OnTestEnd()
+       mockServer.OnTestStart(verifiers)
+       defer mockServer.OnTestEnd()
 
-	sub := newTestSinglePartitionSubscriber(t, receiver.onMessages, subscription)
-	if gotErr := sub.WaitStarted(); gotErr != nil {
-		t.Errorf("Start() got err: (%v)", gotErr)
-	}
+       sub := newTestSinglePartitionSubscriber(t, receiver.onMessages, subscription)
+       if gotErr := sub.WaitStarted(); gotErr != nil {
+               t.Errorf("Start() got err: (%v)", gotErr)
+       }
 
-	receiver.ValidateMsg(msg).Ack()
-	// TODO: what if commiter stops first? Maybe better tested with nack.
-	if gotErr := sub.WaitStopped(); gotErr != nil {
-		t.Errorf("Final error got: (%v), want: (%v)", gotErr, serverErr)
-	}
+       receiver.ValidateMsg(msg).Ack()
+       // TODO: what if commiter stops first? Maybe better tested with nack.
+       if gotErr := sub.WaitStopped(); gotErr != nil {
+               t.Errorf("Final error got: (%v), want: (%v)", gotErr, serverErr)
+       }
 }
 */
 /*
 func TestSinglePartitionSubscriberStopBetweenMessages(t *testing.T) {
-	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-sub", 0}
-	msg1 := seqMsgWithOffsetAndSize(22, 100)
-	msg2 := seqMsgWithOffsetAndSize(33, 200)
+       subscription := subscriptionPartition{"projects/123456/locations/uscentral1b/subscriptions/mysub", 0}
+       msg1 := seqMsgWithOffsetAndSize(22, 100)
+       msg2 := seqMsgWithOffsetAndSize(33, 200)
 
-	verifiers := test.NewVerifiers(t)
+       verifiers := test.NewVerifiers(t)
 
-	subStream := test.NewRPCVerifier(t)
-	subStream.Push(initSubReq(subscription), initSubResp(), nil)
-	subStream.Push(initFlowControlReq(), msgSubResp(msg1, msg2), nil)
-	verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, subStream)
+       subStream := test.NewRPCVerifier(t)
+       subStream.Push(initSubReq(subscription), initSubResp(), nil)
+       subStream.Push(initFlowControlReq(), msgSubResp(msg1, msg2), nil)
+       verifiers.AddSubscribeStream(subscription.Path, subscription.Partition, subStream)
 
-	cmtStream := test.NewRPCVerifier(t)
-	cmtStream.Push(initCommitReq(subscription), initCommitResp(), nil)
-	// Note: msg2 never delivered to the client and never acked.
-	cmtStream.Push(commitReq(23), commitResp(1), nil)
-	verifiers.AddCommitStream(subscription.Path, subscription.Partition, cmtStream)
+       cmtStream := test.NewRPCVerifier(t)
+       cmtStream.Push(initCommitReq(subscription), initCommitResp(), nil)
+       // Note: msg2 never delivered to the client and never acked.
+       cmtStream.Push(commitReq(23), commitResp(1), nil)
+       verifiers.AddCommitStream(subscription.Path, subscription.Partition, cmtStream)
 
-	mockServer.OnTestStart(verifiers)
-	defer mockServer.OnTestEnd()
+       mockServer.OnTestStart(verifiers)
+       defer mockServer.OnTestEnd()
 
-	var aSub atomic.Value // Stores a *singlePartitionSubscriber
-	var msgCount int32
-	onMessage := func(gotMsg *pb.SequencedMessage, ack AckConsumer) {
-		atomic.AddInt32(&msgCount, 1)
-		ack.Ack()
+       var aSub atomic.Value // Stores a *singlePartitionSubscriber
+       var msgCount int32
+       onMessage := func(gotMsg *pb.SequencedMessage, ack AckConsumer) {
+               atomic.AddInt32(&msgCount, 1)
+               ack.Ack()
 
-		// Stop the subscriber directly in the message receiver func to terminate
-		// in the middle of processing a received message batch.
-		sub := aSub.Load().(*singlePartitionSubscriber)
-		sub.Stop()
-	}
+               // Stop the subscriber directly in the message receiver func to terminate
+               // in the middle of processing a received message batch.
+               sub := aSub.Load().(*singlePartitionSubscriber)
+               sub.Stop()
+       }
 
-	sub := newTestSinglePartitionSubscriber(t, onMessage, subscription)
-	aSub.Store(sub)
-	if gotErr := sub.WaitStarted(); gotErr != nil {
-		t.Errorf("Start() got err: (%v)", gotErr)
-	}
-	if gotErr := sub.WaitStopped(); gotErr != nil {
-		t.Errorf("Stop() got err: (%v)", gotErr)
-	}
-	if got, want := atomic.LoadInt32(&msgCount), int32(1); got != want {
-		t.Errorf("Received message count: got %d, want %d", got, want)
-	}
+       sub := newTestSinglePartitionSubscriber(t, onMessage, subscription)
+       aSub.Store(sub)
+       if gotErr := sub.WaitStarted(); gotErr != nil {
+               t.Errorf("Start() got err: (%v)", gotErr)
+       }
+       if gotErr := sub.WaitStopped(); gotErr != nil {
+               t.Errorf("Stop() got err: (%v)", gotErr)
+       }
+       if got, want := atomic.LoadInt32(&msgCount), int32(1); got != want {
+               t.Errorf("Received message count: got %d, want %d", got, want)
+       }
 }
 */
 
@@ -729,35 +729,6 @@ func newTestAssigningSubscriber(t *testing.T, receiverFunc MessageReceiverFunc, 
 	sub.Start()
 	return sub
 }
-
-/*
-func TestAssigningSubscriberDiscardsAssignmentsAfterStop(t *testing.T) {
-	const subscription = "projects/123456/locations/us-central1-b/subscriptions/my-sub"
-	receiver := newTestMessageReceiver(t)
-
-	verifiers := test.NewVerifiers(t)
-	stream := test.NewRPCVerifier(t)
-	barrier1 := stream.PushWithBarrier(initAssignmentReq(subscription, fakeUUID[:]), nil, nil)
-	barrier2 := stream.PushWithBarrier(nil, assignmentResp([]int64{3}), nil)
-	verifiers.AddAssignmentStream(subscription, stream)
-
-	mockServer.OnTestStart(verifiers)
-	defer mockServer.OnTestEnd()
-
-	sub := newTestAssigningSubscriber(t, receiver.onMessages, subscription)
-	if gotErr := sub.WaitStarted(); gotErr != nil {
-		t.Errorf("Start() got err: (%v)", gotErr)
-	}
-	// To ensure test is deterministic, i.e. server must receive initial request
-	// before stopping the client.
-	barrier1.Release()
-	sub.Stop()
-	barrier2.Release()
-	if gotErr := sub.WaitStopped(); gotErr != nil {
-		t.Errorf("Stop() got err: (%v)", gotErr)
-	}
-}
-*/
 
 func TestAssigningSubscriberAddRemovePartitions(t *testing.T) {
 	const subscription = "projects/123456/locations/us-central1-b/subscriptions/my-sub"

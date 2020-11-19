@@ -16,7 +16,6 @@ package wire
 import (
 	"context"
 	"errors"
-	"log"
 	"reflect"
 	"time"
 
@@ -63,7 +62,7 @@ type subscribeStream struct {
 	initialReq   *pb.SubscribeRequest
 	receiver     MessageReceiverFunc
 
-	// Fields below must be guarded with mutex.
+	// Fields below must be guarded with mu.
 	stream          *retryableStream
 	acks            *ackTracker
 	offsetTracker   subscriberOffsetTracker
@@ -348,7 +347,7 @@ type assigningSubscriber struct {
 	subFactory *singlePartitionSubscriberFactory
 	assigner   *assigner
 
-	// Fields below must be guarded with mutex.
+	// Fields below must be guarded with mu.
 	// Subscribers keyed by partition number. Updated as assignments change.
 	subscribers map[int]*singlePartitionSubscriber
 
@@ -384,7 +383,6 @@ func (as *assigningSubscriber) handleAssignment(partitions partitionSet) error {
 				return err
 			}
 			as.subscribers[partition] = subscriber
-			log.Printf("assigningSubscriber: added subscriber for partition %d\n", partition)
 		}
 	}
 
@@ -395,7 +393,6 @@ func (as *assigningSubscriber) handleAssignment(partitions partitionSet) error {
 			// Safe to delete map entry during range loop:
 			// https://golang.org/ref/spec#For_statements
 			delete(as.subscribers, partition)
-			log.Printf("assigningSubscriber: removed subscriber for partition %d\n", partition)
 		}
 	}
 	return nil
