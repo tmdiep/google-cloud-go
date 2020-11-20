@@ -18,11 +18,11 @@ import (
 	"errors"
 	"sync"
 
-	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/pubsublite"
 	"cloud.google.com/go/pubsublite/internal/wire"
 	"google.golang.org/api/option"
 
+	pubsub "cloud.google.com/go/pubsublite/internal/pubsub"
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
@@ -125,18 +125,23 @@ func (s *SubscriberClient) initReceive(ctx context.Context, receiver MessageRece
 		return nil, ErrDuplicateReceive
 	}
 
-	onMessage := func(msg *pb.SequencedMessage, ack wire.AckConsumer) {
-		pslAckh := &pslAckHandler{
-			ackh:  ack,
-			nackh: s.handleNack,
+	onMessage := func(msgs []*wire.ReceivedMessage) {
+		for _, m := range msgs {
+			pslAckh := &pslAckHandler{
+				ackh:  m.Ack,
+				nackh: s.handleNack,
+			}
+			psMsg := pubsub.NewMessage(pslAckh)
+			pslAckh.msg = psMsg
+			if err := s.settings.MessageTransformer(m.Msg, psMsg); err != nil {
+				s.terminate(err)
+				return
+			}
+			receiver(ctx, psMsg)
+
+			// TODO: Check whether the subscriber has stopped. If it has, cancel the
+			// acks in the rest of the msg batch
 		}
-		psMsg := &pubsub.Message{} // TODO: call NewMessage(pslAckh)
-		pslAckh.msg = psMsg
-		if err := s.settings.MessageTransformer(msg, psMsg); err != nil {
-			s.terminate(err)
-			return
-		}
-		receiver(ctx, psMsg)
 	}
 
 	wireSub, err := wire.NewSubscriber(ctx, s.settings.toWireSettings(), onMessage, s.region, s.subscription.String(), s.options...)

@@ -16,11 +16,12 @@ package ps
 import (
 	"context"
 
-	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/pubsublite"
+	"cloud.google.com/go/pubsublite/common"
 	"cloud.google.com/go/pubsublite/internal/wire"
 	"google.golang.org/api/option"
 
+	pubsub "cloud.google.com/go/pubsublite/internal/pubsub"
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
@@ -60,18 +61,19 @@ func NewPublisherClient(ctx context.Context, settings PublishSettings, topic pub
 // Once Stop() has been called, future calls to Publish will immediately return
 // a PublishResult with an error.
 func (p *PublisherClient) Publish(ctx context.Context, msg *pubsub.Message) *pubsub.PublishResult {
-	result, setResult := pubsub.NewPublishResult()
+	result := pubsub.NewPublishResult()
 	msgpb, err := p.transformMessage(msg)
 	if err != nil {
-		setResult("", err)
+		pubsub.SetPublishResult(result, "", err)
 		p.Stop()
 		return result
 	}
-	p.wirePub.Publish(msgpb, func(pm *wire.PublishMetadata, err error) {
+
+	p.wirePub.Publish(msgpb, func(pm *common.PublishMetadata, err error) {
 		if pm != nil {
-			setResult(pm.String(), err)
+			pubsub.SetPublishResult(result, pm.String(), err)
 		} else {
-			setResult("", err)
+			pubsub.SetPublishResult(result, "", err)
 		}
 	})
 	return result
@@ -89,6 +91,7 @@ func (p *PublisherClient) transformMessage(msg *pubsub.Message) (*pb.PubSubMessa
 	if p.settings.MessageTransformer != nil {
 		return p.settings.MessageTransformer(msg)
 	}
+
 	keyExtractor := p.settings.KeyExtractor
 	if keyExtractor == nil {
 		keyExtractor = extractOrderingKey

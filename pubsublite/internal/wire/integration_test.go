@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"cloud.google.com/go/internal/testutil"
+	"cloud.google.com/go/pubsublite/common"
+
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
@@ -74,7 +76,7 @@ func TestPubSub(t *testing.T) {
 	startDuration := time.Now().Sub(beforeStart)
 	fmt.Printf("Publisher start duration: %v\n", startDuration)
 
-	published := func(pm *PublishMetadata, err error) {
+	published := func(pm *common.PublishMetadata, err error) {
 		fmt.Printf("Published msg: %s, %v\n", pm, err)
 	}
 
