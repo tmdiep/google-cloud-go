@@ -22,6 +22,7 @@ import (
 // AckConsumer is the interface exported from this package for acking messages.
 type AckConsumer interface {
 	Ack()
+	Clear()
 }
 
 // ackedFunc is invoked when a message has been acked by the user. Note: if the
@@ -66,6 +67,12 @@ func (ac *ackConsumer) IsAcked() bool {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 	return ac.acked
+}
+
+func (ac *ackConsumer) IsDone() bool {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	return ac.acked || ac.onAck == nil
 }
 
 // Clear onAck when the ack can no longer be processed. The user's ack would be
@@ -135,10 +142,12 @@ func (at *ackTracker) CommitOffset() int64 {
 			break
 		}
 		ack, _ := elem.Value.(*ackConsumer)
-		if !ack.IsAcked() {
+		if !ack.IsDone() {
 			break
 		}
-		at.ackedPrefixOffset = ack.Offset
+		if ack.IsAcked() {
+			at.ackedPrefixOffset = ack.Offset
+		}
 		at.outstandingAcks.Remove(elem)
 		ack.Clear()
 	}
@@ -241,7 +250,7 @@ func (ct *commitCursorTracker) ConfirmOffsets(numConfirmed int64) error {
 	return nil
 }
 
-// Done when the server has confirmed the desired commit offset.
-func (ct *commitCursorTracker) Done() bool {
+// UpToDate when the server has confirmed the desired commit offset.
+func (ct *commitCursorTracker) UpToDate() bool {
 	return ct.acks.CommitOffset() <= ct.lastConfirmedOffset
 }
