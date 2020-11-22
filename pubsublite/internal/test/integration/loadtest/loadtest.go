@@ -17,7 +17,7 @@ topics are provisioned a publish and subscribe throughput, so this tests flow
 control.
 
 Example simple usage:
-  go run loadtest.go --project=<project> --topic=<topic id> --zone=<zone>
+  go run loadtest.go --project=<project> --zone=<zone> --topic=<topic id>
 */
 package main
 
@@ -119,8 +119,8 @@ func receiveAll(harness *integration.TestHarness, msgTracker *test.MsgTracker) {
 					tag = string(values.Values[0])
 				}
 			}
-			// Ignore messages that were not sent during this test run.
 			if !msgTracker.Remove(tag) {
+				// Ignore messages that were not sent during this test run.
 				continue
 			}
 
@@ -131,7 +131,7 @@ func receiveAll(harness *integration.TestHarness, msgTracker *test.MsgTracker) {
 		}
 	}
 
-	subscriber := harness.StartSubscriber(onReceive)
+	subscriber := harness.StartFirstSubscriber(onReceive)
 	log.Printf("Subscriber started in: %v", time.Now().Sub(start))
 
 	go func() {

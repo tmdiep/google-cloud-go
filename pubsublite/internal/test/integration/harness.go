@@ -18,6 +18,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"strings"
 
 	"cloud.google.com/go/pubsublite"
 	"cloud.google.com/go/pubsublite/internal/wire"
@@ -27,19 +28,20 @@ var (
 	project          = flag.String("project", "", "the project owning the topic/subscription resources")
 	zone             = flag.String("zone", "", "the cloud zone where the topic/subscription resources are located")
 	topicID          = flag.String("topic", "", "the topic to publish to")
-	subscriptionID   = flag.String("subscription", "", "the subscription to receive from")
+	subscriptionIDs  = flag.String("subscription", "", "comma separated subscriptions to receive from")
 	enableAssignment = flag.Bool("assignment", false, "use partition assignment for subscribers")
 	publishBatchSize = flag.Int("publish_setting_batch", 100, "publish batch size")
 )
 
 type TestHarness struct {
-	PublishSettings  wire.PublishSettings
-	ReceiveSettings  wire.ReceiveSettings
-	EnableAssignment bool
+	PublishSettings     wire.PublishSettings
+	ReceiveSettings     wire.ReceiveSettings
+	EnableAssignment    bool
+	TopicPartitionCount int
+	Topic               pubsublite.TopicPath
+	Subscriptions       []pubsublite.SubscriptionPath
 
-	topic        pubsublite.TopicPath
-	subscription pubsublite.SubscriptionPath
-	region       string
+	region string
 }
 
 func NewTestHarness() *TestHarness {
@@ -65,9 +67,9 @@ func (th *TestHarness) init() {
 	if *topicID == "" {
 		log.Fatal("Must set --topic to the topic ID")
 	}
-	subsID := *topicID
-	if *subscriptionID != "" {
-		subsID = *subscriptionID
+	subsIDs := *topicID
+	if *subscriptionIDs != "" {
+		subsIDs = *subscriptionIDs
 	}
 
 	var err error
@@ -75,8 +77,26 @@ func (th *TestHarness) init() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	th.topic = pubsublite.TopicPath{Project: proj, Zone: *zone, TopicID: *topicID}
-	th.subscription = pubsublite.SubscriptionPath{Project: proj, Zone: *zone, SubscriptionID: subsID}
+	ctx := context.Background()
+	admin, err := pubsublite.NewAdminClient(ctx, th.region)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	th.Topic = pubsublite.TopicPath{Project: proj, Zone: *zone, TopicID: *topicID}
+	th.TopicPartitionCount, err = admin.TopicPartitions(ctx, th.Topic)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("Topic %s has %d partitions", th.Topic, th.TopicPartitionCount)
+
+	for _, subsID := range strings.Split(subsIDs, ",") {
+		subscription := pubsublite.SubscriptionPath{Project: proj, Zone: *zone, SubscriptionID: subsID}
+		if _, err := admin.Subscription(ctx, subscription); err != nil {
+			log.Fatal(err)
+		}
+		th.Subscriptions = append(th.Subscriptions, subscription)
+	}
 
 	th.PublishSettings = wire.DefaultPublishSettings
 	th.PublishSettings.CountThreshold = *publishBatchSize
@@ -85,7 +105,7 @@ func (th *TestHarness) init() {
 }
 
 func (th *TestHarness) StartPublisher() wire.Publisher {
-	publisher, err := wire.NewPublisher(context.Background(), th.PublishSettings, th.region, th.topic.String())
+	publisher, err := wire.NewPublisher(context.Background(), th.PublishSettings, th.region, th.Topic.String())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -96,15 +116,18 @@ func (th *TestHarness) StartPublisher() wire.Publisher {
 	return publisher
 }
 
-func (th *TestHarness) StartSubscriber(onReceive wire.MessageReceiverFunc) wire.Subscriber {
+func (th *TestHarness) StartFirstSubscriber(onReceive wire.MessageReceiverFunc) wire.Subscriber {
+	return th.StartSubscriber(th.Subscriptions[0], onReceive)
+}
+
+func (th *TestHarness) StartSubscriber(subscription pubsublite.SubscriptionPath, onReceive wire.MessageReceiverFunc) wire.Subscriber {
 	settings := th.ReceiveSettings
 	if !th.EnableAssignment {
-		numPartitions := th.TopicPartitions()
-		for i := 0; i < numPartitions; i++ {
-			settings.Partitions = append(settings.Partitions, i)
+		for p := 0; p < th.TopicPartitionCount; p++ {
+			settings.Partitions = append(settings.Partitions, p)
 		}
 	}
-	subscriber, err := wire.NewSubscriber(context.Background(), settings, onReceive, th.region, th.subscription.String())
+	subscriber, err := wire.NewSubscriber(context.Background(), settings, onReceive, th.region, subscription.String())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -113,18 +136,4 @@ func (th *TestHarness) StartSubscriber(onReceive wire.MessageReceiverFunc) wire.
 		log.Fatal(err)
 	}
 	return subscriber
-}
-
-func (th *TestHarness) TopicPartitions() int {
-	ctx := context.Background()
-	admin, err := pubsublite.NewAdminClient(ctx, th.region)
-	if err != nil {
-		log.Fatal(err)
-	}
-	numPartitions, err := admin.TopicPartitions(ctx, th.topic)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("Topic %s has %d partitions", th.topic, numPartitions)
-	return numPartitions
 }
