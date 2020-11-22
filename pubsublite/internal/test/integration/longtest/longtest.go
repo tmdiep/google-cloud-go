@@ -12,21 +12,22 @@
 // See the License for the specific language governing permissions and
 
 /*
-longrunning attempts to publish and subscribe for as long as possible. It
-supports a few options for running various test cases.
+longtest attempts to continuously publish and subscribe until the process is
+killed. It measures how long it takes for publisher and subscriber clients to
+experience a permanent error.
 
 Example simple usage:
-  go run longrunning.go --project=<project> --topic=<topic id> --zone=<zone>
+  go run longtest.go --project=<project> --topic=<topic id> --zone=<zone>
 
 Example for testing subscriber partition assignment (must use topic with
 multiple partitions):
-  go run longrunning.go --project=<project> --topic=<topic id> --zone=<zone> --assignment=true --subscriber_count=3
+  go run longtest.go --project=<project> --topic=<topic id> --zone=<zone> --assignment=true --subscriber_count=3
 
 Example for testing ordering:
-  go run longrunning.go --project=<project> --topic=<topic id> --zone=<zone> --message_count=100 --publish_batch=10 --verbose=false
+  go run longtest.go --project=<project> --topic=<topic id> --zone=<zone> --message_count=100 --publish_setting_batch=10 --verbose=false
 
 Example for testing throughput:
-  go run longrunning.go --project=<project> --topic=<topic id> --zone=<zone> --message_count=100 --sleep=0s --verbose=false
+  go run longtest.go --project=<project> --topic=<topic id> --zone=<zone> --message_count=100 --sleep=0s --verbose=false
 */
 package main
 
@@ -36,7 +37,9 @@ import (
 	"log"
 	"time"
 
-	"cloud.google.com/go/pubsublite/internal/integration"
+	"cloud.google.com/go/pubsublite/common"
+	"cloud.google.com/go/pubsublite/internal/test"
+	"cloud.google.com/go/pubsublite/internal/test/integration"
 	"cloud.google.com/go/pubsublite/internal/wire"
 
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
@@ -63,27 +66,31 @@ func main() {
 	}
 
 	start := time.Now()
-	msgPrefix := fmt.Sprintf("longrunning-%d", start.Unix())
-	msgTracker := integration.NewMsgTracker()
-	orderingValidator := integration.NewOrderingValidator()
+	msgPrefix := fmt.Sprintf("longtest-%d", start.Unix())
+	msgTracker := test.NewMsgTracker()
+	orderingValidator := test.NewOrderingValidator()
 
 	// Setup subscribers.
-	onReceive := func(seqMsg *pb.SequencedMessage, ack wire.AckConsumer) {
-		ack.Ack()
+	onReceive := func(msgs []*wire.ReceivedMessage) {
+		for _, m := range msgs {
+			m.Ack.Ack()
 
-		msg := string(seqMsg.GetMessage().GetData())
-		if !msgTracker.Remove(msg) {
-			// Ignore messages from a previous test run.
-			return
-		}
-		if *verbose {
-			log.Printf("Received: (offset=%d) %s", seqMsg.GetCursor().GetOffset(), msg)
-		}
-		if err := orderingValidator.ReceiveMsg(seqMsg.Message); err != nil {
-			log.Fatalf("Test failed: %v, time elapsed: %v", err, time.Now().Sub(start))
+			msg := string(m.Msg.GetMessage().GetData())
+			if !msgTracker.Remove(msg) {
+				// Ignore messages from a previous test run.
+				return
+			}
+			if *verbose {
+				log.Printf("Received: (offset=%d) %s", m.Msg.GetCursor().GetOffset(), msg)
+			}
+			if err := orderingValidator.ReceiveMsg(m.Msg.Message); err != nil {
+				log.Fatalf("Test failed: %v, time elapsed: %v", err, time.Now().Sub(start))
+			}
 		}
 	}
 
+	// TODO: Move assignment to separate test and test multiple subscriptions here
+	// Auto create resources
 	var subscribers []wire.Subscriber
 	for i := 0; i < numSubscribers; i++ {
 		subscriber := harness.StartSubscriber(onReceive)
@@ -98,7 +105,7 @@ func main() {
 
 	// Setup publisher.
 	publisher := harness.StartPublisher()
-	onPublished := func(pm *wire.PublishMetadata, err error) {
+	onPublished := func(pm *common.PublishMetadata, err error) {
 		if err != nil {
 			log.Fatalf("Publish error: %v, time elapsed: %v", err, time.Now().Sub(start))
 		}

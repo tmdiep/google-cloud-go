@@ -18,7 +18,6 @@ import (
 	"flag"
 	"log"
 	"os"
-	"strconv"
 
 	"cloud.google.com/go/pubsublite"
 	"cloud.google.com/go/pubsublite/internal/wire"
@@ -30,7 +29,7 @@ var (
 	topicID          = flag.String("topic", "", "the topic to publish to")
 	subscriptionID   = flag.String("subscription", "", "the subscription to receive from")
 	enableAssignment = flag.Bool("assignment", false, "use partition assignment for subscribers")
-	publishBatchSize = flag.Int("publish_batch", 100, "publish batch size")
+	publishBatchSize = flag.Int("publish_setting_batch", 100, "publish batch size")
 )
 
 type TestHarness struct {
@@ -58,9 +57,6 @@ func (th *TestHarness) init() {
 	}
 	if proj == "" {
 		log.Fatal("Must provide --project or set GOOGLE_CLOUD_PROJECT environment variable")
-	}
-	if _, err := strconv.ParseInt(proj, 10, 64); err != nil {
-		log.Fatal("Only project number currently supported.")
 	}
 
 	if *zone == "" {
