@@ -144,8 +144,8 @@ func TestCommitterDiscardOutstandingAcks(t *testing.T) {
 		t.Errorf("Start() got err: (%v)", gotErr)
 	}
 
-	ack1.Clear()
-	ack2.Clear()
+	ack1.Cancel()
+	ack2.Cancel()
 	// Committer terminates without waiting for acks to be fulfilled.
 	cmt.StopVerifyNoError()
 }

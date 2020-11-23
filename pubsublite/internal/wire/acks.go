@@ -21,8 +21,10 @@ import (
 
 // AckConsumer is the interface exported from this package for acking messages.
 type AckConsumer interface {
+	// Ack the message.
 	Ack()
-	Clear()
+	// Cancel ack processing for this message.
+	Cancel()
 }
 
 // ackedFunc is invoked when a message has been acked by the user. Note: if the
@@ -75,9 +77,9 @@ func (ac *ackConsumer) IsDone() bool {
 	return ac.acked || ac.onAck == nil
 }
 
-// Clear onAck when the ack can no longer be processed. The user's ack would be
-// ignored.
-func (ac *ackConsumer) Clear() {
+// Cancel clears onAck when the ack can no longer be processed. The user's ack
+// would be ignored.
+func (ac *ackConsumer) Cancel() {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 	ac.onAck = nil
@@ -149,7 +151,7 @@ func (at *ackTracker) CommitOffset() int64 {
 			at.ackedPrefixOffset = ack.Offset
 		}
 		at.outstandingAcks.Remove(elem)
-		ack.Clear()
+		ack.Cancel()
 	}
 
 	if at.ackedPrefixOffset == nilCursorOffset {
@@ -167,7 +169,7 @@ func (at *ackTracker) Release() {
 
 	for elem := at.outstandingAcks.Front(); elem != nil; elem = elem.Next() {
 		ack, _ := elem.Value.(*ackConsumer)
-		ack.Clear()
+		ack.Cancel()
 	}
 	at.outstandingAcks.Init()
 }

@@ -46,7 +46,7 @@ func TestAckConsumerAck(t *testing.T) {
 	}
 }
 
-func TestAckConsumerClear(t *testing.T) {
+func TestAckConsumerCancel(t *testing.T) {
 	onAck := func(ac *ackConsumer) {
 		t.Error("onAck func should not have been called")
 	}
@@ -58,7 +58,7 @@ func TestAckConsumerClear(t *testing.T) {
 		t.Errorf("ackConsumer.IsDone() got %v, want %v", got, want)
 	}
 
-	ackConsumer.Clear()
+	ackConsumer.Cancel()
 	if got, want := ackConsumer.IsAcked(), false; got != want {
 		t.Errorf("ackConsumer.IsAcked() got %v, want %v", got, want)
 	}
@@ -185,8 +185,8 @@ func TestAckTrackerCancelAcks(t *testing.T) {
 		t.Errorf("ackTracker.Empty() got %v, want %v", got, want)
 	}
 
-	ack2.Clear()
-	ack3.Clear()
+	ack2.Cancel()
+	ack3.Cancel()
 	if got, want := ackTracker.CommitOffset(), int64(2); got != want {
 		t.Errorf("ackTracker.CommitOffset() got %v, want %v", got, want)
 	}
