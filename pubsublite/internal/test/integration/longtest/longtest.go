@@ -71,7 +71,7 @@ func newSubscriber(harness *integration.TestHarness, subscription pubsublite.Sub
 		Subscription:      subscription,
 		MsgTracker:        test.NewMsgTracker(),
 		OrderingValidator: test.NewOrderingReceiver(),
-		DuplicateDetector: test.NewDuplicateMessageDetector(),
+		DuplicateDetector: test.NewDuplicateMsgDetector(),
 	}
 
 	sub := harness.StartSubscriber(subscription, s.onReceive)

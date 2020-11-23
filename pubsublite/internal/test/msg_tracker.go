@@ -51,14 +51,15 @@ func (mt *MsgTracker) Remove(msg string) bool {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
 
-	_, exists := mt.msgMap[msg]
-	delete(mt.msgMap, msg)
-	if len(mt.msgMap) == 0 {
-		var s struct{}
-		mt.done <- s
+	if _, exists := mt.msgMap[msg]; exists {
+		delete(mt.msgMap, msg)
+		if len(mt.msgMap) == 0 {
+			var void struct{}
+			mt.done <- void
+		}
+		return true
 	}
-
-	return exists
+	return false
 }
 
 // Wait up to `timeout` to receive all tracked messages.
