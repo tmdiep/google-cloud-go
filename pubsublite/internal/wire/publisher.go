@@ -266,26 +266,27 @@ func (pp *singlePartitionPublisher) unsafeCheckDone() {
 // singlePartitionPublisher.
 type routingPublisher struct {
 	// Immutable after creation.
-	ctx         context.Context
-	adminClient *vkit.AdminClient
-	msgRouter   messageRouter
-	topicPath   string
-	pubFactory  *singlePartitionPublisherFactory
+	ctx              context.Context
+	adminClient      *vkit.AdminClient
+	msgRouterFactory *messageRouterFactory
+	topicPath        string
+	pubFactory       *singlePartitionPublisherFactory
 
 	// Fields below must be guarded with mutex.
+	msgRouter  messageRouter
 	publishers map[int]*singlePartitionPublisher
 
 	compositeService
 }
 
-func newRoutingPublisher(adminClient *vkit.AdminClient, msgRouter messageRouter, pubFactory *singlePartitionPublisherFactory) *routingPublisher {
+func newRoutingPublisher(adminClient *vkit.AdminClient, msgRouterFactory *messageRouterFactory, pubFactory *singlePartitionPublisherFactory) *routingPublisher {
 	pub := &routingPublisher{
-		ctx:         pubFactory.ctx,
-		adminClient: adminClient,
-		msgRouter:   msgRouter,
-		topicPath:   pubFactory.topicPath,
-		pubFactory:  pubFactory,
-		publishers:  make(map[int]*singlePartitionPublisher),
+		ctx:              pubFactory.ctx,
+		adminClient:      adminClient,
+		msgRouterFactory: msgRouterFactory,
+		topicPath:        pubFactory.topicPath,
+		pubFactory:       pubFactory,
+		publishers:       make(map[int]*singlePartitionPublisher),
 	}
 	pub.init()
 	return pub
@@ -317,7 +318,7 @@ func (rp *routingPublisher) Start() {
 		rp.publishers[i] = pub
 		rp.unsafeAddServices(pub)
 	}
-	rp.msgRouter.SetPartitionCount(partitionCount)
+	rp.msgRouter = rp.msgRouterFactory.New(partitionCount)
 }
 
 func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onResult PublishResultFunc) {
@@ -384,12 +385,12 @@ func NewPublisher(ctx context.Context, settings PublishSettings, region, topicPa
 		return nil, err
 	}
 
-	msgRouter := newDefaultMessageRouter(rand.New(rand.NewSource(time.Now().UnixNano())))
+	msgRouterFactory := newMessageRouterFactory(rand.New(rand.NewSource(time.Now().UnixNano())))
 	pubFactory := &singlePartitionPublisherFactory{
 		ctx:       ctx,
 		pubClient: pubClient,
 		settings:  settings,
 		topicPath: topicPath,
 	}
-	return newRoutingPublisher(adminClient, msgRouter, pubFactory), nil
+	return newRoutingPublisher(adminClient, msgRouterFactory, pubFactory), nil
 }
