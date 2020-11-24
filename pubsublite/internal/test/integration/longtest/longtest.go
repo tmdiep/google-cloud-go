@@ -58,12 +58,13 @@ var (
 	verbose      = flag.Bool("verbose", true, "whether to log verbose messages")
 )
 
+// subscriber contains a wire subscriber with message validators.
 type subscriber struct {
 	Subscription      pubsublite.SubscriptionPath
+	Sub               wire.Subscriber
 	MsgTracker        *test.MsgTracker
 	OrderingValidator *test.OrderingReceiver
 	DuplicateDetector *test.DuplicateMsgDetector
-	Sub               wire.Subscriber
 }
 
 func newSubscriber(harness *integration.TestHarness, subscription pubsublite.SubscriptionPath) *subscriber {
@@ -90,19 +91,25 @@ func (s *subscriber) onReceive(msgs []*wire.ReceivedMessage) {
 		m.Ack.Ack()
 
 		data := string(m.Msg.GetMessage().GetData())
-		key := string(m.Msg.GetMessage().GetKey())
-		offset := m.Msg.GetCursor().GetOffset()
 		if !s.MsgTracker.Remove(data) {
 			// Ignore messages from a previous test run.
 			continue
 		}
+
+		offset := m.Msg.GetCursor().GetOffset()
+		key := string(m.Msg.GetMessage().GetKey())
 		if *verbose {
-			log.Printf("Received: (offset=%d) %s", offset, data)
+			log.Printf("Received: (key=%s, offset=%d) %s", key, offset, data)
 		}
+
+		// Ordering and duplicate validation.
 		if err := s.OrderingValidator.Receive(data, key); err != nil {
 			log.Fatalf("%s: %v", s.Subscription, err)
 		}
 		s.DuplicateDetector.Receive(data, offset)
+		if s.DuplicateDetector.HasReceiveDuplicates() {
+			log.Fatalf("%s: %s", s.Subscription, s.DuplicateDetector.Status())
+		}
 	}
 }
 
