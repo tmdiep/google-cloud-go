@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/xerrors"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 
@@ -278,13 +279,20 @@ func (s *subscribeStream) unsafeSendFlowControl(req *pb.FlowControlRequest) {
 }
 
 func (s *subscribeStream) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
-	if !s.unsafeUpdateStatus(targetStatus, err) {
+	if !s.unsafeUpdateStatus(targetStatus, s.wrapError(err)) {
 		return
 	}
 
 	// No data to send. Immediately terminate the stream.
 	s.pollFlowControl.Stop()
 	s.stream.Stop()
+}
+
+func (s *subscribeStream) wrapError(err error) error {
+	if err != nil {
+		return xerrors.Errorf("subscriber(%s): %w", s.subscription, err)
+	}
+	return err
 }
 
 // singlePartitionSubscriber receives messages from a single topic partition.

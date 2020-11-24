@@ -17,6 +17,8 @@ import (
 	"context"
 	"fmt"
 
+	"golang.org/x/xerrors"
+
 	vkit "cloud.google.com/go/pubsublite/apiv1"
 	gax "github.com/googleapis/gax-go/v2"
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
@@ -93,7 +95,7 @@ func (p *partitionCountWatcher) doUpdatePartitionCount() (int, error) {
 	defer p.mu.Unlock()
 
 	if err != nil {
-		err = fmt.Errorf("pubsublite: failed to update topic partition count: %v", err)
+		err = xerrors.Errorf("pubsublite: failed to update topic partition count: %w", err)
 		p.unsafeInitiateShutdown(serviceTerminated, err)
 		return 0, err
 	}

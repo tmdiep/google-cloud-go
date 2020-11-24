@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"time"
 
+	"golang.org/x/xerrors"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 
@@ -131,7 +132,7 @@ func (pp *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onResult Publ
 	// terminate the stream once results are received.
 	if err := processMessage(); err != nil {
 		pp.unsafeInitiateShutdown(serviceTerminating, err)
-		onResult(nil, err)
+		onResult(nil, pp.wrapError(err))
 	}
 }
 
@@ -229,7 +230,7 @@ func (pp *singlePartitionPublisher) onResponse(response interface{}) {
 //
 // Expected to be called with singlePartitionPublisher.mu held.
 func (pp *singlePartitionPublisher) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
-	if !pp.unsafeUpdateStatus(targetStatus, err) {
+	if !pp.unsafeUpdateStatus(targetStatus, pp.wrapError(err)) {
 		return
 	}
 
@@ -256,7 +257,7 @@ func (pp *singlePartitionPublisher) unsafeInitiateShutdown(targetStatus serviceS
 	}
 
 	// For immediate shutdown set the error message for all pending messages.
-	pp.batcher.OnPermanentError(err)
+	pp.batcher.OnPermanentError(pp.wrapError(err))
 }
 
 // unsafeCheckDone closes the stream once all pending messages have been
@@ -265,6 +266,13 @@ func (pp *singlePartitionPublisher) unsafeCheckDone() {
 	if pp.status == serviceTerminating && pp.batcher.InFlightBatchesEmpty() {
 		pp.stream.Stop()
 	}
+}
+
+func (pp *singlePartitionPublisher) wrapError(err error) error {
+	if err != nil {
+		return xerrors.Errorf("publisher(%s): %w", pp.topic, err)
+	}
+	return err
 }
 
 // routingPublisher publishes messages to N topic partitions, each managed by a

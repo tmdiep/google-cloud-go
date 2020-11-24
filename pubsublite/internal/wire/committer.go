@@ -20,6 +20,7 @@ import (
 	"reflect"
 	"time"
 
+	"golang.org/x/xerrors"
 	"google.golang.org/grpc"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
@@ -41,6 +42,7 @@ const commitCursorPeriod = 50 * time.Millisecond
 // in-flight commit requests.
 type committer struct {
 	// Immutable after creation.
+	subscription subscriptionPartition
 	cursorClient *vkit.CursorClient
 	initialReq   *pb.StreamingCommitCursorRequest
 
@@ -57,6 +59,7 @@ func newCommitter(ctx context.Context, cursor *vkit.CursorClient, settings Recei
 	subscription subscriptionPartition, acks *ackTracker, disableTasks bool) *committer {
 
 	c := &committer{
+		subscription: subscription,
 		cursorClient: cursor,
 		initialReq: &pb.StreamingCommitCursorRequest{
 			Request: &pb.StreamingCommitCursorRequest_Initial{
@@ -190,7 +193,7 @@ func (c *committer) unsafeCommitOffsetToStream() {
 }
 
 func (c *committer) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
-	if !c.unsafeUpdateStatus(targetStatus, err) {
+	if !c.unsafeUpdateStatus(targetStatus, c.wrapError(err)) {
 		return
 	}
 
@@ -218,4 +221,11 @@ func (c *committer) unsafeCheckDone() {
 func (c *committer) unsafeTerminate() {
 	c.pollCommits.Stop()
 	c.stream.Stop()
+}
+
+func (c *committer) wrapError(err error) error {
+	if err != nil {
+		return xerrors.Errorf("committer(%s): %w", c.subscription, err)
+	}
+	return err
 }

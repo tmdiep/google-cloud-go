@@ -15,3 +15,8 @@ The following are general conventions used in this package:
   acquired the struct's mutex. Since Go does not support re-entrant locks, they
   do not acquire the mutex. These are typically common util methods that need
   to be atomic with other operations.
+
+## General TODOs
+
+* Once support for Go1.12 is dropped, remove usage of `golang.org/x/xerrors` for
+  wrapping errors and use `errors` from the standard library.

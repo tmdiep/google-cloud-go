@@ -20,6 +20,7 @@ import (
 	"reflect"
 
 	"github.com/google/uuid"
+	"golang.org/x/xerrors"
 	"google.golang.org/grpc"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
@@ -63,6 +64,7 @@ type partitionAssignmentReceiver func(partitionSet) error
 // the server sends a new set of partition assignments for a subscriber.
 type assigner struct {
 	// Immutable after creation.
+	subscription      string
 	assignmentClient  *vkit.PartitionAssignmentClient
 	initialReq        *pb.PartitionAssignmentRequest
 	receiveAssignment partitionAssignmentReceiver
@@ -80,6 +82,7 @@ func newAssigner(ctx context.Context, assignmentClient *vkit.PartitionAssignment
 	}
 
 	a := &assigner{
+		subscription:     subscriptionPath,
 		assignmentClient: assignmentClient,
 		initialReq: &pb.PartitionAssignmentRequest{
 			Request: &pb.PartitionAssignmentRequest_Initial{
@@ -165,9 +168,16 @@ func (a *assigner) handleAssignment(assignment *pb.PartitionAssignment) error {
 }
 
 func (a *assigner) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
-	if !a.unsafeUpdateStatus(targetStatus, err) {
+	if !a.unsafeUpdateStatus(targetStatus, a.wrapError(err)) {
 		return
 	}
 	// No data to send. Immediately terminate the stream.
 	a.stream.Stop()
+}
+
+func (a *assigner) wrapError(err error) error {
+	if err != nil {
+		return xerrors.Errorf("assigner(%s): %w", a.subscription, err)
+	}
+	return err
 }
