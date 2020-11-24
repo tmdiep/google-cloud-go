@@ -108,6 +108,26 @@ func isRetryableStreamError(err error, isEligible func(codes.Code) bool) bool {
 	return isEligible(s.Code())
 }
 
+// readOnlyRetryableCallOption returns a call option that retries with backoff
+// for ResourceExhausted in addition to other default retryable codes for
+// Pub/Sub. Suitable for read-only operations.
+func readOnlyRetryableCallOption() gax.CallOption {
+	return gax.WithRetry(func() gax.Retryer {
+		return gax.OnCodes([]codes.Code{
+			codes.Aborted,
+			codes.DeadlineExceeded,
+			codes.Internal,
+			codes.ResourceExhausted,
+			codes.Unavailable,
+			codes.Unknown,
+		}, gax.Backoff{
+			Initial:    100 * time.Millisecond,
+			Max:        60 * time.Second,
+			Multiplier: 1.3,
+		})
+	})
+}
+
 const (
 	pubsubLiteDefaultEndpoint = "-pubsublite.googleapis.com:443"
 	routingMetadataHeader     = "x-goog-request-params"

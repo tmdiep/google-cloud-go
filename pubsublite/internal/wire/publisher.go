@@ -31,6 +31,7 @@ import (
 var (
 	errInvalidInitialPubResponse = errors.New("pubsublite: first response from server was not an initial response for publish")
 	errInvalidMsgPubResponse     = errors.New("pubsublite: received invalid publish response from server")
+	errDecreasingPartitions      = errors.New("pubsublite: publisher does not support decreasing topic partition count")
 )
 
 // singlePartitionPublisher publishes messages to a single topic partition.
@@ -113,9 +114,13 @@ func (pp *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onResult Publ
 	defer pp.mu.Unlock()
 
 	processMessage := func() error {
-		if err := pp.unsafeCheckServiceStatus(); err != nil {
-			return err
+		switch {
+		case pp.status == serviceUninitialized:
+			return ErrServiceUninitialized
+		case pp.status >= serviceTerminating:
+			return ErrServiceStopped
 		}
+
 		if err := pp.batcher.AddMessage(msg, onResult); err != nil {
 			return err
 		}
@@ -263,36 +268,31 @@ func (pp *singlePartitionPublisher) unsafeCheckDone() {
 }
 
 // routingPublisher publishes messages to N topic partitions, each managed by a
-// singlePartitionPublisher.
+// singlePartitionPublisher. It supports increasing topic partition count, but
+// not decreasing.
 type routingPublisher struct {
 	// Immutable after creation.
-	ctx              context.Context
-	adminClient      *vkit.AdminClient
 	msgRouterFactory *messageRouterFactory
-	topicPath        string
 	pubFactory       *singlePartitionPublisherFactory
+	partitionWatcher *partitionCountWatcher
 
-	// Fields below must be guarded with mutex.
+	// Fields below must be guarded with mu.
 	msgRouter  messageRouter
-	publishers map[int]*singlePartitionPublisher
+	publishers []*singlePartitionPublisher
 
 	compositeService
 }
 
 func newRoutingPublisher(adminClient *vkit.AdminClient, msgRouterFactory *messageRouterFactory, pubFactory *singlePartitionPublisherFactory) *routingPublisher {
 	pub := &routingPublisher{
-		ctx:              pubFactory.ctx,
-		adminClient:      adminClient,
 		msgRouterFactory: msgRouterFactory,
-		topicPath:        pubFactory.topicPath,
 		pubFactory:       pubFactory,
-		publishers:       make(map[int]*singlePartitionPublisher),
 	}
 	pub.init()
+	pub.partitionWatcher = newPartitionCountWatcher(pubFactory.ctx, adminClient, pubFactory.settings, pubFactory.topicPath, pub.onPartitionCountChanged)
 	return pub
 }
 
-// No-op if already successfully started.
 func (rp *routingPublisher) Start() {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
@@ -302,23 +302,41 @@ func (rp *routingPublisher) Start() {
 		return
 	}
 
-	partitionCount, err := rp.partitionCount()
+	// Trigger the partitionCountWatcher to fetch the first topic partition count
+	// asynchronously.
+	go rp.partitionWatcher.UpdatePartitionCount()
+}
+
+func (rp *routingPublisher) onPartitionCountChanged(partitionCount int, err error) {
+	rp.mu.Lock()
+	defer rp.mu.Unlock()
+
 	if err != nil {
-		rp.unsafeUpdateStatus(serviceTerminated, err)
+		rp.unsafeInitiateShutdown(serviceTerminated, err)
 		return
 	}
-	if partitionCount <= 0 {
-		err := fmt.Errorf("pubsublite: topic has invalid number of partitions %d", partitionCount)
-		rp.unsafeUpdateStatus(serviceTerminated, err)
+	if partitionCount == len(rp.publishers) {
+		return
+	}
+	if partitionCount < len(rp.publishers) {
+		rp.unsafeInitiateShutdown(serviceTerminating, errDecreasingPartitions)
 		return
 	}
 
-	for i := 0; i < partitionCount; i++ {
+	prevPartitionCount := len(rp.publishers)
+	for i := prevPartitionCount; i < partitionCount; i++ {
 		pub := rp.pubFactory.New(i)
-		rp.publishers[i] = pub
+		rp.publishers = append(rp.publishers, pub)
 		rp.unsafeAddServices(pub)
 	}
 	rp.msgRouter = rp.msgRouterFactory.New(partitionCount)
+
+	// Not added earlier to avoid the routingPublisher being transitioned to the
+	// serviceActive state before the singlePartitionPublishers have been
+	// initialized.
+	if prevPartitionCount == 0 {
+		rp.unsafeAddServices(rp.partitionWatcher)
+	}
 }
 
 func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onResult PublishResultFunc) {
@@ -330,14 +348,6 @@ func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onResult PublishResul
 	pub.Publish(msg, onResult)
 }
 
-func (rp *routingPublisher) partitionCount() (int, error) {
-	partitions, err := rp.adminClient.GetTopicPartitions(rp.ctx, &pb.GetTopicPartitionsRequest{Name: rp.topicPath})
-	if err != nil {
-		return 0, err
-	}
-	return int(partitions.GetPartitionCount()), nil
-}
-
 func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*singlePartitionPublisher, error) {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
@@ -347,14 +357,13 @@ func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*singlePart
 	}
 
 	partition := rp.msgRouter.Route(msg.GetKey())
-	pub, ok := rp.publishers[partition]
-	if !ok {
-		// Should not occur. This indicates a bug in the client.
+	if partition >= len(rp.publishers) {
+		// Should not occur.
 		err := fmt.Errorf("pubsublite: publisher not found for partition %d", partition)
 		rp.unsafeInitiateShutdown(serviceTerminating, err)
 		return nil, err
 	}
-	return pub, nil
+	return rp.publishers[partition], nil
 }
 
 // Publisher is the client interface exported from this package for publishing

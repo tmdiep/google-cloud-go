@@ -34,6 +34,8 @@ func testPublishSettings() PublishSettings {
 	// Send messages with minimal delay to speed up tests.
 	settings.DelayThreshold = time.Millisecond
 	settings.Timeout = 5 * time.Second
+	// Disable topic partition count background polling.
+	settings.ConfigPollPeriod = 0
 	return settings
 }
 
@@ -447,6 +449,29 @@ func TestSinglePartitionPublisherStopFlushesMessages(t *testing.T) {
 	}
 }
 
+func TestSinglePartitionPublisherPublishWhileStarting(t *testing.T) {
+	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
+	msg := &pb.PubSubMessage{Data: []byte{'1'}}
+
+	verifiers := test.NewVerifiers(t)
+	stream := test.NewRPCVerifier(t)
+	stream.Push(initPubReq(topic), initPubResp(), nil)
+	stream.Push(msgPubReq(msg), msgPubResp(42), nil)
+	verifiers.AddPublishStream(topic.Path, topic.Partition, stream)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	pub := newTestSinglePartitionPublisher(t, topic, testPublishSettings())
+
+	// Did not wait for publisher to finish startup. But it should send msg once
+	// the Publish stream connects.
+	result := pub.Publish(msg)
+	result.ValidateResult(topic.Partition, 42)
+
+	pub.StopVerifyNoError()
+}
+
 type testRoutingPublisher struct {
 	t   *testing.T
 	pub *routingPublisher
@@ -483,6 +508,8 @@ func (tp *testRoutingPublisher) Publish(msg *pb.PubSubMessage) *testPublishResul
 }
 
 func (tp *testRoutingPublisher) NumPartitionPublishers() int {
+	tp.pub.mu.Lock()
+	defer tp.pub.mu.Unlock()
 	return len(tp.pub.publishers)
 }
 
@@ -498,22 +525,21 @@ func TestRoutingPublisherStartOnce(t *testing.T) {
 	verifiers := test.NewVerifiers(t)
 	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), topicPartitionsResp(numPartitions), nil)
 
-	stream1 := test.NewRPCVerifier(t)
-	stream1.Push(initPubReq(topicPartition{topic, 0}), initPubResp(), nil)
-	verifiers.AddPublishStream(topic, 0, stream1)
+	stream0 := test.NewRPCVerifier(t)
+	stream0.Push(initPubReq(topicPartition{topic, 0}), initPubResp(), nil)
+	verifiers.AddPublishStream(topic, 0, stream0)
 
-	stream2 := test.NewRPCVerifier(t)
-	stream2.Push(initPubReq(topicPartition{topic, 1}), initPubResp(), nil)
-	verifiers.AddPublishStream(topic, 1, stream2)
+	stream1 := test.NewRPCVerifier(t)
+	stream1.Push(initPubReq(topicPartition{topic, 1}), initPubResp(), nil)
+	verifiers.AddPublishStream(topic, 1, stream1)
 
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
 	pub := newTestRoutingPublisher(t, topic, testPublishSettings(), 0)
-	defer pub.Stop()
 
 	t.Run("First succeeds", func(t *testing.T) {
-		// Note: newTestRoutingPublisher called Start.
+		// Note: newTestRoutingPublisher() called Start.
 		if gotErr := pub.WaitStarted(); gotErr != nil {
 			t.Errorf("Start() got err: (%v)", gotErr)
 		}
@@ -522,12 +548,18 @@ func TestRoutingPublisherStartOnce(t *testing.T) {
 		}
 	})
 	t.Run("Second no-op", func(t *testing.T) {
-		// An error is not returned, but no new streams are opened.
+		// An error is not returned, but no new streams are opened. The mock server
+		// does not expect more RPCs.
 		pub.Start()
 		if gotErr := pub.WaitStarted(); gotErr != nil {
 			t.Errorf("Start() got err: (%v)", gotErr)
 		}
 	})
+
+	pub.Stop()
+	if gotErr := pub.WaitStopped(); gotErr != nil {
+		t.Errorf("Stop() got err: (%v)", gotErr)
+	}
 }
 
 func TestRoutingPublisherPartitionCountFail(t *testing.T) {
@@ -544,14 +576,14 @@ func TestRoutingPublisherPartitionCountFail(t *testing.T) {
 
 	pub := newTestRoutingPublisher(t, topic, testPublishSettings(), 0)
 
-	if gotErr := pub.WaitStarted(); !test.ErrorEqual(gotErr, wantErr) {
+	if gotErr := pub.WaitStarted(); !test.ErrorHasMsg(gotErr, wantErr.Error()) {
 		t.Errorf("Start() got err: (%v), want err: (%v)", gotErr, wantErr)
 	}
 	if got, want := pub.NumPartitionPublishers(), 0; got != want {
 		t.Errorf("Num partition publishers: got %d, want %d", got, want)
 	}
 
-	// Ensure that the publisher does not attempt to restart. The mock server does
+	// Verify that the publisher does not attempt to restart. The mock server does
 	// not expect more RPCs.
 	pub.Start()
 }
@@ -576,10 +608,6 @@ func TestRoutingPublisherPartitionCountInvalid(t *testing.T) {
 	if got, want := pub.NumPartitionPublishers(), 0; got != want {
 		t.Errorf("Num partition publishers: got %d, want %d", got, want)
 	}
-
-	// Ensure that the publisher does not attempt to restart. The mock server does
-	// not expect more RPCs.
-	pub.Start()
 }
 
 func TestRoutingPublisherRoundRobin(t *testing.T) {
@@ -784,6 +812,150 @@ func TestRoutingPublisherPublishAfterStop(t *testing.T) {
 	if err := pub.WaitStopped(); err != nil {
 		t.Errorf("Stop() got err: (%v)", err)
 	}
+}
+
+func TestRoutingPublisherPartitionCountIncreases(t *testing.T) {
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
+	initialPartitionCount := 1
+	updatedPartitionCount := 3
+	msg1 := &pb.PubSubMessage{Data: []byte{'1'}}
+	msg2 := &pb.PubSubMessage{Data: []byte{'2'}}
+	msg3 := &pb.PubSubMessage{Data: []byte{'3'}}
+
+	verifiers := test.NewVerifiers(t)
+	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), topicPartitionsResp(initialPartitionCount), nil)
+	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), topicPartitionsResp(updatedPartitionCount), nil)
+
+	stream0 := test.NewRPCVerifier(t)
+	stream0.Push(initPubReq(topicPartition{topic, 0}), initPubResp(), nil)
+	stream0.Push(msgPubReq(msg1), msgPubResp(11), nil)
+	verifiers.AddPublishStream(topic, 0, stream0)
+
+	stream1 := test.NewRPCVerifier(t)
+	stream1.Push(initPubReq(topicPartition{topic, 1}), initPubResp(), nil)
+	stream1.Push(msgPubReq(msg2), msgPubResp(22), nil)
+	verifiers.AddPublishStream(topic, 1, stream1)
+
+	stream2 := test.NewRPCVerifier(t)
+	stream2.Push(initPubReq(topicPartition{topic, 2}), initPubResp(), nil)
+	stream2.Push(msgPubReq(msg3), msgPubResp(33), nil)
+	verifiers.AddPublishStream(topic, 2, stream2)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	pub := newTestRoutingPublisher(t, topic, testPublishSettings(), 0)
+
+	t.Run("Initial count", func(t *testing.T) {
+		if gotErr := pub.WaitStarted(); gotErr != nil {
+			t.Errorf("Start() got err: (%v)", gotErr)
+		}
+		if got, want := pub.NumPartitionPublishers(), initialPartitionCount; got != want {
+			t.Errorf("Num partition publishers: got %d, want %d", got, want)
+		}
+	})
+	t.Run("Updated count", func(t *testing.T) {
+		pub.pub.partitionWatcher.UpdatePartitionCount()
+		if got, want := pub.NumPartitionPublishers(), updatedPartitionCount; got != want {
+			t.Errorf("Num partition publishers: got %d, want %d", got, want)
+		}
+	})
+	t.Run("Publish", func(t *testing.T) {
+		result1 := pub.Publish(msg1)
+		result2 := pub.Publish(msg2)
+		result3 := pub.Publish(msg3)
+
+		result1.ValidateResult(0, 11)
+		result2.ValidateResult(1, 22)
+		result3.ValidateResult(2, 33)
+	})
+
+	pub.Stop()
+	if gotErr := pub.WaitStopped(); gotErr != nil {
+		t.Errorf("Stop() got err: (%v)", gotErr)
+	}
+}
+
+func TestRoutingPublisherPartitionCountDecreases(t *testing.T) {
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
+	initialPartitionCount := 2
+	updatedPartitionCount := 1
+
+	verifiers := test.NewVerifiers(t)
+	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), topicPartitionsResp(initialPartitionCount), nil)
+	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), topicPartitionsResp(updatedPartitionCount), nil)
+
+	stream0 := test.NewRPCVerifier(t)
+	stream0.Push(initPubReq(topicPartition{topic, 0}), initPubResp(), nil)
+	verifiers.AddPublishStream(topic, 0, stream0)
+
+	stream1 := test.NewRPCVerifier(t)
+	stream1.Push(initPubReq(topicPartition{topic, 1}), initPubResp(), nil)
+	verifiers.AddPublishStream(topic, 1, stream1)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	pub := newTestRoutingPublisher(t, topic, testPublishSettings(), 0)
+
+	t.Run("Initial count", func(t *testing.T) {
+		if gotErr := pub.WaitStarted(); gotErr != nil {
+			t.Errorf("Start() got err: (%v)", gotErr)
+		}
+		if got, want := pub.NumPartitionPublishers(), initialPartitionCount; got != want {
+			t.Errorf("Num partition publishers: got %d, want %d", got, want)
+		}
+	})
+	t.Run("Updated count", func(t *testing.T) {
+		pub.pub.partitionWatcher.UpdatePartitionCount()
+		if gotErr := pub.WaitStopped(); !test.ErrorEqual(gotErr, errDecreasingPartitions) {
+			t.Errorf("Final error got: (%v), want: (%v)", gotErr, errDecreasingPartitions)
+		}
+		if got, want := pub.NumPartitionPublishers(), initialPartitionCount; got != want {
+			t.Errorf("Num partition publishers: got %d, want %d", got, want)
+		}
+	})
+}
+
+func TestRoutingPublisherPartitionCountUpdateFails(t *testing.T) {
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
+	initialPartitionCount := 2
+	serverErr := status.Error(codes.NotFound, "deleted")
+
+	verifiers := test.NewVerifiers(t)
+	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), topicPartitionsResp(initialPartitionCount), nil)
+	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), nil, serverErr)
+
+	stream0 := test.NewRPCVerifier(t)
+	stream0.Push(initPubReq(topicPartition{topic, 0}), initPubResp(), nil)
+	verifiers.AddPublishStream(topic, 0, stream0)
+
+	stream1 := test.NewRPCVerifier(t)
+	stream1.Push(initPubReq(topicPartition{topic, 1}), initPubResp(), nil)
+	verifiers.AddPublishStream(topic, 1, stream1)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	pub := newTestRoutingPublisher(t, topic, testPublishSettings(), 0)
+
+	t.Run("Initial count", func(t *testing.T) {
+		if gotErr := pub.WaitStarted(); gotErr != nil {
+			t.Errorf("Start() got err: (%v)", gotErr)
+		}
+		if got, want := pub.NumPartitionPublishers(), initialPartitionCount; got != want {
+			t.Errorf("Num partition publishers: got %d, want %d", got, want)
+		}
+	})
+	t.Run("Failed update", func(t *testing.T) {
+		pub.pub.partitionWatcher.UpdatePartitionCount()
+		if gotErr := pub.WaitStopped(); !test.ErrorHasMsg(gotErr, serverErr.Error()) {
+			t.Errorf("Final error got: (%v), want: (%v)", gotErr, serverErr)
+		}
+		if got, want := pub.NumPartitionPublishers(), initialPartitionCount; got != want {
+			t.Errorf("Num partition publishers: got %d, want %d", got, want)
+		}
+	})
 }
 
 func TestNewPublisherCreatesImpl(t *testing.T) {

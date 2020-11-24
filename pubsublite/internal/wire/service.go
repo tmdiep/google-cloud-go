@@ -244,12 +244,13 @@ func (cs *compositeService) unsafeRemoveService(service service) {
 }
 
 func (cs *compositeService) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
+	cs.unsafeUpdateStatus(targetStatus, err)
+
 	for _, s := range cs.dependencies {
 		if s.lastStatus < serviceTerminating {
 			s.service.Stop()
 		}
 	}
-	cs.unsafeUpdateStatus(targetStatus, err)
 }
 
 func (cs *compositeService) unsafeUpdateStatus(targetStatus serviceStatus, err error) (ret bool) {
@@ -257,7 +258,7 @@ func (cs *compositeService) unsafeUpdateStatus(targetStatus serviceStatus, err e
 	if ret = cs.abstractService.unsafeUpdateStatus(targetStatus, err); ret {
 		// Note: the waitStarted channel must be closed when the service fails to
 		// start.
-		if previousStatus == serviceStarting {
+		if previousStatus < serviceActive && targetStatus >= serviceActive {
 			close(cs.waitStarted)
 		}
 		if targetStatus == serviceTerminated {
