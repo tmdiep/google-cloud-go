@@ -15,7 +15,9 @@ package wire
 
 import "testing"
 
-func emptyAckConsumer(_ *ackConsumer) {}
+func emptyAckConsumer(_ *ackConsumer) {
+	// Nothing to do.
+}
 
 func TestAckConsumerAck(t *testing.T) {
 	numAcks := 0
@@ -26,9 +28,6 @@ func TestAckConsumerAck(t *testing.T) {
 	if got, want := ackConsumer.IsAcked(), false; got != want {
 		t.Errorf("ackConsumer.IsAcked() got %v, want %v", got, want)
 	}
-	if got, want := ackConsumer.IsDone(), false; got != want {
-		t.Errorf("ackConsumer.IsDone() got %v, want %v", got, want)
-	}
 
 	// Test duplicate acks.
 	for i := 0; i < 3; i++ {
@@ -37,41 +36,22 @@ func TestAckConsumerAck(t *testing.T) {
 		if got, want := ackConsumer.IsAcked(), true; got != want {
 			t.Errorf("ackConsumer.IsAcked() got %v, want %v", got, want)
 		}
-		if got, want := ackConsumer.IsDone(), true; got != want {
-			t.Errorf("ackConsumer.IsDone() got %v, want %v", got, want)
-		}
 		if got, want := numAcks, 1; got != want {
 			t.Errorf("onAck func called %v times, expected %v call", got, want)
 		}
 	}
 }
 
-func TestAckConsumerCancel(t *testing.T) {
+func TestAckConsumerClear(t *testing.T) {
 	onAck := func(ac *ackConsumer) {
 		t.Error("onAck func should not have been called")
 	}
 	ackConsumer := newAckConsumer(0, 0, onAck)
-	if got, want := ackConsumer.IsAcked(), false; got != want {
-		t.Errorf("ackConsumer.IsAcked() got %v, want %v", got, want)
-	}
-	if got, want := ackConsumer.IsDone(), false; got != want {
-		t.Errorf("ackConsumer.IsDone() got %v, want %v", got, want)
-	}
-
-	ackConsumer.Cancel()
-	if got, want := ackConsumer.IsAcked(), false; got != want {
-		t.Errorf("ackConsumer.IsAcked() got %v, want %v", got, want)
-	}
-	if got, want := ackConsumer.IsDone(), true; got != want {
-		t.Errorf("ackConsumer.IsDone() got %v, want %v", got, want)
-	}
-
+	ackConsumer.Clear()
 	ackConsumer.Ack()
+
 	if got, want := ackConsumer.IsAcked(), true; got != want {
 		t.Errorf("ackConsumer.IsAcked() got %v, want %v", got, want)
-	}
-	if got, want := ackConsumer.IsDone(), true; got != want {
-		t.Errorf("ackConsumer.IsDone() got %v, want %v", got, want)
 	}
 }
 
@@ -131,12 +111,12 @@ func TestAckTrackerProcessing(t *testing.T) {
 
 func TestAckTrackerRelease(t *testing.T) {
 	ackTracker := newAckTracker()
-	onAck := func(ac *ackConsumer) {
+	onAckAfterRelease := func(ac *ackConsumer) {
 		t.Error("onAck should not be called")
 	}
-	ack1 := newAckConsumer(1, 0, onAck)
-	ack2 := newAckConsumer(2, 0, onAck)
-	ack3 := newAckConsumer(3, 0, onAck)
+	ack1 := newAckConsumer(1, 0, emptyAckConsumer)
+	ack2 := newAckConsumer(2, 0, onAckAfterRelease)
+	ack3 := newAckConsumer(3, 0, onAckAfterRelease)
 
 	if err := ackTracker.Push(ack1); err != nil {
 		t.Errorf("ackTracker.Push() got err %v", err)
@@ -147,51 +127,17 @@ func TestAckTrackerRelease(t *testing.T) {
 	if err := ackTracker.Push(ack3); err != nil {
 		t.Errorf("ackTracker.Push() got err %v", err)
 	}
+
+	// First ack is called before Release and should be processed.
+	ack1.Ack()
 
 	// After clearing outstanding acks, onAck should not be called.
 	ackTracker.Release()
-	ack1.Ack()
 	ack2.Ack()
 	ack3.Ack()
-}
 
-func TestAckTrackerCancelAcks(t *testing.T) {
-	ackTracker := newAckTracker()
-	ack1 := newAckConsumer(1, 0, emptyAckConsumer)
-	ack2 := newAckConsumer(2, 0, emptyAckConsumer)
-	ack3 := newAckConsumer(3, 0, emptyAckConsumer)
-
-	if err := ackTracker.Push(ack1); err != nil {
-		t.Errorf("ackTracker.Push() got err %v", err)
-	}
-	if err := ackTracker.Push(ack2); err != nil {
-		t.Errorf("ackTracker.Push() got err %v", err)
-	}
-	if err := ackTracker.Push(ack3); err != nil {
-		t.Errorf("ackTracker.Push() got err %v", err)
-	}
-	if got, want := ackTracker.CommitOffset(), nilCursorOffset; got != want {
-		t.Errorf("ackTracker.CommitOffset() got %v, want %v", got, want)
-	}
-	if got, want := ackTracker.Empty(), false; got != want {
-		t.Errorf("ackTracker.Empty() got %v, want %v", got, want)
-	}
-
-	ack1.Ack()
 	if got, want := ackTracker.CommitOffset(), int64(2); got != want {
 		t.Errorf("ackTracker.CommitOffset() got %v, want %v", got, want)
-	}
-	if got, want := ackTracker.Empty(), false; got != want {
-		t.Errorf("ackTracker.Empty() got %v, want %v", got, want)
-	}
-
-	ack2.Cancel()
-	ack3.Cancel()
-	if got, want := ackTracker.CommitOffset(), int64(2); got != want {
-		t.Errorf("ackTracker.CommitOffset() got %v, want %v", got, want)
-	}
-	if got, want := ackTracker.Empty(), true; got != want {
-		t.Errorf("ackTracker.Empty() got %v, want %v", got, want)
 	}
 }
 

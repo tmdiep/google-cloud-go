@@ -21,10 +21,7 @@ import (
 
 // AckConsumer is the interface exported from this package for acking messages.
 type AckConsumer interface {
-	// Ack the message.
 	Ack()
-	// Cancel ack processing for this message.
-	Cancel()
 }
 
 // ackedFunc is invoked when a message has been acked by the user. Note: if the
@@ -71,15 +68,9 @@ func (ac *ackConsumer) IsAcked() bool {
 	return ac.acked
 }
 
-func (ac *ackConsumer) IsDone() bool {
-	ac.mu.Lock()
-	defer ac.mu.Unlock()
-	return ac.acked || ac.onAck == nil
-}
-
-// Cancel clears onAck when the ack can no longer be processed. The user's ack
-// would be ignored.
-func (ac *ackConsumer) Cancel() {
+// Clear onAck when the ack can no longer be processed. The user's ack would be
+// ignored.
+func (ac *ackConsumer) Clear() {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 	ac.onAck = nil
@@ -136,23 +127,7 @@ func (at *ackTracker) CommitOffset() int64 {
 	at.mu.Lock()
 	defer at.mu.Unlock()
 
-	// Process outstanding acks and update `ackedPrefixOffset` until an unacked
-	// message is found.
-	for {
-		elem := at.outstandingAcks.Front()
-		if elem == nil {
-			break
-		}
-		ack, _ := elem.Value.(*ackConsumer)
-		if !ack.IsDone() {
-			break
-		}
-		if ack.IsAcked() {
-			at.ackedPrefixOffset = ack.Offset
-		}
-		at.outstandingAcks.Remove(elem)
-		ack.Cancel()
-	}
+	at.unsafeProcessAcks()
 
 	if at.ackedPrefixOffset == nilCursorOffset {
 		return nilCursorOffset
@@ -167,18 +142,31 @@ func (at *ackTracker) Release() {
 	at.mu.Lock()
 	defer at.mu.Unlock()
 
+	at.unsafeProcessAcks()
+
 	for elem := at.outstandingAcks.Front(); elem != nil; elem = elem.Next() {
 		ack, _ := elem.Value.(*ackConsumer)
-		ack.Cancel()
+		ack.Clear()
 	}
 	at.outstandingAcks.Init()
 }
 
-// Empty when there are no outstanding acks.
-func (at *ackTracker) Empty() bool {
-	at.mu.Lock()
-	defer at.mu.Unlock()
-	return at.outstandingAcks.Len() == 0
+// Process outstanding acks and update `ackedPrefixOffset` until an unacked
+// message is found.
+func (at *ackTracker) unsafeProcessAcks() {
+	for {
+		elem := at.outstandingAcks.Front()
+		if elem == nil {
+			break
+		}
+		ack, _ := elem.Value.(*ackConsumer)
+		if !ack.IsAcked() {
+			break
+		}
+		at.ackedPrefixOffset = ack.Offset
+		at.outstandingAcks.Remove(elem)
+		ack.Clear()
+	}
 }
 
 // commitCursorTracker tracks pending and last successful committed offsets.
