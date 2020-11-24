@@ -375,6 +375,7 @@ type Publisher interface {
 	WaitStarted() error
 	Stop()
 	WaitStopped() error
+	Error() error
 }
 
 // NewPublisher creates a new client for publishing messages.
