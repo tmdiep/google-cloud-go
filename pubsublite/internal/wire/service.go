@@ -56,6 +56,7 @@ type service interface {
 	AddStatusChangeReceiver(serviceHandle, serviceStatusChangeFunc)
 	RemoveStatusChangeReceiver(serviceHandle)
 	Handle() serviceHandle
+	Status() serviceStatus
 	Error() error
 }
 
@@ -158,6 +159,56 @@ type serviceHolder struct {
 	lastStatus serviceStatus
 }
 
+type serviceStartupGroup struct {
+	mu       sync.Mutex
+	wg       sync.WaitGroup
+	services []*serviceHolder
+	err      error
+}
+
+func newServiceStartupGroup(services ...service) *serviceStartupGroup {
+	sb := new(serviceStartupGroup)
+	sb.wg.Add(len(services))
+
+	for _, s := range services {
+		s.AddStatusChangeReceiver(sb, sb.onServiceStatusChange)
+		sb.services = append(sb.services, &serviceHolder{service: s})
+	}
+	return sb
+}
+
+func (sb *serviceStartupGroup) Wait() error {
+	sb.wg.Wait()
+
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	for _, s := range sb.services {
+		s.service.RemoveStatusChangeReceiver(sb)
+	}
+	return sb.err
+}
+
+func (sb *serviceStartupGroup) onServiceStatusChange(handle serviceHandle, status serviceStatus, err error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	for _, s := range sb.services {
+		if s.service.Handle() == handle {
+			if status > s.lastStatus {
+				if err != nil && sb.err == nil {
+					sb.err = err
+				}
+				if s.lastStatus < serviceActive && status >= serviceActive {
+					sb.wg.Done()
+				}
+				s.lastStatus = status
+			}
+			break
+		}
+	}
+}
+
 // compositeService can be embedded into other structs to manage child services.
 // It implements the service interface and can itself be a dependency of another
 // compositeService.
@@ -219,8 +270,11 @@ func (cs *compositeService) unsafeAddServices(services ...service) error {
 
 	for _, s := range services {
 		s.AddStatusChangeReceiver(cs.Handle(), cs.onServiceStatusChange)
-		cs.dependencies = append(cs.dependencies, &serviceHolder{service: s})
-		if cs.status > serviceUninitialized {
+		cs.dependencies = append(cs.dependencies, &serviceHolder{service: s, lastStatus: s.Status()})
+
+		// If the composite service has already started, ensure the child service is
+		// started.
+		if cs.status > serviceUninitialized && s.Status() == serviceUninitialized {
 			s.Start()
 		}
 	}
@@ -282,9 +336,7 @@ func (cs *compositeService) onServiceStatusChange(handle serviceHandle, status s
 			break
 		}
 	}
-	if removeIdx >= 0 {
-		cs.removed = removeFromSlice(cs.removed, removeIdx)
-	}
+	cs.removed = removeFromSlice(cs.removed, removeIdx)
 
 	// Note: we cannot rely on the service not being in the removed list above to
 	// determine whether it is an active dependency. The notification may be for a

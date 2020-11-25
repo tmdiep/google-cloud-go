@@ -22,6 +22,43 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+type testCountReceiver struct {
+	callCount      int
+	partitionCount int
+	err            error
+}
+
+func newTestCountReceiver() *testCountReceiver {
+	return &testCountReceiver{}
+}
+
+func (r *testCountReceiver) onCountChanged(partitionCount int, err error) {
+	r.callCount++
+	r.partitionCount = partitionCount
+	r.err = err
+}
+
+func (r *testCountReceiver) VerifyCalled(t *testing.T, wantCallCount int) {
+	if r.callCount != wantCallCount {
+		t.Errorf("testCountReceiver.callCount: got %d, want %d", r.callCount, wantCallCount)
+	}
+}
+
+func (r *testCountReceiver) VerifyCount(t *testing.T, wantPartitionCount int) {
+	if r.err != nil {
+		t.Errorf("testCountReceiver.err: got %d, want <nil>", r.err)
+	}
+	if r.partitionCount != wantPartitionCount {
+		t.Errorf("testCountReceiver.partitionCount: got %d, want %d", r.partitionCount, wantPartitionCount)
+	}
+}
+
+func (r *testCountReceiver) VerifyErrorMsg(t *testing.T, wantMsg string) {
+	if !test.ErrorHasMsg(r.err, wantMsg) {
+		t.Errorf("testCountReceiver.err: got %d, want msg %q", r.err, wantMsg)
+	}
+}
+
 func newTestPartitionCountWatcher(t *testing.T, topicPath string, settings PublishSettings, receiver partitionCountReceiver) *partitionCountWatcher {
 	ctx := context.Background()
 	adminClient, err := NewAdminClient(ctx, "ignored", testClientOpts...)
@@ -43,21 +80,47 @@ func TestPartitionCountWatcherRetries(t *testing.T) {
 	mockServer.OnTestStart(verifiers)
 	defer mockServer.OnTestEnd()
 
-	receiveCallCount := 0
-	receiver := func(gotPartitionCount int, err error) {
-		receiveCallCount++
-		if err != nil {
-			t.Errorf("UpdatePartitionCount() got err: %v", err)
-		}
-		if gotPartitionCount != wantPartitionCount {
-			t.Errorf("UpdatePartitionCount() got count: %d, want: %d", gotPartitionCount, wantPartitionCount)
-		}
-	}
-
-	partitionWatcher := newTestPartitionCountWatcher(t, topic, testPublishSettings(), receiver)
+	receiver := newTestCountReceiver()
+	partitionWatcher := newTestPartitionCountWatcher(t, topic, testPublishSettings(), receiver.onCountChanged)
 	partitionWatcher.UpdatePartitionCount()
 
-	if got, want := receiveCallCount, 1; got != want {
-		t.Errorf("receiveCallCount: got %d, want %d", got, want)
-	}
+	receiver.VerifyCalled(t, 1)
+	receiver.VerifyCount(t, wantPartitionCount)
+}
+
+func TestPartitionCountWatcherZeroPartitionCountFails(t *testing.T) {
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
+
+	verifiers := test.NewVerifiers(t)
+	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), topicPartitionsResp(0), nil)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	receiver := newTestCountReceiver()
+	partitionWatcher := newTestPartitionCountWatcher(t, topic, testPublishSettings(), receiver.onCountChanged)
+	partitionWatcher.UpdatePartitionCount()
+
+	receiver.VerifyCalled(t, 1)
+	receiver.VerifyErrorMsg(t, "invalid number of partitions 0")
+}
+
+func TestPartitionCountWatcherPartitionCountUnchanged(t *testing.T) {
+	const topic = "projects/123456/locations/us-central1-b/topics/my-topic"
+	wantPartitionCount := 6
+
+	verifiers := test.NewVerifiers(t)
+	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), topicPartitionsResp(wantPartitionCount), nil)
+	verifiers.GlobalVerifier.Push(topicPartitionsReq(topic), topicPartitionsResp(wantPartitionCount), nil)
+
+	mockServer.OnTestStart(verifiers)
+	defer mockServer.OnTestEnd()
+
+	receiver := newTestCountReceiver()
+	partitionWatcher := newTestPartitionCountWatcher(t, topic, testPublishSettings(), receiver.onCountChanged)
+	partitionWatcher.UpdatePartitionCount()
+	partitionWatcher.UpdatePartitionCount()
+
+	receiver.VerifyCalled(t, 1)
+	receiver.VerifyCount(t, wantPartitionCount)
 }

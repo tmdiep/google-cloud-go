@@ -115,13 +115,9 @@ func (pp *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onResult Publ
 	defer pp.mu.Unlock()
 
 	processMessage := func() error {
-		switch {
-		case pp.status == serviceUninitialized:
-			return ErrServiceUninitialized
-		case pp.status >= serviceTerminating:
-			return ErrServiceStopped
+		if err := pp.unsafeCheckServiceStatus(); err != nil {
+			return err
 		}
-
 		if err := pp.batcher.AddMessage(msg, onResult); err != nil {
 			return err
 		}
@@ -305,45 +301,76 @@ func (rp *routingPublisher) Start() {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 
-	if !rp.unsafeUpdateStatus(serviceStarting, nil) {
-		// Already started.
+	if rp.unsafeUpdateStatus(serviceStarting, nil) {
+		// Trigger the partitionCountWatcher to fetch the initial topic partition
+		// count asynchronously.
+		go rp.partitionWatcher.UpdatePartitionCount()
+	}
+}
+
+// onPartitionCountChanged should be called from a goroutine.
+func (rp *routingPublisher) onPartitionCountChanged(partitionCount int, err error) {
+	prevPartitionCount, startupGroup := func() (int, *serviceStartupGroup) {
+		rp.mu.Lock()
+		defer rp.mu.Unlock()
+
+		if rp.status >= serviceTerminating {
+			return 0, nil
+		}
+		if err != nil {
+			rp.unsafeInitiateShutdown(serviceTerminated, err)
+			return 0, nil
+		}
+		prevPublisherCount := len(rp.publishers)
+		if partitionCount == prevPublisherCount {
+			return 0, nil
+		}
+		if partitionCount < prevPublisherCount {
+			rp.unsafeInitiateShutdown(serviceTerminating, errDecreasingPartitions)
+			return 0, nil
+		}
+
+		var newPublishers []service
+		for i := prevPublisherCount; i < partitionCount; i++ {
+			pub := rp.pubFactory.New(i)
+			rp.publishers = append(rp.publishers, pub)
+			newPublishers = append(newPublishers, pub)
+		}
+
+		startupGroup := newServiceStartupGroup(newPublishers...)
+		rp.unsafeAddServices(newPublishers...) // Starts the services
+
+		// The routingPublisher will transition to the active state once all the
+		// publishers start, so ensure the msgRouter is initialized.
+		if prevPublisherCount == 0 {
+			rp.msgRouter = rp.msgRouterFactory.New(partitionCount)
+		}
+		return prevPublisherCount, startupGroup
+	}()
+	if startupGroup == nil {
 		return
 	}
 
-	// Trigger the partitionCountWatcher to fetch the first topic partition count
-	// asynchronously.
-	go rp.partitionWatcher.UpdatePartitionCount()
-}
+	// Don't hold the mutex while waiting for new publishers to start up.
+	startupGroup.Wait()
 
-func (rp *routingPublisher) onPartitionCountChanged(partitionCount int, err error) {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 
-	if err != nil {
-		rp.unsafeInitiateShutdown(serviceTerminated, err)
-		return
-	}
-	if partitionCount == len(rp.publishers) {
-		return
-	}
-	if partitionCount < len(rp.publishers) {
-		rp.unsafeInitiateShutdown(serviceTerminating, errDecreasingPartitions)
+	if rp.status >= serviceTerminating {
 		return
 	}
 
-	prevPartitionCount := len(rp.publishers)
-	for i := prevPartitionCount; i < partitionCount; i++ {
-		pub := rp.pubFactory.New(i)
-		rp.publishers = append(rp.publishers, pub)
-		rp.unsafeAddServices(pub)
-	}
-	rp.msgRouter = rp.msgRouterFactory.New(partitionCount)
-
-	// Not added earlier to avoid the routingPublisher being transitioned to the
-	// serviceActive state before the singlePartitionPublishers have been
-	// initialized.
+	// Start polling partition count after the publishers have been initialized.
+	// Ensures onPartitionCountChanged() calls do not overlap.
 	if prevPartitionCount == 0 {
 		rp.unsafeAddServices(rp.partitionWatcher)
+	}
+
+	// routeToPublisher() will include new publishers when the msgRouter is
+	// updated.
+	if prevPartitionCount > 0 {
+		rp.msgRouter = rp.msgRouterFactory.New(partitionCount)
 	}
 }
 
@@ -362,6 +389,11 @@ func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*singlePart
 
 	if err := rp.unsafeCheckServiceStatus(); err != nil {
 		return nil, err
+	}
+	if rp.msgRouter == nil {
+		// Should not occur.
+		rp.unsafeInitiateShutdown(serviceTerminating, ErrServiceUninitialized)
+		return nil, ErrServiceUninitialized
 	}
 
 	partition := rp.msgRouter.Route(msg.GetKey())

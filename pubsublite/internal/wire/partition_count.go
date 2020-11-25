@@ -17,8 +17,6 @@ import (
 	"context"
 	"fmt"
 
-	"golang.org/x/xerrors"
-
 	vkit "cloud.google.com/go/pubsublite/apiv1"
 	gax "github.com/googleapis/gax-go/v2"
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
@@ -26,6 +24,8 @@ import (
 
 type partitionCountReceiver func(partitionCount int, err error)
 
+// partitionCountWatcher periodically retrieves the number of partitions for a
+// topic and notifies a receiver if it changes.
 type partitionCountWatcher struct {
 	// Immutable after creation.
 	ctx         context.Context
@@ -52,7 +52,8 @@ func newPartitionCountWatcher(ctx context.Context, adminClient *vkit.AdminClient
 		callOption:  readOnlyRetryableCallOption(),
 	}
 
-	// Polling the topic partition count can be disabled in settings.
+	// Polling the topic partition count can be disabled in settings if the period
+	// is <= 0.
 	backgroundTask := p.UpdatePartitionCount
 	if settings.ConfigPollPeriod <= 0 {
 		backgroundTask = func() {}
@@ -76,6 +77,8 @@ func (p *partitionCountWatcher) Stop() {
 	p.unsafeInitiateShutdown(serviceTerminated, nil)
 }
 
+// UpdatePartitionCount will trigger an update and notify the receiver in this
+// goroutine. Thus the receiver's mutex should not be held when called.
 func (p *partitionCountWatcher) UpdatePartitionCount() {
 	p.mu.Lock()
 	prevPartitionCount := p.partitionCount
@@ -95,7 +98,7 @@ func (p *partitionCountWatcher) doUpdatePartitionCount() (int, error) {
 	defer p.mu.Unlock()
 
 	if err != nil {
-		err = xerrors.Errorf("pubsublite: failed to update topic partition count: %w", err)
+		err = fmt.Errorf("pubsublite: failed to update topic partition count: %v", err)
 		p.unsafeInitiateShutdown(serviceTerminated, err)
 		return 0, err
 	}

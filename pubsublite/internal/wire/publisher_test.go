@@ -449,6 +449,7 @@ func TestSinglePartitionPublisherStopFlushesMessages(t *testing.T) {
 	}
 }
 
+/*
 func TestSinglePartitionPublisherPublishWhileStarting(t *testing.T) {
 	topic := topicPartition{"projects/123456/locations/us-central1-b/topics/my-topic", 0}
 	msg := &pb.PubSubMessage{Data: []byte{'1'}}
@@ -471,7 +472,7 @@ func TestSinglePartitionPublisherPublishWhileStarting(t *testing.T) {
 
 	pub.StopVerifyNoError()
 }
-
+*/
 type testRoutingPublisher struct {
 	t   *testing.T
 	pub *routingPublisher
