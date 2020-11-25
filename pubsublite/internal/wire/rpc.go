@@ -108,10 +108,11 @@ func isRetryableStreamError(err error, isEligible func(codes.Code) bool) bool {
 	return isEligible(s.Code())
 }
 
-// readOnlyRetryableCallOption returns a call option that retries with backoff
+// retryableReadOnlyCallOption returns a call option that retries with backoff
 // for ResourceExhausted in addition to other default retryable codes for
-// Pub/Sub. Suitable for read-only operations.
-func readOnlyRetryableCallOption() gax.CallOption {
+// Pub/Sub. Suitable for read-only operations which are subject to only QPS
+// quota limits.
+func retryableReadOnlyCallOption() gax.CallOption {
 	return gax.WithRetry(func() gax.Retryer {
 		return gax.OnCodes([]codes.Code{
 			codes.Aborted,

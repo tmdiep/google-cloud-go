@@ -22,7 +22,9 @@ import (
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
-type partitionCountReceiver func(partitionCount int, err error)
+// partitionCountReceiver receives updated partition counts. Calls are
+// non-overlapping.
+type partitionCountReceiver func(partitionCount int)
 
 // partitionCountWatcher periodically retrieves the number of partitions for a
 // topic and notifies a receiver if it changes.
@@ -49,12 +51,12 @@ func newPartitionCountWatcher(ctx context.Context, adminClient *vkit.AdminClient
 		adminClient: adminClient,
 		topicPath:   topicPath,
 		receiver:    receiver,
-		callOption:  readOnlyRetryableCallOption(),
+		callOption:  retryableReadOnlyCallOption(),
 	}
 
 	// Polling the topic partition count can be disabled in settings if the period
 	// is <= 0.
-	backgroundTask := p.UpdatePartitionCount
+	backgroundTask := p.updatePartitionCount
 	if settings.ConfigPollPeriod <= 0 {
 		backgroundTask = func() {}
 	}
@@ -62,59 +64,75 @@ func newPartitionCountWatcher(ctx context.Context, adminClient *vkit.AdminClient
 	return p
 }
 
+// Start retrieves the first topic partition count asynchronously.
 func (p *partitionCountWatcher) Start() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.unsafeUpdateStatus(serviceActive, nil) {
-		p.pollUpdate.Start()
+	if p.unsafeUpdateStatus(serviceStarting, nil) {
+		go p.updatePartitionCount()
 	}
 }
 
+// Stop background polling for partition count updates.
 func (p *partitionCountWatcher) Stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.unsafeInitiateShutdown(serviceTerminated, nil)
 }
 
-// UpdatePartitionCount will trigger an update and notify the receiver in this
-// goroutine. Thus the receiver's mutex should not be held when called.
-func (p *partitionCountWatcher) UpdatePartitionCount() {
+// updatePartitionCount is called in a goroutine.
+func (p *partitionCountWatcher) updatePartitionCount() {
 	p.mu.Lock()
 	prevPartitionCount := p.partitionCount
 	p.mu.Unlock()
 
-	newPartitionCount, err := p.doUpdatePartitionCount()
-	if prevPartitionCount != newPartitionCount || err != nil {
-		p.receiver(newPartitionCount, err)
+	newPartitionCount, err := func() (int, error) {
+		req := &pb.GetTopicPartitionsRequest{Name: p.topicPath}
+		resp, err := p.adminClient.GetTopicPartitions(p.ctx, req, p.callOption)
+
+		p.mu.Lock()
+		defer p.mu.Unlock()
+
+		if p.status >= serviceTerminating {
+			return p.partitionCount, nil
+		}
+		if err != nil {
+			err = fmt.Errorf("pubsublite: failed to update topic partition count: %v", err)
+			p.unsafeInitiateShutdown(serviceTerminated, err)
+			return 0, err
+		}
+		if resp.GetPartitionCount() <= 0 {
+			err := fmt.Errorf("pubsublite: topic has invalid number of partitions %d", resp.GetPartitionCount())
+			p.unsafeInitiateShutdown(serviceTerminated, err)
+			return 0, err
+		}
+
+		p.partitionCount = int(resp.GetPartitionCount())
+		return p.partitionCount, nil
+	}()
+
+	if err == nil && prevPartitionCount != newPartitionCount {
+		p.receiver(newPartitionCount)
+
+		if prevPartitionCount == 0 {
+			p.onStartupComplete()
+		}
 	}
 }
 
-func (p *partitionCountWatcher) doUpdatePartitionCount() (int, error) {
-	req := &pb.GetTopicPartitionsRequest{Name: p.topicPath}
-	resp, err := p.adminClient.GetTopicPartitions(p.ctx, req, p.callOption)
-
+func (p *partitionCountWatcher) onStartupComplete() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if err != nil {
-		err = fmt.Errorf("pubsublite: failed to update topic partition count: %v", err)
-		p.unsafeInitiateShutdown(serviceTerminated, err)
-		return 0, err
+	// Notify the service as active and start background polling updates after the
+	// initial partition count has been processed.
+	if p.unsafeUpdateStatus(serviceActive, nil) {
+		p.pollUpdate.Start()
 	}
-	if resp.GetPartitionCount() <= 0 {
-		err := fmt.Errorf("pubsublite: topic has invalid number of partitions %d", resp.GetPartitionCount())
-		p.unsafeInitiateShutdown(serviceTerminated, err)
-		return 0, err
-	}
-
-	p.partitionCount = int(resp.GetPartitionCount())
-	return p.partitionCount, nil
 }
 
 func (p *partitionCountWatcher) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
-	if !p.unsafeUpdateStatus(targetStatus, err) {
-		return
-	}
+	p.unsafeUpdateStatus(targetStatus, err)
 	p.pollUpdate.Stop()
 }

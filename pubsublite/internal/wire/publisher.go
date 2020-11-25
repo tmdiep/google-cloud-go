@@ -115,9 +115,17 @@ func (pp *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onResult Publ
 	defer pp.mu.Unlock()
 
 	processMessage := func() error {
-		if err := pp.unsafeCheckServiceStatus(); err != nil {
-			return err
+		// Messages are accepted while the service is starting up or active. During
+		// startup, messages are queued in the batcher and will be published once
+		// the stream connects. If startup fails, the error will be set for the
+		// queued messages.
+		switch {
+		case pp.status == serviceUninitialized:
+			return ErrServiceUninitialized
+		case pp.status >= serviceTerminating:
+			return ErrServiceStopped
 		}
+
 		if err := pp.batcher.AddMessage(msg, onResult); err != nil {
 			return err
 		}
@@ -271,9 +279,9 @@ func (pp *singlePartitionPublisher) wrapError(err error) error {
 	return err
 }
 
-// routingPublisher publishes messages to N topic partitions, each managed by a
-// singlePartitionPublisher. It supports increasing topic partition count, but
-// not decreasing.
+// routingPublisher publishes messages to multiple topic partitions, each
+// managed by a singlePartitionPublisher. It supports increasing topic partition
+// count, but not decreasing.
 type routingPublisher struct {
 	// Immutable after creation.
 	msgRouterFactory *messageRouterFactory
@@ -294,84 +302,32 @@ func newRoutingPublisher(adminClient *vkit.AdminClient, msgRouterFactory *messag
 	}
 	pub.init()
 	pub.partitionWatcher = newPartitionCountWatcher(pubFactory.ctx, adminClient, pubFactory.settings, pubFactory.topicPath, pub.onPartitionCountChanged)
+	pub.unsafeAddServices(pub.partitionWatcher)
 	return pub
 }
 
-func (rp *routingPublisher) Start() {
-	rp.mu.Lock()
-	defer rp.mu.Unlock()
-
-	if rp.unsafeUpdateStatus(serviceStarting, nil) {
-		// Trigger the partitionCountWatcher to fetch the initial topic partition
-		// count asynchronously.
-		go rp.partitionWatcher.UpdatePartitionCount()
-	}
-}
-
-// onPartitionCountChanged should be called from a goroutine.
-func (rp *routingPublisher) onPartitionCountChanged(partitionCount int, err error) {
-	prevPartitionCount, startupGroup := func() (int, *serviceStartupGroup) {
-		rp.mu.Lock()
-		defer rp.mu.Unlock()
-
-		if rp.status >= serviceTerminating {
-			return 0, nil
-		}
-		if err != nil {
-			rp.unsafeInitiateShutdown(serviceTerminated, err)
-			return 0, nil
-		}
-		prevPublisherCount := len(rp.publishers)
-		if partitionCount == prevPublisherCount {
-			return 0, nil
-		}
-		if partitionCount < prevPublisherCount {
-			rp.unsafeInitiateShutdown(serviceTerminating, errDecreasingPartitions)
-			return 0, nil
-		}
-
-		var newPublishers []service
-		for i := prevPublisherCount; i < partitionCount; i++ {
-			pub := rp.pubFactory.New(i)
-			rp.publishers = append(rp.publishers, pub)
-			newPublishers = append(newPublishers, pub)
-		}
-
-		startupGroup := newServiceStartupGroup(newPublishers...)
-		rp.unsafeAddServices(newPublishers...) // Starts the services
-
-		// The routingPublisher will transition to the active state once all the
-		// publishers start, so ensure the msgRouter is initialized.
-		if prevPublisherCount == 0 {
-			rp.msgRouter = rp.msgRouterFactory.New(partitionCount)
-		}
-		return prevPublisherCount, startupGroup
-	}()
-	if startupGroup == nil {
-		return
-	}
-
-	// Don't hold the mutex while waiting for new publishers to start up.
-	startupGroup.Wait()
-
+func (rp *routingPublisher) onPartitionCountChanged(partitionCount int) {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 
 	if rp.status >= serviceTerminating {
 		return
 	}
-
-	// Start polling partition count after the publishers have been initialized.
-	// Ensures onPartitionCountChanged() calls do not overlap.
-	if prevPartitionCount == 0 {
-		rp.unsafeAddServices(rp.partitionWatcher)
+	if partitionCount == len(rp.publishers) {
+		return
+	}
+	if partitionCount < len(rp.publishers) {
+		rp.unsafeInitiateShutdown(serviceTerminating, errDecreasingPartitions)
+		return
 	}
 
-	// routeToPublisher() will include new publishers when the msgRouter is
-	// updated.
-	if prevPartitionCount > 0 {
-		rp.msgRouter = rp.msgRouterFactory.New(partitionCount)
+	prevPartitionCount := len(rp.publishers)
+	for i := prevPartitionCount; i < partitionCount; i++ {
+		pub := rp.pubFactory.New(i)
+		rp.publishers = append(rp.publishers, pub)
+		rp.unsafeAddServices(pub)
 	}
+	rp.msgRouter = rp.msgRouterFactory.New(partitionCount)
 }
 
 func (rp *routingPublisher) Publish(msg *pb.PubSubMessage, onResult PublishResultFunc) {
@@ -415,7 +371,6 @@ type Publisher interface {
 	WaitStarted() error
 	Stop()
 	WaitStopped() error
-	Error() error
 }
 
 // NewPublisher creates a new client for publishing messages.
