@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/internal/testutil"
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/proto"
 
 	dpb "github.com/golang/protobuf/ptypes/duration"
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
