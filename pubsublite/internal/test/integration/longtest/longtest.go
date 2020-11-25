@@ -58,6 +58,15 @@ var (
 	verbose      = flag.Bool("verbose", true, "whether to log verbose messages")
 )
 
+const maxPrintMsgLen = 70
+
+func truncateMsg(msg string) string {
+	if len(msg) > maxPrintMsgLen {
+		return fmt.Sprintf("%s...", msg[0:maxPrintMsgLen])
+	}
+	return msg
+}
+
 // subscriber contains a wire subscriber with message validators.
 type subscriber struct {
 	Subscription      pubsublite.SubscriptionPath
@@ -93,6 +102,9 @@ func (s *subscriber) onReceive(msgs []*wire.ReceivedMessage) {
 		data := string(m.Msg.GetMessage().GetData())
 		if !s.MsgTracker.Remove(data) {
 			// Ignore messages from a previous test run.
+			if *verbose {
+				log.Printf("Ignoring %s", truncateMsg(data))
+			}
 			continue
 		}
 
