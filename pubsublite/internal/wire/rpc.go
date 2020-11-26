@@ -206,6 +206,8 @@ func parseModuleVersion(version string) (major string, minor string, ok bool) {
 	return
 }
 
+// getModuleVersion extracts the module version from BuildInfo embedded in the
+// binary. Only applies to binaries built with module support.
 func getModuleVersion(buildInfo *debug.BuildInfo) (string, string, bool) {
 	for _, dep := range buildInfo.Deps {
 		if strings.Index(dep.Path, "pubsub") > 0 {

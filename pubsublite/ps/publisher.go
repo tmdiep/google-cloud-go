@@ -56,18 +56,21 @@ func translateError(err error) error {
 
 // PublisherClient is a Cloud Pub/Sub Lite client to publish messages to a given
 // topic.
+//
 // See https://cloud.google.com/pubsub/lite/docs/publishing for more information
 // about publishing.
 type PublisherClient struct {
 	settings PublishSettings
 	wirePub  wire.Publisher
 
+	// Fields below must be guarded with mutex.
 	mu  sync.Mutex
 	err error
 }
 
 // NewPublisherClient creates a new Cloud Pub/Sub Lite client to publish
 // messages to a given topic.
+//
 // See https://cloud.google.com/pubsub/lite/docs/publishing for more information
 // about publishing.
 func NewPublisherClient(ctx context.Context, settings PublishSettings, topic pubsublite.TopicPath, opts ...option.ClientOption) (*PublisherClient, error) {
