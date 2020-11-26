@@ -12,3 +12,30 @@
 // See the License for the specific language governing permissions and
 
 package ps
+
+import (
+	"flag"
+	"os"
+	"testing"
+
+	"cloud.google.com/go/pubsublite/internal/test"
+	"google.golang.org/api/option"
+)
+
+var (
+	// Initialized in TestMain.
+	mockServer     test.MockServer
+	testClientOpts []option.ClientOption
+)
+
+func TestMain(m *testing.M) {
+	flag.Parse()
+
+	testServer, clientOpts := test.NewServerWithConn()
+	mockServer = testServer.LiteServer
+	testClientOpts = clientOpts
+
+	exit := m.Run()
+	testServer.Close()
+	os.Exit(exit)
+}

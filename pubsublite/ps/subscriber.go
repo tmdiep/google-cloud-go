@@ -23,24 +23,16 @@ import (
 	"google.golang.org/api/option"
 
 	pubsub "cloud.google.com/go/pubsublite/internal/pubsub"
-	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 var (
 	ErrNackCalled       = errors.New("pubsublite: SubscriberClient does not support nack. See NackHandler for how to customize nack handling")
-	ErrDuplicateReceive = errors.New("pubsublite: an existing SubscriberClient.Receive() is still active")
+	ErrDuplicateReceive = errors.New("pubsublite: previous invocation of SubscriberClient.Receive() is still active")
 )
 
 // handleNack is the default NackHandler implementation.
 func handleNack(_ *pubsub.Message) error {
 	return ErrNackCalled
-}
-
-// transformReceivedMessage is the default ReceiveMessageTransformerFunc
-// implementation.
-func transformReceivedMessage(from *pb.SequencedMessage, to *pubsub.Message) error {
-	// TODO
-	return nil
 }
 
 type pslAckHandler struct {

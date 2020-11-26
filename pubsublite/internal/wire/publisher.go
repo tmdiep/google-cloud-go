@@ -140,7 +140,7 @@ func (pp *singlePartitionPublisher) Publish(msg *pb.PubSubMessage, onResult Publ
 	// terminate the stream once results are received.
 	if err := processMessage(); err != nil {
 		pp.unsafeInitiateShutdown(serviceTerminating, err)
-		onResult(nil, pp.wrapError(err))
+		onResult(nil, err)
 	}
 }
 
@@ -265,7 +265,7 @@ func (pp *singlePartitionPublisher) unsafeInitiateShutdown(targetStatus serviceS
 	}
 
 	// For immediate shutdown set the error message for all pending messages.
-	pp.batcher.OnPermanentError(pp.wrapError(err))
+	pp.batcher.OnPermanentError(err)
 }
 
 // unsafeCheckDone closes the stream once all pending messages have been
@@ -375,6 +375,7 @@ type Publisher interface {
 	WaitStarted() error
 	Stop()
 	WaitStopped() error
+	Error() error
 }
 
 // NewPublisher creates a new client for publishing messages.

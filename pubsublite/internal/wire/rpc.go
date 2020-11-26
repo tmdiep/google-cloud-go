@@ -246,12 +246,17 @@ func (pm pubsubMetadata) AddSubscriptionRoutingMetadata(subscription subscriptio
 }
 
 func (pm pubsubMetadata) AddClientInfo(framework FrameworkType) {
+	buildInfo, _ := debug.ReadBuildInfo()
+	pm.doAddClientInfo(framework, buildInfo)
+}
+
+func (pm pubsubMetadata) doAddClientInfo(framework FrameworkType, buildInfo *debug.BuildInfo) {
 	s := newProtoStruct()
 	s.Fields[languageKey] = stringValue(languageValue)
 	if len(framework) > 0 {
 		s.Fields[frameworkKey] = stringValue(string(framework))
 	}
-	if buildInfo, ok := debug.ReadBuildInfo(); ok {
+	if buildInfo != nil {
 		if major, minor, ok := getModuleVersion(buildInfo); ok {
 			s.Fields[majorVersionKey] = stringValue(major)
 			s.Fields[minorVersionKey] = stringValue(minor)

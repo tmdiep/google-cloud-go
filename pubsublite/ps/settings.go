@@ -16,14 +16,25 @@ package ps
 import (
 	"time"
 
-	"cloud.google.com/go/pubsub"
+	pubsub "cloud.google.com/go/pubsublite/internal/pubsub"
 	"cloud.google.com/go/pubsublite/internal/wire"
 
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
-// ErrOverflow occurrs when publish buffers overflow.
-var ErrOverflow = wire.ErrOverflow
+const (
+	// MaxPublishRequestCount is the maximum number of messages that can be
+	// batched in a single publish request.
+	MaxPublishRequestCount = wire.MaxPublishRequestCount
+
+	// MaxPublishMessageBytes is the maximum allowed serialized size of a single
+	// Pub/Sub message in bytes.
+	MaxPublishMessageBytes = wire.MaxPublishMessageBytes
+
+	// MaxPublishRequestBytes is the maximum allowed serialized size of a single
+	// publish request (containing a batch of messages) in bytes.
+	MaxPublishRequestBytes = wire.MaxPublishRequestBytes
+)
 
 // KeyExtractorFunc is a function that extracts an ordering key from a Message.
 type KeyExtractorFunc func(*pubsub.Message) []byte
@@ -35,24 +46,23 @@ type PublishMessageTransformerFunc func(*pubsub.Message) (*pb.PubSubMessage, err
 
 // PublishSettings control the batching of published messages. These settings
 // apply per partition.
+//
+// Use DefaultPublishSettings for defaults, as an empty PublishSettings will
+// fail validation.
 type PublishSettings struct {
-	// Publish a non-empty batch after this delay has passed. If 0,
-	// DefaultPublishSettings.DelayThreshold will be used.
+	// Publish a non-empty batch after this delay has passed. Must be > 0.
 	DelayThreshold time.Duration
 
-	// Publish a batch when it has this many messages. The maximum is
-	// wire.MaxPublishRequestCount. If 0, DefaultPublishSettings.CountThreshold
-	// will be used.
+	// Publish a batch when it has this many messages. Must be > 0. The maximum is
+	// MaxPublishRequestCount.
 	CountThreshold int
 
-	// Publish a batch when its size in bytes reaches this value. The maximum is
-	// wire.MaxPublishRequestBytes. If 0, DefaultPublishSettings.ByteThreshold
-	// will be used.
+	// Publish a batch when its size in bytes reaches this value. Must be > 0. The
+	// maximum is MaxPublishRequestBytes.
 	ByteThreshold int
 
 	// The maximum time that the client will attempt to establish a publish stream
-	// connection to the server. If 0, DefaultPublishSettings.Timeout will be
-	// used.
+	// connection to the server. Must be > 0.
 	//
 	// The timeout is exceeded, the publisher will terminate with the last error
 	// that occurred while trying to reconnect. Note that if the timeout duration
@@ -60,8 +70,7 @@ type PublishSettings struct {
 	Timeout time.Duration
 
 	// The maximum number of bytes that the publisher will keep in memory before
-	// returning ErrOverflow. If 0, DefaultPublishSettings.BufferedByteLimit will
-	// be used.
+	// returning ErrOverflow. Must be > 0.
 	//
 	// Note that Pub/Sub Lite topics are provisioned a publishing throughput
 	// capacity, per partition, shared by all publisher clients. Setting a large
@@ -70,6 +79,10 @@ type PublishSettings struct {
 	// throughput capacity can cause the buffers to overflow. For more
 	// information, see https://cloud.google.com/pubsub/lite/docs/topics.
 	BufferedByteLimit int
+
+	// The polling interval to watch for topic partition count updates. Set to 0
+	// to disable polling if the number of partitions will never update.
+	ConfigPollPeriod time.Duration
 
 	// Optional custom function that extracts an ordering key from a Message. The
 	// default implementation extracts the key from Message.OrderingKey.
@@ -87,26 +100,19 @@ var DefaultPublishSettings = PublishSettings{
 	ByteThreshold:     wire.DefaultPublishSettings.ByteThreshold,
 	Timeout:           wire.DefaultPublishSettings.Timeout,
 	BufferedByteLimit: wire.DefaultPublishSettings.BufferedByteLimit,
+	ConfigPollPeriod:  wire.DefaultPublishSettings.ConfigPollPeriod,
 }
 
 func (s *PublishSettings) toWireSettings() wire.PublishSettings {
-	wireSettings := wire.DefaultPublishSettings // Copy
-	if s.DelayThreshold > 0 {
-		wireSettings.DelayThreshold = s.DelayThreshold
+	return wire.PublishSettings{
+		DelayThreshold:    s.DelayThreshold,
+		CountThreshold:    s.CountThreshold,
+		ByteThreshold:     s.ByteThreshold,
+		Timeout:           s.Timeout,
+		BufferedByteLimit: s.BufferedByteLimit,
+		ConfigPollPeriod:  s.ConfigPollPeriod,
+		Framework:         wire.FrameworkCloudPubSubShim,
 	}
-	if s.CountThreshold > 0 {
-		wireSettings.CountThreshold = s.CountThreshold
-	}
-	if s.ByteThreshold > 0 {
-		wireSettings.ByteThreshold = s.ByteThreshold
-	}
-	if s.Timeout > 0 {
-		wireSettings.Timeout = s.Timeout
-	}
-	if s.BufferedByteLimit > 0 {
-		wireSettings.BufferedByteLimit = s.BufferedByteLimit
-	}
-	return wireSettings
 }
 
 // NackHandler is invoked when pubsub.Message.Nack() is called. Cloud Pub/Sub
@@ -120,29 +126,25 @@ type NackHandler func(*pubsub.Message) error
 // stopped with error.
 type ReceiveMessageTransformerFunc func(*pb.SequencedMessage, *pubsub.Message) error
 
-// ReceiveSettings configure the Receive method.
+// ReceiveSettings configure the Receive method. These settings apply
+//// per partition.
+//
+// Use DefaultReceiveSettings for defaults, as an empty ReceiveSettings will
+// fail validation.
 type ReceiveSettings struct {
-	// MaxOutstandingMessages is the maximum number of unprocessed messages
-	// (unacknowledged but not yet expired). If MaxOutstandingMessages is 0, it
-	// will be treated as if it were DefaultReceiveSettings.MaxOutstandingMessages.
-	// If the value is negative, then there will be no limit on the number of
-	// unprocessed messages.
+	// MaxOutstandingMessages is the maximum number of unacknowledged messages.
+	// Must be > 0.
 	MaxOutstandingMessages int
 
-	// MaxOutstandingBytes is the maximum size of unprocessed messages
-	// (unacknowledged but not yet expired). If MaxOutstandingBytes is 0, it will
-	// be treated as if it were DefaultReceiveSettings.MaxOutstandingBytes. If
-	// the value is negative, then there will be no limit on the number of bytes
-	// for unprocessed messages.
+	// MaxOutstandingBytes is the maximum size (in quota bytes) of unacknowledged
+	// messages. Must be > 0.
 	MaxOutstandingBytes int
 
 	// The maximum time that the client will attempt to establish a subscribe
-	// stream connection to the server. If 0, DefaultReceiveSettings.Timeout will
-	// be used.
+	// stream connection to the server. Must be > 0.
 	//
-	// The timeout is exceeded, the publisher will terminate with the last error
-	// that occurred while trying to reconnect. Note that if the timeout duration
-	// is long, ErrOverflow may occur first.
+	// The timeout is exceeded, the subscriber will terminate with the last error
+	// that occurred while trying to reconnect.
 	Timeout time.Duration
 
 	// The topic partition numbers (zero-indexed) to receive messages from.
@@ -172,15 +174,10 @@ var DefaultReceiveSettings = ReceiveSettings{
 }
 
 func (s *ReceiveSettings) toWireSettings() wire.ReceiveSettings {
-	wireSettings := wire.DefaultReceiveSettings // Copy
-	if s.MaxOutstandingMessages > 0 {
-		wireSettings.MaxOutstandingMessages = s.MaxOutstandingMessages
+	return wire.ReceiveSettings{
+		MaxOutstandingMessages: s.MaxOutstandingMessages,
+		MaxOutstandingBytes:    s.MaxOutstandingBytes,
+		Timeout:                s.Timeout,
+		Framework:              wire.FrameworkCloudPubSubShim,
 	}
-	if s.MaxOutstandingBytes > 0 {
-		wireSettings.MaxOutstandingBytes = s.MaxOutstandingBytes
-	}
-	if s.Timeout > 0 {
-		wireSettings.Timeout = s.Timeout
-	}
-	return wireSettings
 }
