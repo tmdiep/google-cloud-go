@@ -135,6 +135,8 @@ func (p *PublisherClient) Stop() {
 // Error returns the error that caused the publisher client to terminate. It
 // may be nil if Stop() was called. The error returned here typically contains
 // more context than what would be set for PublishResult.
+//
+// Unlike pubsub.Topic, the PublisherClient can fail permanently.
 func (p *PublisherClient) Error() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

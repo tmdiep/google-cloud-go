@@ -180,6 +180,7 @@ func (s *ReceiveSettings) toWireSettings() wire.ReceiveSettings {
 		MaxOutstandingMessages: s.MaxOutstandingMessages,
 		MaxOutstandingBytes:    s.MaxOutstandingBytes,
 		Timeout:                s.Timeout,
+		Partitions:             s.Partitions,
 		Framework:              wire.FrameworkCloudPubSubShim,
 	}
 }

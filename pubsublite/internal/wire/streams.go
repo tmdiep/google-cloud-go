@@ -129,6 +129,9 @@ func (rs *retryableStream) Start() {
 
 // Stop gracefully closes the stream without error.
 func (rs *retryableStream) Stop() {
+	if rs.Status() < streamTerminated {
+		log.Printf("pubsublite: (stop:%v) stopping stream", rs.responseType)
+	}
 	rs.terminate(nil)
 }
 
@@ -152,7 +155,7 @@ func (rs *retryableStream) Send(request interface{}) (sent bool) {
 			log.Printf("pubsublite: (send:%v) reconnecting stream", rs.responseType)
 			go rs.connectStream()
 		default:
-			log.Printf("pubsublite: (send:%v) terminating stream", rs.responseType)
+			log.Printf("pubsublite: (send:%v) terminating stream due to error: %v", rs.responseType, err)
 			rs.mu.Unlock() // terminate acquires the mutex.
 			rs.terminate(err)
 			return
@@ -285,7 +288,6 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 			if needsResponse {
 				response := reflect.New(rs.responseType).Interface()
 				if err = newStream.RecvMsg(response); err != nil {
-					log.Printf("pubsublite: (init:%v) waited to receive initial response", rs.responseType)
 					return r.RetryRecv(err)
 				}
 				if err = rs.handler.validateInitialResponse(response); err != nil {

@@ -16,7 +16,6 @@ package pubsublite
 import (
 	"context"
 	"math/rand"
-	"strconv"
 	"testing"
 	"time"
 
@@ -32,7 +31,6 @@ const gibi = 1 << 30
 
 var (
 	resourceIDs = uid.NewSpace("go-admin-test", nil)
-	rng         *rand.Rand
 
 	// A random zone is selected for each integration test run.
 	supportedZones = []string{
@@ -51,11 +49,6 @@ func initIntegrationTest(t *testing.T) {
 	if testutil.ProjID() == "" {
 		t.Skip("Integration tests skipped. See CONTRIBUTING.md for details")
 	}
-	// The Pub/Sub Lite server will accept project ID or number by EOQ4, 2020.
-	if _, err := strconv.ParseInt(testutil.ProjID(), 10, 64); err != nil {
-		t.Skip("Integration tests skipped. Only project number currently supported.")
-	}
-	rng = testutil.NewRand(time.Now())
 }
 
 func withGRPCHeadersAssertion(t *testing.T, opts ...option.ClientOption) []option.ClientOption {
@@ -94,7 +87,7 @@ func cleanUpSubscription(ctx context.Context, t *testing.T, admin *AdminClient, 
 }
 
 func randomLiteZone() string {
-	return supportedZones[rng.Intn(len(supportedZones))]
+	return supportedZones[rand.Intn(len(supportedZones))]
 }
 
 func TestResourceAdminOperations(t *testing.T) {

@@ -267,8 +267,9 @@ func NewSubscriberClient(ctx context.Context, settings ReceiveSettings, subscrip
 //
 // If there is a fatal service error, Receive returns that error after all of
 // the outstanding calls to f have returned. If ctx is done, Receive returns nil
-// after all of the outstanding calls to f have returned. Once Receive returns,
-// any outstanding message acknowledgements will be ignored.
+// after all of the outstanding calls to f have returned. Unlike
+// pubsub.Subscription, SubscriberClient does not wait for all messages to be
+// acknowledged before Receive returns.
 //
 // Receive calls f concurrently from multiple goroutines if the SubscriberClient
 // is connected to multiple partitions. It is encouraged to process messages
