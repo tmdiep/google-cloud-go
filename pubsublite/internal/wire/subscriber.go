@@ -506,7 +506,9 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 	}
 
 	subFactory := &singlePartitionSubscriberFactory{
-		ctx:              ctx,
+		// The user-provided context is used for background tasks (e.g. stream
+		// reconnects).
+		ctx:              context.Background(),
 		subClient:        subClient,
 		cursorClient:     cursorClient,
 		settings:         settings,

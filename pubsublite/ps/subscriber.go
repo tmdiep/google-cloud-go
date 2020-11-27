@@ -26,13 +26,13 @@ import (
 )
 
 var (
-	ErrNackCalled       = errors.New("pubsublite: subscriber client does not support nack. See NackHandler for how to customize nack handling")
-	ErrDuplicateReceive = errors.New("pubsublite: receive is already in progress for this subscriber client")
+	errNackCalled       = errors.New("pubsublite: subscriber client does not support nack. See NackHandler for how to customize nack handling")
+	errDuplicateReceive = errors.New("pubsublite: receive is already in progress for this subscriber client")
 )
 
 // handleNack is the default NackHandler implementation.
 func handleNack(_ *pubsub.Message) error {
-	return ErrNackCalled
+	return errNackCalled
 }
 
 // pslAckHandler is the AckHandler for Pub/Sub Lite.
@@ -69,8 +69,8 @@ func (ah *pslAckHandler) OnNack() {
 }
 
 // subscriberProxy wraps a reference to a subscriberInstance that can be cleared
-// when it terminates. Hence pslAckHandler (attached to messages) will no longer
-// hold references to the subscriberInstance, allowing it to be GC'ed.
+// when it terminates. pslAckHandlers (attached to messages) will no longer hold
+// references to the subscriberInstance, allowing it to be GC'ed.
 type subscriberProxy struct {
 	mu          sync.Mutex
 	subInstance *subscriberInstance
@@ -79,12 +79,14 @@ type subscriberProxy struct {
 func (sp *subscriberProxy) Clear() {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
+
 	sp.subInstance = nil
 }
 
 func (sp *subscriberProxy) Terminate(err error) {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
+
 	if sp.subInstance != nil {
 		sp.subInstance.Terminate(err)
 	}
@@ -95,14 +97,17 @@ func (sp *subscriberProxy) Terminate(err error) {
 // ack handling.
 type subscriberInstance struct {
 	settings ReceiveSettings
-	ctx      context.Context
 	receiver MessageReceiverFunc
+	rctx     context.Context // Context passed to the receiver
+	cancel   context.CancelFunc
 	wireSub  wire.Subscriber
 	subProxy *subscriberProxy
 
 	// Fields below must be guarded with mutex.
-	mu  sync.Mutex
-	err error
+	mu              sync.Mutex
+	err             error
+	shutdown        bool
+	activeReceivers sync.WaitGroup
 }
 
 func (si *subscriberInstance) onMessages(msgs []*wire.ReceivedMessage) {
@@ -118,13 +123,41 @@ func (si *subscriberInstance) onMessages(msgs []*wire.ReceivedMessage) {
 			si.Terminate(err)
 			return
 		}
-		si.receiver(si.ctx, psMsg)
 
-		// TODO: check stopped. Try to terminate after this finishes
+		if !si.canDeliverMsg() {
+			return
+		}
+		si.receiver(si.rctx, psMsg)
+		si.activeReceivers.Done()
 	}
 }
 
+func (si *subscriberInstance) canDeliverMsg() bool {
+	si.mu.Lock()
+	defer si.mu.Unlock()
+
+	if si.shutdown {
+		return false
+	}
+	si.activeReceivers.Add(1)
+	return true
+}
+
+// stopReceivers is a soft shutdown, which waits for all outstanding calls to
+// the user-provided message receiver func to finish. This allows the last
+// delivered message(s) to be acked. No further messages will be delivered.
+func (si *subscriberInstance) stopReceiversAndWait() {
+	si.mu.Lock()
+	si.shutdown = true
+	si.mu.Unlock()
+
+	si.cancel()
+	si.activeReceivers.Wait()
+}
+
+// Terminate is a hard shutdown that will immediately stop the wire subscriber.
 func (si *subscriberInstance) Terminate(err error) {
+	si.cancel()
 	si.wireSub.Stop()
 
 	si.mu.Lock()
@@ -134,6 +167,7 @@ func (si *subscriberInstance) Terminate(err error) {
 	if si.err == nil {
 		si.err = err
 	}
+	si.shutdown = true
 }
 
 // Wait for the subscriber to stop, or the context is done, whichever occurs
@@ -144,20 +178,23 @@ func (si *subscriberInstance) Wait(ctx context.Context) error {
 		return err
 	}
 
+	// Start a goroutine to monitor when the context is done.
 	subscriberStopped := make(chan struct{})
 	go func() {
 		select {
-		case <-subscriberStopped:
-			return
 		case <-ctx.Done():
-			// TODO: signal onMessages to stop looping. When they are all done, stop
-			// the subscriber.
-			si.wireSub.Stop()
+			si.stopReceiversAndWait()
+			si.Terminate(nil)
+		case <-subscriberStopped:
 		}
 	}()
 	err := si.wireSub.WaitStopped()
 	close(subscriberStopped) // Ends goroutine above
 	si.subProxy.Clear()      // Clear references to self in message ack handlers
+
+	// If the wire subscriber terminated due to a server error, wait for all the
+	// receivers to finish.
+	si.stopReceiversAndWait()
 
 	si.mu.Lock()
 	defer si.mu.Unlock()
@@ -182,14 +219,16 @@ type MessageReceiverFunc func(context.Context, *pubsub.Message)
 // See https://cloud.google.com/pubsub/lite/docs/subscribing for more
 // information about receiving messages.
 type SubscriberClient struct {
+	// SubscriberClient behaves more like a factory that creates
+	// subscriberInstances.
 	settings     ReceiveSettings
 	region       string
 	subscription pubsublite.SubscriptionPath
 	options      []option.ClientOption
 
 	// Fields below must be guarded with mutex.
-	mu         sync.Mutex
-	currentSub wire.Subscriber
+	mu            sync.Mutex
+	receiveActive bool
 }
 
 // NewSubscriberClient creates a new Cloud Pub/Sub Lite client to messages for a
@@ -217,8 +256,8 @@ func NewSubscriberClient(ctx context.Context, settings ReceiveSettings, subscrip
 	return subClient, nil
 }
 
-// Receive calls f with the messages from the subscription. It blocks
-// until ctx is done, or the service returns a non-retryable error.
+// Receive calls f with the messages from the subscription. It blocks until ctx
+// is done, or the service returns a non-retryable error.
 //
 // The standard way to terminate a Receive is to cancel its context:
 //
@@ -226,49 +265,60 @@ func NewSubscriberClient(ctx context.Context, settings ReceiveSettings, subscrip
 //   err := sub.Receive(cctx, callback)
 //   // Call cancel from callback, or another goroutine.
 //
-// If the service returns a non-retryable error, Receive returns that error. If
-// ctx is done, Receive
-// returns nil after all of the outstanding calls to f have returned and
-// all messages have been acknowledged or have expired.
+// If there is a fatal service error, Receive returns that error after all of
+// the outstanding calls to f have returned. If ctx is done, Receive returns nil
+// after all of the outstanding calls to f have returned. Once Receive returns,
+// any outstanding message acknowledgements will be ignored.
 //
-// Receive calls f concurrently from multiple goroutines. It is encouraged to
-// process messages synchronously in f, even if that processing is relatively
-// time-consuming; Receive will apply flow control for incoming messages,
-// limited by MaxOutstandingMessages and MaxOutstandingBytes in ReceiveSettings
-// (which apply per partition).
+// Receive calls f concurrently from multiple goroutines if the SubscriberClient
+// is connected to multiple partitions. It is encouraged to process messages
+// synchronously in f, even if that processing is relatively time-consuming.
 //
-// The context passed to f will be canceled when ctx is Done or there is a
-// fatal service error.
+// The context passed to f will be canceled when ctx is Done or there is a fatal
+// service error.
 //
 // Each SubscriberClient may have only one invocation of Receive active at a
 // time.
 func (s *SubscriberClient) Receive(ctx context.Context, f MessageReceiverFunc) error {
-	s.mu.Lock()
-	if s.currentSub != nil {
-		s.mu.Unlock()
-		return ErrDuplicateReceive
-	}
-
 	// Initialize a subscriber instance.
-	subInstance := &subscriberInstance{
-		settings: s.settings,
-		ctx:      ctx,
-		receiver: f,
-	}
-	wireSub, err := wire.NewSubscriber(ctx, s.settings.toWireSettings(), subInstance.onMessages, s.region, s.subscription.String(), s.options...)
+	subInstance, err := func() (*subscriberInstance, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		if s.receiveActive {
+			return nil, errDuplicateReceive
+		}
+
+		rctx, cancel := context.WithCancel(ctx)
+		subInstance := &subscriberInstance{
+			settings: s.settings,
+			rctx:     rctx,
+			cancel:   cancel,
+			receiver: f,
+		}
+
+		wireSub, err := wire.NewSubscriber(ctx, s.settings.toWireSettings(), subInstance.onMessages, s.region, s.subscription.String(), s.options...)
+		if err != nil {
+			return nil, err
+		}
+
+		subInstance.wireSub = wireSub
+		subInstance.subProxy = &subscriberProxy{subInstance: subInstance}
+		s.receiveActive = true
+		return subInstance, nil
+	}()
 	if err != nil {
 		return err
 	}
-	subInstance.wireSub = wireSub
-	subInstance.subProxy = &subscriberProxy{subInstance: subInstance}
-	s.currentSub = wireSub
-	s.mu.Unlock()
 
-	// Wait for the subscriber without mutex held.
-	err = subInstance.Wait(ctx)
+	// Ensure receiveActive is reset when Receive ends.
+	defer func() {
+		s.mu.Lock()
+		s.receiveActive = false
+		s.mu.Unlock()
+	}()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.currentSub = nil
-	return err
+	// Wait for the subscriber without mutex held. Overlapping calls to Receive
+	// will return an error.
+	return subInstance.Wait(ctx)
 }
