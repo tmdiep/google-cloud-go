@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -426,6 +427,43 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 
 		// Finally: receive and ack msg2.
 		receiveAndVerifyMessage(t, msg2, recvSettings, subscriptionPath)
+	})
+
+	// Verifies that SubscriberClient.Receive() can be invoked multiple times.
+	t.Run("SubscriberMultipleReceive", func(t *testing.T) {
+		publisher := publisherClient(ctx, t, DefaultPublishSettings, topicPath)
+		defer publisher.Stop()
+
+		msgs := []*pubsub.Message{
+			{Data: []byte("multiple_receive1")},
+			{Data: []byte("multiple_receive2")},
+		}
+		var results []*pubsub.PublishResult
+		for _, msg := range msgs {
+			results = append(results, publisher.Publish(ctx, msg))
+		}
+		waitForPublishResults(t, results)
+
+		cctx, stopSubscriber := context.WithTimeout(context.Background(), defaultTestTimeout)
+		var lastIdx int32 = -1
+		messageReceiver := func(ctx context.Context, got *pubsub.Message) {
+			currentIdx := atomic.AddInt32(&lastIdx, 1)
+			if diff := testutil.Diff(got, msgs[currentIdx], cmpopts.IgnoreUnexported(pubsub.Message{}), cmpopts.IgnoreFields(pubsub.Message{}, "ID", "PublishTime"), cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("Received message got: -, want: +\n%s", diff)
+			}
+			got.Ack()
+			stopSubscriber()
+		}
+		subscriber := subscriberClient(cctx, t, recvSettings, subscriptionPath)
+
+		// Receive msg1 and then stop.
+		if err := subscriber.Receive(cctx, messageReceiver); err != nil {
+			t.Errorf("Receive() got err: %v", err)
+		}
+		// Receive msg2 and then stop.
+		if err := subscriber.Receive(cctx, messageReceiver); err != nil {
+			t.Errorf("Receive() got err: %v", err)
+		}
 	})
 
 	// Checks that messages are published and received in order.

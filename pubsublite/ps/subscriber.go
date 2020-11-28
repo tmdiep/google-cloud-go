@@ -205,12 +205,14 @@ func (si *subscriberInstance) Wait(ctx context.Context) error {
 	return err
 }
 
-// MessageReceiverFunc handles messages sent by the Cloud Pub/Sub Lite system.
-// Only one call from any connected partition will be outstanding at a time, and
-// blocking in this receiver callback will block forward progress.
+// MessageReceiverFunc handles messages sent by the Cloud Pub/Sub Lite service.
+// The implementation must arrange for pubsub.Message.Ack() to be called after
+// processing the message.
 //
-// The receiver func will be called from multiple goroutines if there are
-// multiple partitions connected.
+// The receiver func will be called from multiple goroutines if the subscriber
+// is connected to multiple partitions. Only one call from any connected
+// partition will be outstanding at a time, and blocking in this receiver
+// callback will block the delivery of subsequent messages for the partition.
 type MessageReceiverFunc func(context.Context, *pubsub.Message)
 
 // SubscriberClient is a Cloud Pub/Sub Lite client to receive messages for a
@@ -267,9 +269,9 @@ func NewSubscriberClient(ctx context.Context, settings ReceiveSettings, subscrip
 //
 // If there is a fatal service error, Receive returns that error after all of
 // the outstanding calls to f have returned. If ctx is done, Receive returns nil
-// after all of the outstanding calls to f have returned. Unlike
-// pubsub.Subscription, SubscriberClient does not wait for all messages to be
-// acknowledged before Receive returns.
+// after all of the outstanding calls to f have returned. SubscriberClient does
+// not wait for all messages to be acknowledged before Receive returns (i.e.
+// messages that are acknowledged outside f).
 //
 // Receive calls f concurrently from multiple goroutines if the SubscriberClient
 // is connected to multiple partitions. It is encouraged to process messages
@@ -298,7 +300,10 @@ func (s *SubscriberClient) Receive(ctx context.Context, f MessageReceiverFunc) e
 			receiver: f,
 		}
 
-		wireSub, err := wire.NewSubscriber(ctx, s.settings.toWireSettings(), subInstance.onMessages, s.region, s.subscription.String(), s.options...)
+		// Note: ctx is not used to create the wire subscriber, because if it is
+		// cancelled, the subscriber will not be able to perform graceful shutdown
+		// (e.g. process acks and commit the final cursor offset).
+		wireSub, err := wire.NewSubscriber(context.Background(), s.settings.toWireSettings(), subInstance.onMessages, s.region, s.subscription.String(), s.options...)
 		if err != nil {
 			return nil, err
 		}

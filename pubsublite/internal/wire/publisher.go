@@ -397,9 +397,7 @@ func NewPublisher(ctx context.Context, settings PublishSettings, region, topicPa
 
 	msgRouterFactory := newMessageRouterFactory(rand.New(rand.NewSource(time.Now().UnixNano())))
 	pubFactory := &singlePartitionPublisherFactory{
-		// The user-provided context is used for background tasks (e.g. stream
-		// reconnects).
-		ctx:       context.Background(),
+		ctx:       ctx,
 		pubClient: pubClient,
 		settings:  settings,
 		topicPath: topicPath,

@@ -78,7 +78,11 @@ func NewPublisherClient(ctx context.Context, settings PublishSettings, topic pub
 	if err != nil {
 		return nil, err
 	}
-	wirePub, err := wire.NewPublisher(ctx, settings.toWireSettings(), region, topic.String(), opts...)
+
+	// Note: ctx is not used to create the wire publisher, because if it is
+	// cancelled, the publisher will not be able to perform graceful shutdown
+	// (e.g. flush pending messages).
+	wirePub, err := wire.NewPublisher(context.Background(), settings.toWireSettings(), region, topic.String(), opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -95,14 +99,10 @@ func NewPublisherClient(ctx context.Context, settings PublishSettings, topic pub
 // Publish returns a non-nil PublishResult which will be ready when the
 // message has been sent (or has failed to be sent) to the server.
 //
-// Once Stop() has been called or the publisher has terminated due to an error,
-// future calls to Publish will immediately return a PublishResult with error
-// ErrPublisherStopped.
-//
-// The publisher for a single topic partition will terminate upon error to
-// ensure ordering of messages. This will trigger publishers for other topic
-// partitions to also terminate. Pending published messages will be flushed,
-// where possible.
+// Once Stop() has been called or the publisher has failed permanently due to an
+// error, future calls to Publish will immediately return a PublishResult with
+// error ErrPublisherStopped. Error() returns the error that caused the
+// publisher to terminate.
 func (p *PublisherClient) Publish(ctx context.Context, msg *pubsub.Message) *pubsub.PublishResult {
 	result := pubsub.NewPublishResult()
 	msgpb, err := p.transformMessage(msg)
@@ -133,10 +133,7 @@ func (p *PublisherClient) Stop() {
 }
 
 // Error returns the error that caused the publisher client to terminate. It
-// may be nil if Stop() was called. The error returned here typically contains
-// more context than what would be set for PublishResult.
-//
-// Unlike pubsub.Topic, the PublisherClient can fail permanently.
+// may be nil if Stop() was called.
 func (p *PublisherClient) Error() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
