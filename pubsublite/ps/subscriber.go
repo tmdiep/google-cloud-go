@@ -146,10 +146,10 @@ func (si *subscriberInstance) canDeliverMsg() bool {
 	return true
 }
 
-// stopReceiversAndWait is a soft shutdown, which waits for all outstanding
+// waitForReceivers is a soft shutdown, which waits for all outstanding
 // calls to the user-provided message receiver func to finish. This allows the
 // last delivered message(s) to be acked. No further messages will be delivered.
-func (si *subscriberInstance) stopReceiversAndWait() {
+func (si *subscriberInstance) waitForReceivers() {
 	si.mu.Lock()
 	si.shutdown = true
 	si.mu.Unlock()
@@ -161,8 +161,8 @@ func (si *subscriberInstance) stopReceiversAndWait() {
 // Terminate is a hard shutdown that will immediately stop the wire subscriber.
 func (si *subscriberInstance) Terminate(err error) {
 	si.mu.Lock()
+	// Don't clobber original error.
 	if si.err == nil {
-		// Don't clobber original error.
 		si.err = err
 	}
 	si.shutdown = true
@@ -185,17 +185,17 @@ func (si *subscriberInstance) Wait(ctx context.Context) error {
 	go func() {
 		select {
 		case <-ctx.Done():
-			si.stopReceiversAndWait()
+			si.waitForReceivers()
 			si.wireSub.Stop()
 		case <-subscriberStopped:
 		}
 	}()
 	err := si.wireSub.WaitStopped()
 
-	// End goroutine above if wire subscriber terminated due to fatal error.
+	// End goroutine above if the wire subscriber terminated due to fatal error.
 	close(subscriberStopped)
 	// And also wait for all the receivers to finish.
-	si.stopReceiversAndWait()
+	si.waitForReceivers()
 
 	// Clear references to self in message ack handlers
 	si.subProxy.Clear()
@@ -337,14 +337,13 @@ func (s *SubscriberClient) Receive(ctx context.Context, f MessageReceiverFunc) e
 		return err
 	}
 
-	// Ensure receiveActive is reset when Receive ends.
 	defer func() {
 		s.mu.Lock()
 		s.receiveActive = false
 		s.mu.Unlock()
 	}()
 
-	// Wait for the subscriber without mutex held. Overlapping calls to Receive
+	// Wait for the subscriber without mutex held. Overlapping Receive invocations
 	// will return an error.
 	return subInstance.Wait(ctx)
 }
