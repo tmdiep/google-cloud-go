@@ -108,12 +108,11 @@ func TestPublisherClientTransformMessage(t *testing.T) {
 				settings.KeyExtractor = func(msg *pubsub.Message) []byte {
 					return msg.Data
 				}
-				settings.MessageTransformer = func(msg *pubsub.Message) (*pb.PubSubMessage, error) {
+				settings.MessageTransformer = func(from *pubsub.Message, to *pb.PubSubMessage) error {
 					// Swaps data and key.
-					return &pb.PubSubMessage{
-						Data: []byte(msg.OrderingKey),
-						Key:  msg.Data,
-					}, nil
+					to.Data = []byte(from.OrderingKey)
+					to.Key = from.Data
+					return nil
 				}
 			},
 			wantMsg: &pb.PubSubMessage{
@@ -148,8 +147,8 @@ func TestPublisherClientTransformMessageFails(t *testing.T) {
 	wantErr := errors.New("message could not be converted")
 
 	settings := DefaultPublishSettings
-	settings.MessageTransformer = func(_ *pubsub.Message) (*pb.PubSubMessage, error) {
-		return nil, wantErr
+	settings.MessageTransformer = func(_ *pubsub.Message, _ *pb.PubSubMessage) error {
+		return wantErr
 	}
 
 	// No publish calls expected.

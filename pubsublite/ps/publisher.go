@@ -105,8 +105,8 @@ func NewPublisherClient(ctx context.Context, settings PublishSettings, topic pub
 // publisher to terminate.
 func (p *PublisherClient) Publish(ctx context.Context, msg *pubsub.Message) *pubsub.PublishResult {
 	result := pubsub.NewPublishResult()
-	msgpb, err := p.transformMessage(msg)
-	if err != nil {
+	msgpb := new(pb.PubSubMessage)
+	if err := p.transformMessage(msg, msgpb); err != nil {
 		pubsub.SetPublishResult(result, "", err)
 		p.setError(err)
 		p.Stop()
@@ -154,14 +154,14 @@ func (p *PublisherClient) setError(err error) {
 	}
 }
 
-func (p *PublisherClient) transformMessage(msg *pubsub.Message) (*pb.PubSubMessage, error) {
+func (p *PublisherClient) transformMessage(from *pubsub.Message, to *pb.PubSubMessage) error {
 	if p.settings.MessageTransformer != nil {
-		return p.settings.MessageTransformer(msg)
+		return p.settings.MessageTransformer(from, to)
 	}
 
 	keyExtractor := p.settings.KeyExtractor
 	if keyExtractor == nil {
 		keyExtractor = extractOrderingKey
 	}
-	return transformPublishedMessage(msg, keyExtractor)
+	return transformPublishedMessage(from, to, keyExtractor)
 }

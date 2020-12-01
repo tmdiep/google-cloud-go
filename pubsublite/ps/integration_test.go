@@ -277,10 +277,10 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 	createSubscription(ctx, t, admin, subscriptionPath, topicPath)
 	defer cleanUpSubscription(ctx, t, admin, subscriptionPath)
 
-	// The same topic and subscription resources are used for each test. This
+	// The same topic and subscription resources are used for each subtest. This
 	// implicitly verifies commits. If cursors are not successfully committed at
 	// the end of each test, the next test will receive an incorrect message and
-	// fail.
+	// fail. The subtests can also be run independently.
 
 	// Sets all fields for a message and ensures it is correctly received.
 	t.Run("AllFieldsRoundTrip", func(t *testing.T) {
@@ -326,11 +326,10 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 	// Verifies a custom message transformer in PublishSettings.
 	t.Run("CustomPublishMessageTransformer", func(t *testing.T) {
 		pubSettings := DefaultPublishSettings
-		pubSettings.MessageTransformer = func(msg *pubsub.Message) (*pb.PubSubMessage, error) {
-			return &pb.PubSubMessage{
-				Data: []byte(string(msg.Data) + "_transformed"),
-				Key:  []byte(msg.OrderingKey + "_transformed"),
-			}, nil
+		pubSettings.MessageTransformer = func(from *pubsub.Message, to *pb.PubSubMessage) error {
+			to.Data = []byte(string(from.Data) + "_transformed")
+			to.Key = []byte(from.OrderingKey + "_transformed")
+			return nil
 		}
 		publisher := publisherClient(ctx, t, pubSettings, topicPath)
 		defer publisher.Stop()
@@ -536,10 +535,10 @@ func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
 	createSubscription(ctx, t, admin, subscriptionPath, topicPath)
 	defer cleanUpSubscription(ctx, t, admin, subscriptionPath)
 
-	// The same topic and subscription resources are used for each test. This
+	// The same topic and subscription resources are used for each subtest. This
 	// implicitly verifies commits. If cursors are not successfully committed at
 	// the end of each test, the next test will receive an incorrect message and
-	// fail.
+	// fail. The subtests can also be run independently.
 
 	// Tests messages published without ordering key.
 	t.Run("PublishRoutingNoKey", func(t *testing.T) {
