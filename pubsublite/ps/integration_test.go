@@ -209,7 +209,9 @@ func truncateMsg(msg string) string {
 	return msg
 }
 
-func receiveAllMessages(t *testing.T, msgTracker *test.MsgTracker, settings ReceiveSettings, subscription pubsublite.SubscriptionPath, checkOrdering bool) {
+type checkOrdering bool
+
+func receiveAllMessages(t *testing.T, msgTracker *test.MsgTracker, settings ReceiveSettings, subscription pubsublite.SubscriptionPath, checkOrder checkOrdering) {
 	cctx, stopSubscriber := context.WithTimeout(context.Background(), defaultTestTimeout)
 	orderingValidator := test.NewOrderingReceiver()
 
@@ -220,7 +222,7 @@ func receiveAllMessages(t *testing.T, msgTracker *test.MsgTracker, settings Rece
 			t.Errorf("Received unexpected message: %q", truncateMsg(data))
 			return
 		}
-		if checkOrdering {
+		if checkOrder {
 			if err := orderingValidator.Receive(data, msg.OrderingKey); err != nil {
 				t.Errorf("Received unordered message: %q", truncateMsg(data))
 			}
@@ -390,7 +392,7 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 		result2 := publisher.Publish(ctx, msg2)
 		waitForPublishResults(t, []*pubsub.PublishResult{result1, result2})
 
-		// Case A: Default nack handler.
+		// Case A: Default nack handler. Terminates subscriber.
 		cctx, _ := context.WithTimeout(context.Background(), defaultTestTimeout)
 		messageReceiver := func(ctx context.Context, got *pubsub.Message) {
 			if diff := testutil.Diff(got, msg1, cmpopts.IgnoreUnexported(pubsub.Message{}), cmpopts.IgnoreFields(pubsub.Message{}, "ID", "PublishTime"), cmpopts.EquateEmpty()); diff != "" {
@@ -404,14 +406,14 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 		}
 
 		// Case B: Custom nack handler.
-		errNack := errors.New("message nacked")
+		errCustomNack := errors.New("message nacked")
 		customSettings := recvSettings
 		customSettings.NackHandler = func(msg *pubsub.Message) error {
 			if string(msg.Data) == "nack_msg1" {
 				return nil // Causes msg1 to be acked
 			}
 			if string(msg.Data) == "nack_msg2" {
-				return errNack
+				return errCustomNack // Terminates subscriber
 			}
 			return fmt.Errorf("Received unexpected message: %q", truncateMsg(string(msg.Data)))
 		}
@@ -420,8 +422,8 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 		messageReceiver = func(ctx context.Context, got *pubsub.Message) {
 			got.Nack()
 		}
-		if gotErr := subscriber.Receive(cctx, messageReceiver); !test.ErrorEqual(gotErr, errNack) {
-			t.Errorf("Receive() got err: (%v), want err: (%v)", gotErr, errNack)
+		if gotErr := subscriber.Receive(cctx, messageReceiver); !test.ErrorEqual(gotErr, errCustomNack) {
+			t.Errorf("Receive() got err: (%v), want err: (%v)", gotErr, errCustomNack)
 		}
 
 		// Finally: receive and ack msg2.
@@ -476,26 +478,26 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 		pubSettings.DelayThreshold = 100 * time.Millisecond
 		msgs := publishMessages(t, pubSettings, topicPath, "ordering", messageCount)
 
-		// Receive messages, checking for ordering.
+		// Receive messages.
 		msgTracker := test.NewMsgTracker()
 		msgTracker.Add(msgs...)
-		receiveAllMessages(t, msgTracker, recvSettings, subscriptionPath, true)
+		receiveAllMessages(t, msgTracker, recvSettings, subscriptionPath, checkOrdering(true))
 	})
 
 	// Checks that subscriber flow control works.
 	t.Run("SubscriberFlowControl", func(t *testing.T) {
-		const messageCount = 100
-		const maxOutstandingMessages = 10 // Receive small batches of messages
+		const messageCount = 40
+		const maxOutstandingMessages = 2 // Receive small batches of messages
 
 		// Publish messages.
 		msgs := publishMessages(t, DefaultPublishSettings, topicPath, "subscriber_flow_control", messageCount)
 
-		// Receive messages, checking for ordering.
+		// Receive messages.
 		msgTracker := test.NewMsgTracker()
 		msgTracker.Add(msgs...)
 		customSettings := recvSettings
 		customSettings.MaxOutstandingMessages = maxOutstandingMessages
-		receiveAllMessages(t, msgTracker, customSettings, subscriptionPath, true)
+		receiveAllMessages(t, msgTracker, customSettings, subscriptionPath, checkOrdering(true))
 	})
 
 	// Verifies that large messages can be sent and received.
@@ -517,7 +519,7 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 		waitForPublishResults(t, pubResults)
 
 		// Receive messages.
-		receiveAllMessages(t, msgTracker, recvSettings, subscriptionPath, false)
+		receiveAllMessages(t, msgTracker, recvSettings, subscriptionPath, checkOrdering(false))
 	})
 }
 
@@ -551,7 +553,7 @@ func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
 		// However, they would still be ordered within their partition.
 		msgTracker := test.NewMsgTracker()
 		msgTracker.Add(msgs...)
-		receiveAllMessages(t, msgTracker, recvSettings, subscriptionPath, false)
+		receiveAllMessages(t, msgTracker, recvSettings, subscriptionPath, checkOrdering(false))
 	})
 
 	// Tests messages published with ordering key.
@@ -578,8 +580,8 @@ func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
 		}
 		waitForPublishResults(t, pubResults)
 
-		// Receive messages, checking for ordering.
-		receiveAllMessages(t, msgTracker, recvSettings, subscriptionPath, true)
+		// Receive messages.
+		receiveAllMessages(t, msgTracker, recvSettings, subscriptionPath, checkOrdering(true))
 	})
 
 	// Verifies usage of the partition assignment service.
@@ -654,6 +656,6 @@ func TestIntegration_SubscribeFanOut(t *testing.T) {
 	for _, subscription := range subscriptionPaths {
 		msgTracker := test.NewMsgTracker()
 		msgTracker.Add(msgs...)
-		receiveAllMessages(t, msgTracker, recvSettings, subscription, false)
+		receiveAllMessages(t, msgTracker, recvSettings, subscription, checkOrdering(false))
 	}
 }
