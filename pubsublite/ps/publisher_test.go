@@ -28,6 +28,8 @@ import (
 )
 
 // mockWirePublisher is a mock implementation of the wire.Publisher interface.
+// It uses test.RPCVerifier to install fake PublishResults for each Publish
+// call.
 type mockWirePublisher struct {
 	Verifier *test.RPCVerifier
 	FakeErr  error
@@ -143,7 +145,7 @@ func TestPublisherClientTransformMessage(t *testing.T) {
 	}
 }
 
-func TestPublisherClientTransformMessageFails(t *testing.T) {
+func TestPublisherClientTransformMessageError(t *testing.T) {
 	wantErr := errors.New("message could not be converted")
 
 	settings := DefaultPublishSettings
@@ -174,7 +176,7 @@ func TestPublisherClientTransformMessageFails(t *testing.T) {
 	}
 }
 
-func TestPublisherClientTranslateErrors(t *testing.T) {
+func TestPublisherClientTranslatePublishResultErrors(t *testing.T) {
 	ctx := context.Background()
 	input := &pubsub.Message{
 		Data:        []byte("data"),
