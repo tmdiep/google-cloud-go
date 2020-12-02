@@ -78,7 +78,7 @@ func (p *partitionCountWatcher) Start() {
 func (p *partitionCountWatcher) Stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.unsafeInitiateShutdown(serviceTerminated, nil)
+	p.unsafeInitiateShutdown(nil)
 }
 
 // updatePartitionCount is called in a goroutine.
@@ -95,16 +95,18 @@ func (p *partitionCountWatcher) updatePartitionCount() {
 		defer p.mu.Unlock()
 
 		if p.status >= serviceTerminating {
+			// Returning the current partition count here ensures that the receiver
+			// func will not be invoked below.
 			return p.partitionCount, nil
 		}
 		if err != nil {
 			err = fmt.Errorf("pubsublite: failed to update topic partition count: %v", err)
-			p.unsafeInitiateShutdown(serviceTerminated, err)
+			p.unsafeInitiateShutdown(err)
 			return 0, err
 		}
 		if resp.GetPartitionCount() <= 0 {
 			err := fmt.Errorf("pubsublite: topic has invalid number of partitions %d", resp.GetPartitionCount())
-			p.unsafeInitiateShutdown(serviceTerminated, err)
+			p.unsafeInitiateShutdown(err)
 			return 0, err
 		}
 
@@ -125,14 +127,15 @@ func (p *partitionCountWatcher) onStartupComplete() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Notify the service as active and start background polling updates after the
+	// Set the watcher as active and start background polling updates after the
 	// initial partition count has been processed.
 	if p.unsafeUpdateStatus(serviceActive, nil) {
 		p.pollUpdate.Start()
 	}
 }
 
-func (p *partitionCountWatcher) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
-	p.unsafeUpdateStatus(targetStatus, err)
-	p.pollUpdate.Stop()
+func (p *partitionCountWatcher) unsafeInitiateShutdown(err error) {
+	if p.unsafeUpdateStatus(serviceTerminated, err) {
+		p.pollUpdate.Stop()
+	}
 }
