@@ -16,7 +16,6 @@ package wire
 import (
 	"context"
 	"io"
-	"log"
 	"reflect"
 	"sync"
 	"time"
@@ -129,7 +128,7 @@ func (rs *retryableStream) Start() {
 // Stop gracefully closes the stream without error.
 func (rs *retryableStream) Stop() {
 	if rs.Status() < streamTerminated {
-		log.Printf("pubsublite: (stop:%v) stopping stream", rs.responseType)
+		Logf("pubsublite: (stop:%v) stopping stream", rs.responseType)
 	}
 	rs.terminate(nil)
 }
@@ -152,10 +151,10 @@ func (rs *retryableStream) Send(request interface{}) (sent bool) {
 			// stream. Nothing to do here.
 			break
 		case isRetryableSendError(err):
-			log.Printf("pubsublite: (send:%v) reconnecting stream", rs.responseType)
+			Logf("pubsublite: (send:%v) reconnecting stream", rs.responseType)
 			go rs.connectStream()
 		default:
-			log.Printf("pubsublite: (send:%v) terminating stream due to error: %v", rs.responseType, err)
+			Logf("pubsublite: (send:%v) terminating stream due to error: %v", rs.responseType, err)
 			rs.unsafeTerminate(err)
 		}
 	}
@@ -299,17 +298,12 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 		}()
 
 		if !shouldRetry {
-			if newStream == nil {
-				log.Printf("pubsublite: (init:%v) aborting stream retries due to error: %v", rs.responseType, err)
-			} else {
-				log.Printf("pubsublite: (init:%v) connected stream", rs.responseType)
-			}
 			break
 		}
 		if rs.Status() == streamTerminated {
 			break
 		}
-		log.Printf("pubsublite: (init:%v) retrying stream connection due to error: %v", rs.responseType, err)
+		Logf("pubsublite: (init:%v) retrying stream connection due to error: %v", rs.responseType, err)
 		if err = gax.Sleep(rs.ctx, backoff); err != nil {
 			break
 		}
@@ -332,10 +326,10 @@ func (rs *retryableStream) listen(recvStream grpc.ClientStream) {
 		}
 		if err != nil {
 			if isRetryableRecvError(err) {
-				log.Printf("pubsublite: (listen:%v) reconnecting stream due to error: %v", rs.responseType, err)
+				Logf("pubsublite: (listen:%v) reconnecting stream due to error: %v", rs.responseType, err)
 				go rs.connectStream()
 			} else {
-				log.Printf("pubsublite: (listen:%v) terminating stream due to error: %v", rs.responseType, err)
+				Logf("pubsublite: (listen:%v) terminating stream due to error: %v", rs.responseType, err)
 				rs.terminate(err)
 			}
 			break

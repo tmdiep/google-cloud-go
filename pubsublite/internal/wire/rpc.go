@@ -17,7 +17,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"log"
 	"net/url"
 	"runtime/debug"
 	"strconv"
@@ -211,7 +210,7 @@ func parseModuleVersion(version string) (major string, minor string, ok bool) {
 func getModuleVersion(buildInfo *debug.BuildInfo) (string, string, bool) {
 	for _, dep := range buildInfo.Deps {
 		if strings.Index(dep.Path, "pubsub") > 0 {
-			log.Printf("BUILD INFO: %s %s", dep.Path, dep.Version)
+			Logf("BUILD INFO: %s %s", dep.Path, dep.Version)
 		}
 		if dep.Path == pubsubLiteModulePath {
 			return parseModuleVersion(dep.Version)
