@@ -259,14 +259,19 @@ func NewSubscriberClient(ctx context.Context, settings ReceiveSettings, subscrip
 	if err != nil {
 		return nil, err
 	}
+	factory := &wireSubscriberFactoryImpl{
+		settings:     settings.toWireSettings(),
+		region:       region,
+		subscription: subscription,
+		options:      opts,
+	}
+	return newSubscriberClient(factory, settings), nil
+}
+
+func newSubscriberClient(factory wireSubscriberFactory, settings ReceiveSettings) *SubscriberClient {
 	subClient := &SubscriberClient{
-		settings: settings,
-		wireSubFactory: &wireSubscriberFactoryImpl{
-			settings:     settings.toWireSettings(),
-			region:       region,
-			subscription: subscription,
-			options:      opts,
-		},
+		settings:       settings,
+		wireSubFactory: factory,
 	}
 	if subClient.settings.MessageTransformer == nil {
 		subClient.settings.MessageTransformer = transformReceivedMessage
@@ -274,7 +279,7 @@ func NewSubscriberClient(ctx context.Context, settings ReceiveSettings, subscrip
 	if subClient.settings.NackHandler == nil {
 		subClient.settings.NackHandler = handleNack
 	}
-	return subClient, nil
+	return subClient
 }
 
 // Receive calls f with the messages from the subscription. It blocks until ctx
