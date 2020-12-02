@@ -77,12 +77,6 @@ func (f *mockWireSubscriberFactory) New(receiver wire.MessageReceiverFunc) (wire
 	}, nil
 }
 
-// DeliverMessages fakes the wire subscriber delivering a message.
-func (si *subscriberInstance) DeliverMessages(msgs []*wire.ReceivedMessage) {
-	mock := si.wireSub.(*mockWireSubscriber)
-	mock.Receiver(msgs)
-}
-
 func newTestSubscriberInstance(ctx context.Context, settings ReceiveSettings, receiver MessageReceiverFunc) *subscriberInstance {
 	sub, _ := newSubscriberInstance(ctx, new(mockWireSubscriberFactory), settings, receiver)
 	return sub

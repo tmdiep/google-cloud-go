@@ -49,7 +49,6 @@ func (ah *pslAckHandler) OnAck() {
 	}
 
 	ah.ackh.Ack()
-	ah.subInstance.OnAckHandled(ah.ackh)
 	ah.subInstance = nil
 }
 
@@ -62,11 +61,11 @@ func (ah *pslAckHandler) OnNack() {
 	if err != nil {
 		// If the NackHandler returns an error, shut down the subscriber client.
 		ah.subInstance.StartShutdown(err)
+		// TODO: committer is waiting for this ack
 	} else {
 		// If the NackHandler succeeds, just ack the message.
 		ah.ackh.Ack()
 	}
-	ah.subInstance.OnAckHandled(ah.ackh)
 	ah.subInstance = nil
 }
 
@@ -100,10 +99,7 @@ type subscriberInstance struct {
 	// Fields below must be guarded with mu.
 	mu              sync.Mutex
 	err             error
-	shutdown        bool
 	activeReceivers sync.WaitGroup
-	outstandingAcks sync.WaitGroup
-	acks            map[wire.AckConsumer]struct{}
 }
 
 func newSubscriberInstance(ctx context.Context, factory wireSubscriberFactory, settings ReceiveSettings, receiver MessageReceiverFunc) (*subscriberInstance, error) {
@@ -113,13 +109,12 @@ func newSubscriberInstance(ctx context.Context, factory wireSubscriberFactory, s
 		recvCtx:    recvCtx,
 		recvCancel: recvCancel,
 		receiver:   receiver,
-		acks:       make(map[wire.AckConsumer]struct{}),
 	}
 
 	// Note: ctx is not used to create the wire subscriber, because if it is
 	// cancelled, the subscriber will not be able to perform graceful shutdown
 	// (e.g. process acks and commit the final cursor offset).
-	wireSub, err := factory.New(subInstance.onMessages)
+	wireSub, err := factory.New(subInstance.onMessage)
 	if err != nil {
 		return nil, err
 	}
@@ -134,71 +129,36 @@ func newSubscriberInstance(ctx context.Context, factory wireSubscriberFactory, s
 	return subInstance, nil
 }
 
-func (si *subscriberInstance) onMessages(msgs []*wire.ReceivedMessage) {
-	for _, m := range msgs {
-		pslAckh := &pslAckHandler{
-			ackh:        m.Ack,
-			nackh:       si.settings.NackHandler,
-			subInstance: si,
-		}
-		psMsg := pubsub.NewMessage(pslAckh)
-		pslAckh.msg = psMsg
-		if err := si.settings.MessageTransformer(m.Msg, psMsg); err != nil {
-			si.StartShutdown(err)
-			return
-		}
-
-		if !si.canDeliverMsg(m.Ack) {
-			// The subscriber client is shutting down.
-			return
-		}
-		si.receiver(si.recvCtx, psMsg)
-		si.activeReceivers.Done()
+func (si *subscriberInstance) onMessage(msg *wire.ReceivedMessage) {
+	pslAckh := &pslAckHandler{
+		ackh:        msg.Ack,
+		nackh:       si.settings.NackHandler,
+		subInstance: si,
 	}
-}
-
-func (si *subscriberInstance) canDeliverMsg(ack wire.AckConsumer) bool {
-	si.mu.Lock()
-	defer si.mu.Unlock()
-
-	if si.shutdown {
-		return false
+	psMsg := pubsub.NewMessage(pslAckh)
+	pslAckh.msg = psMsg
+	if err := si.settings.MessageTransformer(msg.Msg, psMsg); err != nil {
+		si.StartShutdown(err)
+		return
 	}
+
 	si.activeReceivers.Add(1)
-	si.outstandingAcks.Add(1)
-	var void struct{}
-	si.acks[ack] = void
-	return true
+	si.receiver(si.recvCtx, psMsg)
+	si.activeReceivers.Done()
 }
 
 // StartShutdown starts shutting down the subscriber client. The wire subscriber
-// is stopped once all outstanding messages have been acked/nacked.
+// terminates once all outstanding messages have been acked/nacked.
 func (si *subscriberInstance) StartShutdown(err error) {
 	si.mu.Lock()
 	defer si.mu.Unlock()
 
-	si.shutdown = true
-	si.recvCancel() // Cancels recvCtx to notify message receiver funcs of shutdown
+	// Don't clobber original error.
 	if si.err == nil {
-		// Don't clobber original error.
 		si.err = err
 	}
-	if len(si.acks) == 0 {
-		si.wireSub.Stop()
-	}
-}
-
-func (si *subscriberInstance) OnAckHandled(ack wire.AckConsumer) {
-	si.mu.Lock()
-	defer si.mu.Unlock()
-
-	if _, exists := si.acks[ack]; exists {
-		delete(si.acks, ack)
-		si.outstandingAcks.Done()
-	}
-	if si.shutdown && len(si.acks) == 0 {
-		si.wireSub.Stop()
-	}
+	si.recvCancel() // Cancels recvCtx to notify message receiver funcs of shutdown
+	si.wireSub.Stop()
 }
 
 // Wait for the subscriber to stop, or the context is done, whichever occurs
@@ -212,8 +172,6 @@ func (si *subscriberInstance) Wait(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			si.StartShutdown(nil)
-			si.activeReceivers.Wait()
-			si.outstandingAcks.Wait()
 		case <-subscriberStopped:
 		}
 	}()

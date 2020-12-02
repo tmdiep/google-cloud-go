@@ -46,7 +46,7 @@ type ReceivedMessage struct {
 // MessageReceiverFunc receives a Pub/Sub message from a topic partition.
 type MessageReceiverFunc func(*ReceivedMessage)
 
-const maxMessagesBufferSize = 1000
+const maxMessagesBufferSize = 10000
 
 // messageDeliveryQueue delivers received messages to the client-provided
 // MessageReceiverFunc sequentially.
