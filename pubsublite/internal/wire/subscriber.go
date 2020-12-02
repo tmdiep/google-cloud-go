@@ -17,7 +17,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,7 +45,7 @@ type ReceivedMessage struct {
 // MessageReceiverFunc receives a Pub/Sub message from a topic partition.
 type MessageReceiverFunc func(*ReceivedMessage)
 
-const maxMessagesBufferSize = 10000
+const maxMessageBufferSize = 10000
 
 // messageDeliveryQueue delivers received messages to the client-provided
 // MessageReceiverFunc sequentially.
@@ -55,18 +54,15 @@ type messageDeliveryQueue struct {
 	messagesC chan *ReceivedMessage
 	stopC     chan struct{}
 	acks      *ackTracker
-
-	// Fields below must be guarded with mu.
-	mu     sync.Mutex
-	status serviceStatus
+	status    serviceStatus
 }
 
 func newMessageDeliveryQueue(acks *ackTracker, receiver MessageReceiverFunc, bufferSize int) *messageDeliveryQueue {
-	// The buffer size is based on ReceiveSettings.MaxOutstandingMessages to
-	// handle the worst case of single messages. But ensure there's a reasonable
-	// limit as channel buffer capacity is allocated on creation.
-	if bufferSize > maxMessagesBufferSize {
-		bufferSize = maxMessagesBufferSize
+	// The buffer size is based on ReceiveSettings.MaxOutstandingMessages. But
+	// ensure there's a reasonable limit as channel buffer capacity is allocated
+	// on creation.
+	if bufferSize > maxMessageBufferSize {
+		bufferSize = maxMessageBufferSize
 	}
 	return &messageDeliveryQueue{
 		acks:      acks,
@@ -77,9 +73,6 @@ func newMessageDeliveryQueue(acks *ackTracker, receiver MessageReceiverFunc, buf
 }
 
 func (mq *messageDeliveryQueue) Start() {
-	mq.mu.Lock()
-	defer mq.mu.Unlock()
-
 	if mq.status == serviceUninitialized {
 		go mq.deliverMessages()
 		mq.status = serviceActive
@@ -87,9 +80,6 @@ func (mq *messageDeliveryQueue) Start() {
 }
 
 func (mq *messageDeliveryQueue) Stop() {
-	mq.mu.Lock()
-	defer mq.mu.Unlock()
-
 	if mq.status < serviceTerminated {
 		close(mq.stopC)
 		mq.status = serviceTerminated
@@ -97,9 +87,6 @@ func (mq *messageDeliveryQueue) Stop() {
 }
 
 func (mq *messageDeliveryQueue) Add(messages []*ReceivedMessage) {
-	mq.mu.Lock()
-	defer mq.mu.Unlock()
-
 	if mq.status == serviceActive {
 		for _, msg := range messages {
 			mq.messagesC <- msg

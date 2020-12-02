@@ -96,8 +96,8 @@ func (c *committer) Start() {
 	}
 }
 
-// Stop initiates shutdown of the committer. The final commit offset will be
-// send to the server, but acks that arrive afterward will be discarded.
+// Stop initiates shutdown of the committer. It will wait for outstanding acks
+// and send the final commit offset to the server.
 func (c *committer) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
