@@ -14,6 +14,8 @@
 package ps
 
 import (
+	"context"
+
 	"cloud.google.com/go/pubsublite/internal/wire"
 )
 
@@ -29,13 +31,13 @@ func (mp *mockWireSubscriber) Stop()              { mp.Stopped = true }
 func (mp *mockWireSubscriber) WaitStarted() error { return mp.FakeErr }
 func (mp *mockWireSubscriber) WaitStopped() error { return mp.FakeErr }
 
-type mockWireSubscriberFactory struct {}
+type mockWireSubscriberFactory struct{}
 
 func (f *mockWireSubscriberFactory) New(receiver wire.MessageReceiverFunc) (wire.Subscriber, error) {
 	return &mockWireSubscriber{Receiver: receiver}, nil
 }
 
-func newTestSubscriberClient(settings ReceiveSettings) *SubscriberClient {
-	return newSubscriberClient(new(mockWireSubscriberFactory), settings)
+func newTestSubscriberInstance(ctx context.Context, settings ReceiveSettings, receiver MessageReceiverFunc) *subscriberInstance {
+	sub, _ := newSubscriberInstance(ctx, new(mockWireSubscriberFactory), settings, receiver)
+	return sub
 }
-

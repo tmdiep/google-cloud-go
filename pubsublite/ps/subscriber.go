@@ -61,13 +61,30 @@ func (ah *pslAckHandler) OnNack() {
 	err := ah.nackh(ah.msg)
 	if err != nil {
 		// If the NackHandler returns an error, shut down the subscriber client.
-		ah.subInstance.Terminate(err)
+		ah.subInstance.StartShutdown(err)
 	} else {
 		// If the NackHandler succeeds, just ack the message.
 		ah.ackh.Ack()
 	}
 	ah.subInstance.OnAckHandled(ah.ackh)
 	ah.subInstance = nil
+}
+
+// wireSubscriberFactory is a factory for creating wire subscribers, which can
+// be overridden with a mock in unit tests.
+type wireSubscriberFactory interface {
+	New(wire.MessageReceiverFunc) (wire.Subscriber, error)
+}
+
+type wireSubscriberFactoryImpl struct {
+	settings     wire.ReceiveSettings
+	region       string
+	subscription pubsublite.SubscriptionPath
+	options      []option.ClientOption
+}
+
+func (f *wireSubscriberFactoryImpl) New(receiver wire.MessageReceiverFunc) (wire.Subscriber, error) {
+	return wire.NewSubscriber(context.Background(), f.settings, receiver, f.region, f.subscription.String(), f.options...)
 }
 
 // subscriberInstance wraps an instance of a wire.Subscriber and handles the
@@ -89,6 +106,34 @@ type subscriberInstance struct {
 	acks            map[wire.AckConsumer]struct{}
 }
 
+func newSubscriberInstance(ctx context.Context, factory wireSubscriberFactory, settings ReceiveSettings, receiver MessageReceiverFunc) (*subscriberInstance, error) {
+	recvCtx, recvCancel := context.WithCancel(ctx)
+	subInstance := &subscriberInstance{
+		settings:   settings,
+		recvCtx:    recvCtx,
+		recvCancel: recvCancel,
+		receiver:   receiver,
+		acks:       make(map[wire.AckConsumer]struct{}),
+	}
+
+	// Note: ctx is not used to create the wire subscriber, because if it is
+	// cancelled, the subscriber will not be able to perform graceful shutdown
+	// (e.g. process acks and commit the final cursor offset).
+	wireSub, err := factory.New(subInstance.onMessages)
+	if err != nil {
+		return nil, err
+	}
+
+	subInstance.wireSub = wireSub
+	if subInstance.settings.MessageTransformer == nil {
+		subInstance.settings.MessageTransformer = transformReceivedMessage
+	}
+	if subInstance.settings.NackHandler == nil {
+		subInstance.settings.NackHandler = handleNack
+	}
+	return subInstance, nil
+}
+
 func (si *subscriberInstance) onMessages(msgs []*wire.ReceivedMessage) {
 	for _, m := range msgs {
 		pslAckh := &pslAckHandler{
@@ -99,7 +144,7 @@ func (si *subscriberInstance) onMessages(msgs []*wire.ReceivedMessage) {
 		psMsg := pubsub.NewMessage(pslAckh)
 		pslAckh.msg = psMsg
 		if err := si.settings.MessageTransformer(m.Msg, psMsg); err != nil {
-			si.Terminate(err)
+			si.StartShutdown(err)
 			return
 		}
 
@@ -126,37 +171,20 @@ func (si *subscriberInstance) canDeliverMsg(ack wire.AckConsumer) bool {
 	return true
 }
 
-// waitForReceivers is a soft shutdown, which waits for all outstanding
-// calls to the user-provided message receiver func to finish. No further
-// messages will be delivered.
-func (si *subscriberInstance) waitForReceivers() {
-	si.mu.Lock()
-	si.shutdown = true
-	si.mu.Unlock()
-
-	si.recvCancel() // Cancels recvCtx to notify message receiver funcs of shutdown
-	si.activeReceivers.Wait()
-}
-
-// Terminate is a hard shutdown that will immediately stop the wire subscriber.
-func (si *subscriberInstance) Terminate(err error) {
+// StartShutdown starts shutting down the subscriber client. The wire subscriber
+// is stopped once all outstanding messages have been acked/nacked.
+func (si *subscriberInstance) StartShutdown(err error) {
 	si.mu.Lock()
 	defer si.mu.Unlock()
 
-	// Don't clobber original error.
+	si.shutdown = true
+	si.recvCancel() // Cancels recvCtx to notify message receiver funcs of shutdown
 	if si.err == nil {
+		// Don't clobber original error.
 		si.err = err
 	}
-	si.shutdown = true
-	si.wireSub.Stop()
-	si.recvCancel()
-
-	// Release all outstanding acks so that we don't wait for them.
-	for ack, _ := range si.acks {
-		si.outstandingAcks.Done()
-		// Safe to delete map entry during range loop:
-		// https://golang.org/ref/spec#For_statements
-		delete(si.acks, ack)
+	if len(si.acks) == 0 {
+		si.wireSub.Stop()
 	}
 }
 
@@ -165,8 +193,11 @@ func (si *subscriberInstance) OnAckHandled(ack wire.AckConsumer) {
 	defer si.mu.Unlock()
 
 	if _, exists := si.acks[ack]; exists {
-		si.outstandingAcks.Done()
 		delete(si.acks, ack)
+		si.outstandingAcks.Done()
+	}
+	if si.shutdown && len(si.acks) == 0 {
+		si.wireSub.Stop()
 	}
 }
 
@@ -174,20 +205,15 @@ func (si *subscriberInstance) OnAckHandled(ack wire.AckConsumer) {
 // first.
 func (si *subscriberInstance) Wait(ctx context.Context) error {
 	si.wireSub.Start()
-	if err := si.wireSub.WaitStarted(); err != nil {
-		return err
-	}
 
 	// Start a goroutine to monitor when the context is done.
 	subscriberStopped := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			si.waitForReceivers()
-			// Note: if Terminate() is called while waiting for receivers, the
-			// outstanding acks will be released.
+			si.StartShutdown(nil)
+			si.activeReceivers.Wait()
 			si.outstandingAcks.Wait()
-			si.wireSub.Stop()
 		case <-subscriberStopped:
 		}
 	}()
@@ -197,7 +223,7 @@ func (si *subscriberInstance) Wait(ctx context.Context) error {
 	// and ctx is not done.
 	close(subscriberStopped)
 	// And also wait for all the receivers to finish.
-	si.waitForReceivers()
+	si.activeReceivers.Wait()
 
 	si.mu.Lock()
 	defer si.mu.Unlock()
@@ -206,23 +232,6 @@ func (si *subscriberInstance) Wait(ctx context.Context) error {
 		return si.err
 	}
 	return err
-}
-
-// wireSubscriberFactory is a factory for creating wire subscribers, which can
-// be overridden with a mock in unit tests.
-type wireSubscriberFactory interface {
-	New(wire.MessageReceiverFunc) (wire.Subscriber, error)
-}
-
-type wireSubscriberFactoryImpl struct {
-	settings     wire.ReceiveSettings
-	region       string
-	subscription pubsublite.SubscriptionPath
-	options      []option.ClientOption
-}
-
-func (f *wireSubscriberFactoryImpl) New(receiver wire.MessageReceiverFunc) (wire.Subscriber, error) {
-	return wire.NewSubscriber(context.Background(), f.settings, receiver, f.region, f.subscription.String(), f.options...)
 }
 
 // MessageReceiverFunc handles messages sent by the Cloud Pub/Sub Lite service.
@@ -265,21 +274,11 @@ func NewSubscriberClient(ctx context.Context, settings ReceiveSettings, subscrip
 		subscription: subscription,
 		options:      opts,
 	}
-	return newSubscriberClient(factory, settings), nil
-}
-
-func newSubscriberClient(factory wireSubscriberFactory, settings ReceiveSettings) *SubscriberClient {
 	subClient := &SubscriberClient{
 		settings:       settings,
 		wireSubFactory: factory,
 	}
-	if subClient.settings.MessageTransformer == nil {
-		subClient.settings.MessageTransformer = transformReceivedMessage
-	}
-	if subClient.settings.NackHandler == nil {
-		subClient.settings.NackHandler = handleNack
-	}
-	return subClient
+	return subClient, nil
 }
 
 // Receive calls f with the messages from the subscription. It blocks until ctx
@@ -314,25 +313,11 @@ func (s *SubscriberClient) Receive(ctx context.Context, f MessageReceiverFunc) e
 		if s.receiveActive {
 			return nil, errDuplicateReceive
 		}
-
-		recvCtx, recvCancel := context.WithCancel(ctx)
-		subInstance := &subscriberInstance{
-			settings:   s.settings,
-			recvCtx:    recvCtx,
-			recvCancel: recvCancel,
-			receiver:   f,
-			acks:       make(map[wire.AckConsumer]struct{}),
-		}
-
-		// Note: ctx is not used to create the wire subscriber, because if it is
-		// cancelled, the subscriber will not be able to perform graceful shutdown
-		// (e.g. process acks and commit the final cursor offset).
-		wireSub, err := s.wireSubFactory.New(subInstance.onMessages)
+		subInstance, err := newSubscriberInstance(ctx, s.wireSubFactory, s.settings, f)
 		if err != nil {
 			return nil, err
 		}
 
-		subInstance.wireSub = wireSub
 		s.receiveActive = true
 		return subInstance, nil
 	}()
