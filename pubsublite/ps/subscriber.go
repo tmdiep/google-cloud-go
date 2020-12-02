@@ -37,61 +37,37 @@ func handleNack(_ *pubsub.Message) error {
 
 // pslAckHandler is the AckHandler for Pub/Sub Lite.
 type pslAckHandler struct {
-	ackh     wire.AckConsumer
-	msg      *pubsub.Message
-	nackh    NackHandler
-	called   bool
-	subProxy *subscriberInstanceProxy
+	ackh        wire.AckConsumer
+	msg         *pubsub.Message
+	nackh       NackHandler
+	subInstance *subscriberInstance
 }
 
 func (ah *pslAckHandler) OnAck() {
-	if ah.called {
+	if ah.subInstance == nil {
 		return
 	}
-	ah.called = true
+
 	ah.ackh.Ack()
+	ah.subInstance.OnAckHandled(ah.ackh)
+	ah.subInstance = nil
 }
 
 func (ah *pslAckHandler) OnNack() {
-	if ah.called {
+	if ah.subInstance == nil {
 		return
 	}
-	ah.called = true
 
 	err := ah.nackh(ah.msg)
 	if err != nil {
 		// If the NackHandler returns an error, shut down the subscriber client.
-		ah.subProxy.Terminate(err)
-		return
+		ah.subInstance.Terminate(err)
+	} else {
+		// If the NackHandler succeeds, just ack the message.
+		ah.ackh.Ack()
 	}
-
-	// If the NackHandler succeeds, just ack the message.
-	ah.ackh.Ack()
-}
-
-// subscriberInstanceProxy wraps a reference to a subscriberInstance that can be
-// cleared when it terminates. pslAckHandlers (attached to messages) will no
-// longer hold references to the subscriberInstance, allowing it to be garbage
-// collected.
-type subscriberInstanceProxy struct {
-	mu          sync.Mutex
-	subInstance *subscriberInstance
-}
-
-func (sp *subscriberInstanceProxy) Clear() {
-	sp.mu.Lock()
-	defer sp.mu.Unlock()
-
-	sp.subInstance = nil
-}
-
-func (sp *subscriberInstanceProxy) Terminate(err error) {
-	sp.mu.Lock()
-	defer sp.mu.Unlock()
-
-	if sp.subInstance != nil {
-		sp.subInstance.Terminate(err)
-	}
+	ah.subInstance.OnAckHandled(ah.ackh)
+	ah.subInstance = nil
 }
 
 // subscriberInstance wraps an instance of a wire.Subscriber and handles the
@@ -103,21 +79,22 @@ type subscriberInstance struct {
 	recvCtx    context.Context    // Context passed to the receiver
 	recvCancel context.CancelFunc // Corresponding cancel func for recvCtx
 	wireSub    wire.Subscriber
-	subProxy   *subscriberInstanceProxy
 
 	// Fields below must be guarded with mu.
 	mu              sync.Mutex
 	err             error
 	shutdown        bool
 	activeReceivers sync.WaitGroup
+	outstandingAcks sync.WaitGroup
+	acks            map[wire.AckConsumer]struct{}
 }
 
 func (si *subscriberInstance) onMessages(msgs []*wire.ReceivedMessage) {
 	for _, m := range msgs {
 		pslAckh := &pslAckHandler{
-			ackh:     m.Ack,
-			nackh:    si.settings.NackHandler,
-			subProxy: si.subProxy,
+			ackh:        m.Ack,
+			nackh:       si.settings.NackHandler,
+			subInstance: si,
 		}
 		psMsg := pubsub.NewMessage(pslAckh)
 		pslAckh.msg = psMsg
@@ -126,7 +103,7 @@ func (si *subscriberInstance) onMessages(msgs []*wire.ReceivedMessage) {
 			return
 		}
 
-		if !si.canDeliverMsg() {
+		if !si.canDeliverMsg(m.Ack) {
 			// The subscriber client is shutting down.
 			return
 		}
@@ -135,7 +112,7 @@ func (si *subscriberInstance) onMessages(msgs []*wire.ReceivedMessage) {
 	}
 }
 
-func (si *subscriberInstance) canDeliverMsg() bool {
+func (si *subscriberInstance) canDeliverMsg(ack wire.AckConsumer) bool {
 	si.mu.Lock()
 	defer si.mu.Unlock()
 
@@ -143,12 +120,15 @@ func (si *subscriberInstance) canDeliverMsg() bool {
 		return false
 	}
 	si.activeReceivers.Add(1)
+	si.outstandingAcks.Add(1)
+	var void struct{}
+	si.acks[ack] = void
 	return true
 }
 
 // waitForReceivers is a soft shutdown, which waits for all outstanding
-// calls to the user-provided message receiver func to finish. This allows the
-// last delivered message(s) to be acked. No further messages will be delivered.
+// calls to the user-provided message receiver func to finish. No further
+// messages will be delivered.
 func (si *subscriberInstance) waitForReceivers() {
 	si.mu.Lock()
 	si.shutdown = true
@@ -161,15 +141,33 @@ func (si *subscriberInstance) waitForReceivers() {
 // Terminate is a hard shutdown that will immediately stop the wire subscriber.
 func (si *subscriberInstance) Terminate(err error) {
 	si.mu.Lock()
+	defer si.mu.Unlock()
+
 	// Don't clobber original error.
 	if si.err == nil {
 		si.err = err
 	}
 	si.shutdown = true
-	si.mu.Unlock()
-
 	si.wireSub.Stop()
 	si.recvCancel()
+
+	// Release all outstanding acks so that we don't wait for them.
+	for ack, _ := range si.acks {
+		si.outstandingAcks.Done()
+		// Safe to delete map entry during range loop:
+		// https://golang.org/ref/spec#For_statements
+		delete(si.acks, ack)
+	}
+}
+
+func (si *subscriberInstance) OnAckHandled(ack wire.AckConsumer) {
+	si.mu.Lock()
+	defer si.mu.Unlock()
+
+	if _, exists := si.acks[ack]; exists {
+		si.outstandingAcks.Done()
+		delete(si.acks, ack)
+	}
 }
 
 // Wait for the subscriber to stop, or the context is done, whichever occurs
@@ -186,19 +184,20 @@ func (si *subscriberInstance) Wait(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			si.waitForReceivers()
+			// Note: if Terminate() is called while waiting for receivers, the
+			// outstanding acks will be released.
+			si.outstandingAcks.Wait()
 			si.wireSub.Stop()
 		case <-subscriberStopped:
 		}
 	}()
 	err := si.wireSub.WaitStopped()
 
-	// End goroutine above if the wire subscriber terminated due to fatal error.
+	// End goroutine above if the wire subscriber terminated due to fatal error
+	// and ctx is not done.
 	close(subscriberStopped)
 	// And also wait for all the receivers to finish.
 	si.waitForReceivers()
-
-	// Clear references to self in message ack handlers
-	si.subProxy.Clear()
 
 	si.mu.Lock()
 	defer si.mu.Unlock()
@@ -289,9 +288,8 @@ func NewSubscriberClient(ctx context.Context, settings ReceiveSettings, subscrip
 //
 // If there is a fatal service error, Receive returns that error after all of
 // the outstanding calls to f have returned. If ctx is done, Receive returns nil
-// after all of the outstanding calls to f have returned. SubscriberClient does
-// not wait for all messages to be acknowledged before Receive returns (i.e.
-// messages that are acknowledged outside f).
+// after all of the outstanding calls to f have returned and all messages have
+// been acknowledged.
 //
 // Receive calls f concurrently from multiple goroutines if the SubscriberClient
 // is connected to multiple partitions. It is encouraged to process messages
@@ -318,6 +316,7 @@ func (s *SubscriberClient) Receive(ctx context.Context, f MessageReceiverFunc) e
 			recvCtx:    recvCtx,
 			recvCancel: recvCancel,
 			receiver:   f,
+			acks:       make(map[wire.AckConsumer]struct{}),
 		}
 
 		// Note: ctx is not used to create the wire subscriber, because if it is
@@ -329,7 +328,6 @@ func (s *SubscriberClient) Receive(ctx context.Context, f MessageReceiverFunc) e
 		}
 
 		subInstance.wireSub = wireSub
-		subInstance.subProxy = &subscriberInstanceProxy{subInstance: subInstance}
 		s.receiveActive = true
 		return subInstance, nil
 	}()

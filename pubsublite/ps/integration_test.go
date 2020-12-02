@@ -30,9 +30,9 @@ import (
 	"cloud.google.com/go/pubsublite/internal/test"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"google.golang.org/api/option"
-	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
+	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
 
 const (
