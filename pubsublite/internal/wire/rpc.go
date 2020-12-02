@@ -32,9 +32,9 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	vkit "cloud.google.com/go/pubsublite/apiv1"
-	structpb "github.com/golang/protobuf/ptypes/struct"
 	gax "github.com/googleapis/gax-go/v2"
 )
 
@@ -220,12 +220,6 @@ func getModuleVersion(buildInfo *debug.BuildInfo) (string, string, bool) {
 	return "", "", false
 }
 
-func newProtoStruct() *structpb.Struct {
-	return &structpb.Struct{
-		Fields: make(map[string]*structpb.Value),
-	}
-}
-
 func stringValue(str string) *structpb.Value {
 	return &structpb.Value{
 		Kind: &structpb.Value_StringValue{StringValue: str},
@@ -253,7 +247,9 @@ func (pm pubsubMetadata) AddClientInfo(framework FrameworkType) {
 }
 
 func (pm pubsubMetadata) doAddClientInfo(framework FrameworkType, buildInfo *debug.BuildInfo) {
-	s := newProtoStruct()
+	s := &structpb.Struct{
+		Fields: make(map[string]*structpb.Value),
+	}
 	s.Fields[languageKey] = stringValue(languageValue)
 	if len(framework) > 0 {
 		s.Fields[frameworkKey] = stringValue(string(framework))
