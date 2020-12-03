@@ -193,8 +193,8 @@ func (si *subscriberInstance) Wait(ctx context.Context) error {
 }
 
 // MessageReceiverFunc handles messages sent by the Cloud Pub/Sub Lite service.
-// The implementation must arrange for pubsub.Message.Ack() to be called after
-// processing the message.
+// The implementation must arrange for pubsub.Message.Ack() or
+// pubsub.Message.Nack() to be called after processing the message.
 //
 // The receiver func will be called from multiple goroutines if the subscriber
 // is connected to multiple partitions. Only one call from any connected
