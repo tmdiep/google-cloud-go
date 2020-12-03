@@ -38,6 +38,8 @@ const (
 	streamTerminated    streamStatus = 3
 )
 
+type initialResponseRequired bool
+
 // streamHandler provides hooks for different Pub/Sub Lite streaming APIs
 // (e.g. publish, subscribe, streaming cursor, etc.) to use retryableStream.
 // All Pub/Sub Lite streaming APIs implement a similar handshaking protocol,
@@ -56,7 +58,7 @@ type streamHandler interface {
 	newStream(context.Context) (grpc.ClientStream, error)
 	// initialRequest should return the initial request and whether an initial
 	// response is expected.
-	initialRequest() (interface{}, bool)
+	initialRequest() (interface{}, initialResponseRequired)
 	validateInitialResponse(interface{}) error
 
 	// onStreamStatusChange is used to notify stream handlers when the stream has
