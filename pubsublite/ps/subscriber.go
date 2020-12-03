@@ -60,8 +60,7 @@ func (ah *pslAckHandler) OnNack() {
 	err := ah.nackh(ah.msg)
 	if err != nil {
 		// If the NackHandler returns an error, shut down the subscriber client.
-		ah.subInstance.StartShutdown(err)
-		// TODO: committer is waiting for this ack
+		ah.subInstance.Shutdown(false, err)
 	} else {
 		// If the NackHandler succeeds, just ack the message.
 		ah.ackh.Ack()
@@ -138,7 +137,7 @@ func (si *subscriberInstance) onMessage(msg *wire.ReceivedMessage) {
 	psMsg := pubsub.NewMessage(pslAckh)
 	pslAckh.msg = psMsg
 	if err := si.settings.MessageTransformer(msg.Msg, psMsg); err != nil {
-		si.StartShutdown(err)
+		si.Shutdown(false, err)
 		return
 	}
 
@@ -147,9 +146,9 @@ func (si *subscriberInstance) onMessage(msg *wire.ReceivedMessage) {
 	si.activeReceivers.Done()
 }
 
-// StartShutdown starts shutting down the subscriber client. The wire subscriber
-// terminates once all outstanding messages have been acked/nacked.
-func (si *subscriberInstance) StartShutdown(err error) {
+// Shutdown starts shutting down the subscriber client. The wire subscriber can
+// optionally wait for all outstanding messages to be acked/nacked.
+func (si *subscriberInstance) Shutdown(waitForAcks bool, err error) {
 	si.mu.Lock()
 	defer si.mu.Unlock()
 
@@ -157,8 +156,16 @@ func (si *subscriberInstance) StartShutdown(err error) {
 	if si.err == nil {
 		si.err = err
 	}
-	si.recvCancel() // Cancels recvCtx to notify message receiver funcs of shutdown
-	si.wireSub.Stop()
+
+	// Cancel recvCtx to notify message receiver funcs of shutdown
+	si.recvCancel()
+
+	// Either wait for acks or terminate quickly upon fatal error.
+	if waitForAcks {
+		si.wireSub.Stop()
+	} else {
+		si.wireSub.Terminate()
+	}
 }
 
 // Wait for the subscriber to stop, or the context is done, whichever occurs
@@ -171,7 +178,7 @@ func (si *subscriberInstance) Wait(ctx context.Context) error {
 	go func() {
 		select {
 		case <-ctx.Done():
-			si.StartShutdown(nil)
+			si.Shutdown(true, nil)
 		case <-subscriberStopped:
 		}
 	}()

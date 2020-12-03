@@ -114,8 +114,7 @@ func (s *PublishSettings) toWireSettings() wire.PublishSettings {
 // NackHandler is invoked when pubsub.Message.Nack() is called. Cloud Pub/Sub
 // Lite does not have a concept of 'nack'. If the nack handler implementation
 // returns nil, the message is acknowledged. If an error is returned, the
-// SubscriberClient will consider this a fatal error and terminate once all
-// outstanding MessageReceiverFuncs have finished.
+// SubscriberClient will consider this a fatal error and terminate.
 //
 // In Cloud Pub/Sub Lite, only a single subscriber for a given subscription is
 // connected to any partition at a time, and there is no other client that may
@@ -124,8 +123,7 @@ type NackHandler func(*pubsub.Message) error
 
 // ReceiveMessageTransformerFunc transforms a Pub/Sub Lite SequencedMessage to a
 // pubsub.Message. If this returns an error, the SubscriberClient will consider
-// this a fatal error and terminate once all outstanding MessageReceiverFuncs
-// have finished.
+// this a fatal error and terminate.
 type ReceiveMessageTransformerFunc func(*pb.SequencedMessage, *pubsub.Message) error
 
 // ReceiveSettings configure the Receive method. These settings apply per
@@ -157,8 +155,7 @@ type ReceiveSettings struct {
 	Partitions []int
 
 	// Optional custom function to handle pubsub.Message.Nack() calls. If not set,
-	// the default behavior is to terminate the SubscriberClient once all
-	// outstanding MessageReceiverFuncs have finished.
+	// the default behavior is to terminate the SubscriberClient.
 	NackHandler NackHandler
 
 	// Optional custom function that transforms a PubSubMessage API proto to a

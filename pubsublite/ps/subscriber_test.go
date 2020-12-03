@@ -62,6 +62,7 @@ type mockWireSubscriber struct {
 
 func (mp *mockWireSubscriber) Start()             {}
 func (mp *mockWireSubscriber) Stop()              { close(mp.stop) }
+func (mp *mockWireSubscriber) Terminate()         { close(mp.stop) }
 func (mp *mockWireSubscriber) WaitStarted() error { return mp.FakeErr }
 func (mp *mockWireSubscriber) WaitStopped() error {
 	<-mp.stop // Wait until stopped
