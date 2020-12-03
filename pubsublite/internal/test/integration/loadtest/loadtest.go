@@ -109,25 +109,23 @@ func receiveAll(harness *integration.TestHarness, msgTracker *test.MsgTracker) {
 	start := time.Now()
 	var receivedCount int32
 
-	onReceive := func(msgs []*wire.ReceivedMessage) {
-		for _, m := range msgs {
-			m.Ack.Ack()
+	onReceive := func(m *wire.ReceivedMessage) {
+		m.Ack.Ack()
 
-			var tag string
-			if values, exists := m.Msg.GetMessage().Attributes[tagAttribute]; exists {
-				if len(values.Values) > 0 {
-					tag = string(values.Values[0])
-				}
+		var tag string
+		if values, exists := m.Msg.GetMessage().Attributes[tagAttribute]; exists {
+			if len(values.Values) > 0 {
+				tag = string(values.Values[0])
 			}
-			if !msgTracker.Remove(tag) {
-				// Ignore messages that were not sent during this test run.
-				continue
-			}
+		}
+		if !msgTracker.Remove(tag) {
+			// Ignore messages that were not sent during this test run.
+			return
+		}
 
-			count := atomic.AddInt32(&receivedCount, 1)
-			if count%int32(*printInterval) == 0 {
-				log.Printf("Received: msg #%d (offset=%d)", count, m.Msg.GetCursor().GetOffset())
-			}
+		count := atomic.AddInt32(&receivedCount, 1)
+		if count%int32(*printInterval) == 0 {
+			log.Printf("Received: msg #%d (offset=%d)", count, m.Msg.GetCursor().GetOffset())
 		}
 	}
 

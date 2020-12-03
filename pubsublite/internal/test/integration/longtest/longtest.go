@@ -95,33 +95,31 @@ func newSubscriber(harness *integration.TestHarness, subscription pubsublite.Sub
 	return s
 }
 
-func (s *subscriber) onReceive(msgs []*wire.ReceivedMessage) {
-	for _, m := range msgs {
-		m.Ack.Ack()
+func (s *subscriber) onReceive(m *wire.ReceivedMessage) {
+	m.Ack.Ack()
 
-		data := string(m.Msg.GetMessage().GetData())
-		if !s.MsgTracker.Remove(data) {
-			// Ignore messages from a previous test run.
-			if *verbose {
-				log.Printf("Ignoring %s", truncateMsg(data))
-			}
-			continue
-		}
-
-		offset := m.Msg.GetCursor().GetOffset()
-		key := string(m.Msg.GetMessage().GetKey())
+	data := string(m.Msg.GetMessage().GetData())
+	if !s.MsgTracker.Remove(data) {
+		// Ignore messages from a previous test run.
 		if *verbose {
-			log.Printf("Received: (key=%s, offset=%d) %s", key, offset, data)
+			log.Printf("Ignoring %s", truncateMsg(data))
 		}
+		return
+	}
 
-		// Ordering and duplicate validation.
-		if err := s.OrderingValidator.Receive(data, key); err != nil {
-			log.Fatalf("%s: %v", s.Subscription, err)
-		}
-		s.DuplicateDetector.Receive(data, offset)
-		if s.DuplicateDetector.HasReceiveDuplicates() {
-			log.Fatalf("%s: %s", s.Subscription, s.DuplicateDetector.Status())
-		}
+	offset := m.Msg.GetCursor().GetOffset()
+	key := string(m.Msg.GetMessage().GetKey())
+	if *verbose {
+		log.Printf("Received: (key=%s, offset=%d) %s", key, offset, data)
+	}
+
+	// Ordering and duplicate validation.
+	if err := s.OrderingValidator.Receive(data, key); err != nil {
+		log.Fatalf("%s: %v", s.Subscription, err)
+	}
+	s.DuplicateDetector.Receive(data, offset)
+	if s.DuplicateDetector.HasReceiveDuplicates() {
+		log.Fatalf("%s: %s", s.Subscription, s.DuplicateDetector.Status())
 	}
 }
 
