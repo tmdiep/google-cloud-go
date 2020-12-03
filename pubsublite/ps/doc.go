@@ -22,7 +22,7 @@ respectively.
 As noted in comments, the two services have some differences:
   - Pub/Sub Lite does not support nack for messages. By default, this will
     terminate the SubscriberClient. A custom function can be provided for
-	  ReceiveSettings.NackHandler to handle nacked messages.
+    ReceiveSettings.NackHandler to handle nacked messages.
   - Pub/Sub Lite has no concept of ack expiration. Subscribers must ack or nack
     every message received.
   - Pub/Sub Lite PublisherClients can terminate when an unretryable error

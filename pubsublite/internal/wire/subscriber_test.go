@@ -898,7 +898,6 @@ func TestAssigningSubscriberAddRemovePartitions(t *testing.T) {
 	msg2Barrier.Release()
 	msg4Barrier.Release()
 	receiver.ValidateMsgs([]*pb.SequencedMessage{msg2})
-	time.Sleep(10 * time.Millisecond) // Delay to process last ack asynchronously
 
 	// Stop should flush all commit cursors.
 	sub.Stop()
