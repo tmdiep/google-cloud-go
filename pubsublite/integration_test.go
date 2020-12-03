@@ -42,6 +42,10 @@ var (
 	}
 )
 
+func init() {
+	rand.Seed(time.Now().Unix())
+}
+
 func initIntegrationTest(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Integration tests skipped in short mode")

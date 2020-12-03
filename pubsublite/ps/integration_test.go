@@ -53,6 +53,10 @@ var (
 	}
 )
 
+func init() {
+	rand.Seed(time.Now().Unix())
+}
+
 func initIntegrationTest(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Integration tests skipped in short mode")
@@ -135,7 +139,7 @@ func createTopic(ctx context.Context, t *testing.T, admin *pubsublite.AdminClien
 	}
 	_, err := admin.CreateTopic(ctx, topicConfig)
 	if err != nil {
-		t.Fatalf("Failed to create topic: %v", err)
+		t.Fatalf("Failed to create topic %s: %v", topic, err)
 	} else {
 		t.Logf("Created topic %s", topic)
 	}
@@ -157,7 +161,7 @@ func createSubscription(ctx context.Context, t *testing.T, admin *pubsublite.Adm
 	}
 	_, err := admin.CreateSubscription(ctx, *subConfig)
 	if err != nil {
-		t.Fatalf("Failed to create subscription: %v", err)
+		t.Fatalf("Failed to create subscription %s: %v", subscription, err)
 	} else {
 		t.Logf("Created subscription %s", subscription)
 	}
@@ -209,6 +213,10 @@ func truncateMsg(msg string) string {
 	return msg
 }
 
+func messageDiff(got, want *pubsub.Message) string {
+	return testutil.Diff(got, want, cmpopts.IgnoreUnexported(pubsub.Message{}), cmpopts.IgnoreFields(pubsub.Message{}, "ID", "PublishTime"), cmpopts.EquateEmpty())
+}
+
 type checkOrdering bool
 
 func receiveAllMessages(t *testing.T, msgTracker *test.MsgTracker, settings ReceiveSettings, subscription pubsublite.SubscriptionPath, checkOrder checkOrdering) {
@@ -219,7 +227,8 @@ func receiveAllMessages(t *testing.T, msgTracker *test.MsgTracker, settings Rece
 		msg.Ack()
 		data := string(msg.Data)
 		if !msgTracker.Remove(data) {
-			t.Errorf("Received unexpected message: %q", truncateMsg(data))
+			// Prevent a flood of errors if a message for a previous test was found.
+			t.Fatalf("Received unexpected message: %q", truncateMsg(data))
 			return
 		}
 		if checkOrder {
@@ -248,7 +257,7 @@ func receiveAndVerifyMessage(t *testing.T, want *pubsub.Message, settings Receiv
 		got.Ack()
 		stopSubscriber()
 
-		if diff := testutil.Diff(got, want, cmpopts.IgnoreUnexported(pubsub.Message{}), cmpopts.IgnoreFields(pubsub.Message{}, "ID", "PublishTime"), cmpopts.EquateEmpty()); diff != "" {
+		if diff := messageDiff(got, want); diff != "" {
 			t.Errorf("Received message got: -, want: +\n%s", diff)
 		}
 		if len(got.ID) == 0 {
@@ -394,14 +403,14 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 
 		// Case A: Default nack handler. Terminates subscriber.
 		cctx, _ := context.WithTimeout(context.Background(), defaultTestTimeout)
-		messageReceiver := func(ctx context.Context, got *pubsub.Message) {
-			if diff := testutil.Diff(got, msg1, cmpopts.IgnoreUnexported(pubsub.Message{}), cmpopts.IgnoreFields(pubsub.Message{}, "ID", "PublishTime"), cmpopts.EquateEmpty()); diff != "" {
+		messageReceiver1 := func(ctx context.Context, got *pubsub.Message) {
+			if diff := messageDiff(got, msg1); diff != "" {
 				t.Errorf("Received message got: -, want: +\n%s", diff)
 			}
 			got.Nack()
 		}
 		subscriber := subscriberClient(cctx, t, recvSettings, subscriptionPath)
-		if gotErr := subscriber.Receive(cctx, messageReceiver); !test.ErrorEqual(gotErr, errNackCalled) {
+		if gotErr := subscriber.Receive(cctx, messageReceiver1); !test.ErrorEqual(gotErr, errNackCalled) {
 			t.Errorf("Receive() got err: (%v), want err: (%v)", gotErr, errNackCalled)
 		}
 
@@ -419,10 +428,10 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 		}
 		subscriber = subscriberClient(cctx, t, customSettings, subscriptionPath)
 
-		messageReceiver = func(ctx context.Context, got *pubsub.Message) {
+		messageReceiver2 := func(ctx context.Context, got *pubsub.Message) {
 			got.Nack()
 		}
-		if gotErr := subscriber.Receive(cctx, messageReceiver); !test.ErrorEqual(gotErr, errCustomNack) {
+		if gotErr := subscriber.Receive(cctx, messageReceiver2); !test.ErrorEqual(gotErr, errCustomNack) {
 			t.Errorf("Receive() got err: (%v), want err: (%v)", gotErr, errCustomNack)
 		}
 
@@ -430,7 +439,8 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 		receiveAndVerifyMessage(t, msg2, recvSettings, subscriptionPath)
 	})
 
-	// Verifies that SubscriberClient.Receive() can be invoked multiple times.
+	// Verifies that SubscriberClient.Receive() can be invoked multiple times
+	// serially (not in parallel).
 	t.Run("SubscriberMultipleReceive", func(t *testing.T) {
 		publisher := publisherClient(ctx, t, DefaultPublishSettings, topicPath)
 		defer publisher.Stop()
@@ -438,6 +448,8 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 		msgs := []*pubsub.Message{
 			{Data: []byte("multiple_receive1")},
 			{Data: []byte("multiple_receive2")},
+			{Data: []byte("multiple_receive3")},
+			{Data: []byte("multiple_receive4")},
 		}
 		var results []*pubsub.PublishResult
 		for _, msg := range msgs {
@@ -445,11 +457,12 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 		}
 		waitForPublishResults(t, results)
 
-		cctx, stopSubscriber := context.WithTimeout(context.Background(), defaultTestTimeout)
+		var cctx context.Context
+		var stopSubscriber context.CancelFunc
 		var lastIdx int32 = -1
 		messageReceiver := func(ctx context.Context, got *pubsub.Message) {
 			currentIdx := atomic.AddInt32(&lastIdx, 1)
-			if diff := testutil.Diff(got, msgs[currentIdx], cmpopts.IgnoreUnexported(pubsub.Message{}), cmpopts.IgnoreFields(pubsub.Message{}, "ID", "PublishTime"), cmpopts.EquateEmpty()); diff != "" {
+			if diff := messageDiff(got, msgs[currentIdx]); diff != "" {
 				t.Errorf("Received message got: -, want: +\n%s", diff)
 			}
 			got.Ack()
@@ -457,11 +470,56 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 		}
 		subscriber := subscriberClient(cctx, t, recvSettings, subscriptionPath)
 
-		// Receive msg1 and then stop.
-		if err := subscriber.Receive(cctx, messageReceiver); err != nil {
-			t.Errorf("Receive() got err: %v", err)
+		// This test is not guaranteed to be deterministic, as multiple messages
+		// may be delivered before the subscriber actually stops.
+		for i := 0; i < len(msgs); i++ {
+			// New cctx must be created for each iteration as it is cancelled each
+			// time stopSubscriber is called.
+			cctx, stopSubscriber = context.WithTimeout(context.Background(), defaultTestTimeout)
+			if err := subscriber.Receive(cctx, messageReceiver); err != nil {
+				t.Errorf("Receive() got err: %v", err)
+			}
+			if lastIdx == int32(len(msgs)-1) {
+				t.Logf("Received %d messages in %d iterations", len(msgs), i+1)
+				break
+			}
 		}
-		// Receive msg2 and then stop.
+	})
+
+	// Verifies that a blocking message receiver is notified of shutdown.
+	t.Run("BlockingMessageReceiver", func(t *testing.T) {
+		publisher := publisherClient(ctx, t, DefaultPublishSettings, topicPath)
+		defer publisher.Stop()
+
+		msg := &pubsub.Message{
+			Data: []byte("blocking_message_receiver"),
+		}
+		result := publisher.Publish(ctx, msg)
+		waitForPublishResults(t, []*pubsub.PublishResult{result})
+
+		cctx, stopSubscriber := context.WithTimeout(context.Background(), defaultSubscriberTestTimeout)
+		messageReceiver := func(ctx context.Context, got *pubsub.Message) {
+			if diff := messageDiff(got, msg); diff != "" {
+				t.Errorf("Received message got: -, want: +\n%s", diff)
+			}
+
+			// Ensures the test is deterministic. Wait until the message is received,
+			// then stop the subscriber, which would cause `ctx` to be done below.
+			stopSubscriber()
+
+			select {
+			case <-time.After(defaultSubscriberTestTimeout):
+				t.Errorf("MessageReceiverFunc context not closed within %v", defaultSubscriberTestTimeout)
+			case <-ctx.Done():
+			}
+
+			// The commit offset for this ack should be processed since the subscriber
+			// not shut down due to fatal error. Not actually detected until the next
+			// test, which would receive an incorrect message.
+			got.Ack()
+		}
+		subscriber := subscriberClient(cctx, t, recvSettings, subscriptionPath)
+
 		if err := subscriber.Receive(cctx, messageReceiver); err != nil {
 			t.Errorf("Receive() got err: %v", err)
 		}

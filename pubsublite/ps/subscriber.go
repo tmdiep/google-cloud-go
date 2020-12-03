@@ -172,6 +172,9 @@ func (si *subscriberInstance) Shutdown(waitForAcks bool, err error) {
 // first.
 func (si *subscriberInstance) Wait(ctx context.Context) error {
 	si.wireSub.Start()
+	if err := si.wireSub.WaitStarted(); err != nil {
+		return err
+	}
 
 	// Start a goroutine to monitor when the context is done.
 	subscriberStopped := make(chan struct{})
@@ -188,6 +191,7 @@ func (si *subscriberInstance) Wait(ctx context.Context) error {
 	// and ctx is not done.
 	close(subscriberStopped)
 	// And also wait for all the receivers to finish.
+	si.recvCancel()
 	si.activeReceivers.Wait()
 
 	si.mu.Lock()
