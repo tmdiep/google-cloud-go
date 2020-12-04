@@ -23,13 +23,13 @@ import (
 )
 
 func ExampleAdminClient_CreateTopic() {
-	const gib = 1 << 30
 	ctx := context.Background()
 	admin, err := pubsublite.NewAdminClient(ctx, "region")
 	if err != nil {
 		// TODO: Handle error.
 	}
 
+	const gib = 1 << 30
 	topicConfig := pubsublite.TopicConfig{
 		Name: pubsublite.TopicPath{
 			Project: "project-id",
@@ -40,7 +40,8 @@ func ExampleAdminClient_CreateTopic() {
 		PublishCapacityMiBPerSec:   4,        // Must be 4-16 MiB/s.
 		SubscribeCapacityMiBPerSec: 8,        // Must be 4-32 MiB/s.
 		PerPartitionBytes:          30 * gib, // Must be 30 GiB-10 TiB.
-		RetentionDuration:          24 * time.Hour,
+		// Retain messages indefinitely as long as there is available storage.
+		RetentionDuration: pubsublite.InfiniteRetention,
 	}
 	_, err = admin.CreateTopic(ctx, topicConfig)
 	if err != nil {
@@ -55,7 +56,7 @@ func ExampleAdminClient_UpdateTopic() {
 		// TODO: Handle error.
 	}
 
-	topicConfig := pubsublite.TopicConfigToUpdate{
+	updateConfig := pubsublite.TopicConfigToUpdate{
 		Name: pubsublite.TopicPath{
 			Project: "project-id",
 			Zone:    "zone",
@@ -63,10 +64,9 @@ func ExampleAdminClient_UpdateTopic() {
 		},
 		PublishCapacityMiBPerSec:   8,
 		SubscribeCapacityMiBPerSec: 16,
-		// Retain messages indefinitely as long as there is available storage.
-		RetentionDuration: pubsublite.InfiniteRetention,
+		RetentionDuration:          24 * time.Hour,
 	}
-	_, err = admin.UpdateTopic(ctx, topicConfig)
+	_, err = admin.UpdateTopic(ctx, updateConfig)
 	if err != nil {
 		// TODO: Handle error.
 	}
@@ -126,5 +126,87 @@ func ExampleAdminClient_TopicSubscriptions() {
 			// TODO: Handle error.
 		}
 		fmt.Println(subscriptionPath)
+	}
+}
+
+func ExampleAdminClient_CreateSubscription() {
+	ctx := context.Background()
+	admin, err := pubsublite.NewAdminClient(ctx, "region")
+	if err != nil {
+		// TODO: Handle error.
+	}
+
+	subscriptionConfig := pubsublite.SubscriptionConfig{
+		Name: pubsublite.SubscriptionPath{
+			Project:        "project-id",
+			Zone:           "zone",
+			SubscriptionID: "subscription-id",
+		},
+		Topic: pubsublite.TopicPath{
+			Project: "project-id",
+			Zone:    "zone",
+			TopicID: "topic-id",
+		},
+		DeliveryRequirement: pubsublite.DeliverImmediately,
+	}
+	_, err = admin.CreateSubscription(ctx, subscriptionConfig)
+	if err != nil {
+		// TODO: Handle error.
+	}
+}
+
+func ExampleAdminClient_UpdateSubscription() {
+	ctx := context.Background()
+	admin, err := pubsublite.NewAdminClient(ctx, "region")
+	if err != nil {
+		// TODO: Handle error.
+	}
+
+	updateConfig := pubsublite.SubscriptionConfigToUpdate{
+		Name: pubsublite.SubscriptionPath{
+			Project:        "project-id",
+			Zone:           "zone",
+			SubscriptionID: "subscription-id",
+		},
+		DeliveryRequirement: pubsublite.DeliverAfterStored,
+	}
+	_, err = admin.UpdateSubscription(ctx, updateConfig)
+	if err != nil {
+		// TODO: Handle error.
+	}
+}
+
+func ExampleAdminClient_DeleteSubscription() {
+	ctx := context.Background()
+	admin, err := pubsublite.NewAdminClient(ctx, "region")
+	if err != nil {
+		// TODO: Handle error.
+	}
+
+	subscription := pubsublite.SubscriptionPath{Project: "project-id", Zone: "zone", SubscriptionID: "subscription-id"}
+	if err := admin.DeleteSubscription(ctx, subscription); err != nil {
+		// TODO: Handle error.
+	}
+}
+
+func ExampleAdminClient_Subscriptions() {
+	ctx := context.Background()
+	admin, err := pubsublite.NewAdminClient(ctx, "region")
+	if err != nil {
+		// TODO: Handle error.
+	}
+
+	// List the configs of all subscriptions in the given zone for the project.
+	location := pubsublite.LocationPath{Project: "project-id", Zone: "zone"}
+	it := admin.Subscriptions(ctx, location)
+	for {
+		subscriptionConfig, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			// TODO: Handle error.
+		}
+		fmt.Println(subscriptionConfig)
 	}
 }
