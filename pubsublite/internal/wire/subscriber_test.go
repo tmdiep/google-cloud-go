@@ -355,7 +355,6 @@ func TestSubscribeStreamDuplicateInitialResponse(t *testing.T) {
 }
 
 func TestSubscribeStreamSpuriousSeekResponse(t *testing.T) {
-	t.Skip("https://github.com/googleapis/google-cloud-go/issues/3329")
 	subscription := subscriptionPartition{"projects/123456/locations/us-central1-b/subscriptions/my-sub", 0}
 	acks := newAckTracker()
 
@@ -369,9 +368,6 @@ func TestSubscribeStreamSpuriousSeekResponse(t *testing.T) {
 	defer mockServer.OnTestEnd()
 
 	sub := newTestSubscribeStream(t, subscription, testSubscriberSettings(), acks)
-	if gotErr := sub.StartError(); gotErr != nil {
-		t.Errorf("Start() got err: (%v)", gotErr)
-	}
 	if gotErr, wantErr := sub.FinalError(), errNoInFlightSeek; !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Final err: (%v), want: (%v)", gotErr, wantErr)
 	}
