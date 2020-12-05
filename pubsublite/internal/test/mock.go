@@ -66,7 +66,8 @@ func NewServer() (*Server, error) {
 	return &Server{LiteServer: liteServer, gRPCServer: srv}, nil
 }
 
-// NewServerWithConn
+// NewServerWithConn creates a new mock Pub/Sub Lite server along with client
+// options to connect to it.
 func NewServerWithConn() (*Server, []option.ClientOption) {
 	testServer, err := NewServer()
 	if err != nil {
