@@ -63,7 +63,7 @@ func newTestStreamHandler(t *testing.T, timeout time.Duration) *testStreamHandle
 		responses:  make(chan interface{}, 1),
 		pubClient:  pubClient,
 	}
-	sh.Stream = newRetryableStream(ctx, sh, timeout, reflect.TypeOf(pb.PublishResponse{}))
+	sh.Stream = newRetryableStream(ctx, nilLogger(), sh, timeout, reflect.TypeOf(pb.PublishResponse{}))
 	return sh
 }
 

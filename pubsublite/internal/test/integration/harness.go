@@ -31,6 +31,7 @@ var (
 	subscriptionIDs  = flag.String("subscription", "", "comma separated subscriptions to receive from")
 	enableAssignment = flag.Bool("assignment", false, "use partition assignment for subscribers")
 	publishBatchSize = flag.Int("publish_setting_batch", 100, "publish batch size")
+	enableLogging    = flag.Bool("logging", true, "log informational messages")
 )
 
 type TestHarness struct {
@@ -102,6 +103,13 @@ func (th *TestHarness) init() {
 	th.PublishSettings.CountThreshold = *publishBatchSize
 	th.ReceiveSettings = wire.DefaultReceiveSettings
 	th.EnableAssignment = *enableAssignment
+	if *enableLogging {
+		onLog := func(msg string) {
+			log.Printf(msg)
+		}
+		th.PublishSettings.OnLog = onLog
+		th.ReceiveSettings.OnLog = onLog
+	}
 }
 
 func (th *TestHarness) StartPublisher() wire.Publisher {

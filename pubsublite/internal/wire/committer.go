@@ -56,8 +56,9 @@ type committer struct {
 	abstractService
 }
 
-func newCommitter(ctx context.Context, cursor *vkit.CursorClient, settings ReceiveSettings,
-	subscription subscriptionPartition, acks *ackTracker, disableTasks bool) *committer {
+func newCommitter(ctx context.Context, cursor *vkit.CursorClient, log *logger,
+	settings ReceiveSettings, subscription subscriptionPartition, acks *ackTracker,
+	disableTasks bool) *committer {
 
 	c := &committer{
 		subscription: subscription,
@@ -74,7 +75,7 @@ func newCommitter(ctx context.Context, cursor *vkit.CursorClient, settings Recei
 		acks:          acks,
 		cursorTracker: newCommitCursorTracker(acks),
 	}
-	c.stream = newRetryableStream(ctx, c, settings.Timeout, reflect.TypeOf(pb.StreamingCommitCursorResponse{}))
+	c.stream = newRetryableStream(ctx, log, c, settings.Timeout, reflect.TypeOf(pb.StreamingCommitCursorResponse{}))
 	c.metadata.AddClientInfo(settings.Framework)
 
 	backgroundTask := c.commitOffsetToStream

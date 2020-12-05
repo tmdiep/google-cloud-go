@@ -209,9 +209,6 @@ func parseModuleVersion(version string) (major string, minor string, ok bool) {
 // binary. Only applies to binaries built with module support.
 func getModuleVersion(buildInfo *debug.BuildInfo) (string, string, bool) {
 	for _, dep := range buildInfo.Deps {
-		if strings.Index(dep.Path, "pubsub") > 0 {
-			Logf("BUILD INFO: %s %s", dep.Path, dep.Version)
-		}
 		if dep.Path == pubsubLiteModulePath {
 			return parseModuleVersion(dep.Version)
 		}

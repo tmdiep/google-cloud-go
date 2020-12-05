@@ -198,7 +198,7 @@ func newTestSubscribeStream(t *testing.T, subscription subscriptionPartition, se
 		Receiver: newTestMessageReceiver(t),
 		t:        t,
 	}
-	ts.sub = newSubscribeStream(ctx, subClient, settings, ts.Receiver.onMessage, subscription, acks, true)
+	ts.sub = newSubscribeStream(ctx, subClient, nilLogger(), settings, ts.Receiver.onMessage, subscription, acks, true)
 	ts.initAndStart(t, ts.sub, "Subscriber")
 	return ts
 }
@@ -460,6 +460,7 @@ func newTestSinglePartitionSubscriber(t *testing.T, receiverFunc MessageReceiver
 
 	f := &singlePartitionSubscriberFactory{
 		ctx:              ctx,
+		log:              nilLogger(),
 		subClient:        subClient,
 		cursorClient:     cursorClient,
 		settings:         testSubscriberSettings(),
@@ -647,6 +648,7 @@ func newTestMultiPartitionSubscriber(t *testing.T, receiverFunc MessageReceiverF
 
 	f := &singlePartitionSubscriberFactory{
 		ctx:              ctx,
+		log:              nilLogger(),
 		subClient:        subClient,
 		cursorClient:     cursorClient,
 		settings:         testSubscriberSettings(),
@@ -798,6 +800,7 @@ func newTestAssigningSubscriber(t *testing.T, receiverFunc MessageReceiverFunc, 
 
 	f := &singlePartitionSubscriberFactory{
 		ctx:              ctx,
+		log:              nilLogger(),
 		subClient:        subClient,
 		cursorClient:     cursorClient,
 		settings:         testSubscriberSettings(),

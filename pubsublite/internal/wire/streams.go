@@ -89,6 +89,7 @@ type streamHandler interface {
 type retryableStream struct {
 	// Immutable after creation.
 	ctx          context.Context
+	log          *logger
 	handler      streamHandler
 	responseType reflect.Type
 	timeout      time.Duration
@@ -107,9 +108,10 @@ type retryableStream struct {
 // newRetryableStream creates a new retryable stream wrapper. `timeout` is the
 // maximum duration for reconnection. `responseType` is the type of the response
 // proto received on the stream.
-func newRetryableStream(ctx context.Context, handler streamHandler, timeout time.Duration, responseType reflect.Type) *retryableStream {
+func newRetryableStream(ctx context.Context, log *logger, handler streamHandler, timeout time.Duration, responseType reflect.Type) *retryableStream {
 	return &retryableStream{
 		ctx:          ctx,
+		log:          log,
 		handler:      handler,
 		responseType: responseType,
 		timeout:      timeout,
@@ -129,9 +131,6 @@ func (rs *retryableStream) Start() {
 
 // Stop gracefully closes the stream without error.
 func (rs *retryableStream) Stop() {
-	if rs.Status() < streamTerminated {
-		Logf("pubsublite: (stop:%v) stopping stream", rs.responseType)
-	}
 	rs.terminate(nil)
 }
 
@@ -153,10 +152,9 @@ func (rs *retryableStream) Send(request interface{}) (sent bool) {
 			// stream. Nothing to do here.
 			break
 		case isRetryableSendError(err):
-			Logf("pubsublite: (send:%v) reconnecting stream", rs.responseType)
+			rs.log.Printf("pubsublite: (send:%v) reconnecting stream", rs.responseType)
 			go rs.connectStream()
 		default:
-			Logf("pubsublite: (send:%v) terminating stream due to error: %v", rs.responseType, err)
 			rs.unsafeTerminate(err)
 		}
 	}
@@ -305,7 +303,7 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 		if rs.Status() == streamTerminated {
 			break
 		}
-		Logf("pubsublite: (init:%v) retrying stream connection due to error: %v", rs.responseType, err)
+		rs.log.Printf("pubsublite: (init:%v) retrying stream connection due to error: %v", rs.responseType, err)
 		if err = gax.Sleep(rs.ctx, backoff); err != nil {
 			break
 		}
@@ -328,10 +326,9 @@ func (rs *retryableStream) listen(recvStream grpc.ClientStream) {
 		}
 		if err != nil {
 			if isRetryableRecvError(err) {
-				Logf("pubsublite: (listen:%v) reconnecting stream due to error: %v", rs.responseType, err)
+				rs.log.Printf("pubsublite: (listen:%v) reconnecting stream due to error: %v", rs.responseType, err)
 				go rs.connectStream()
 			} else {
-				Logf("pubsublite: (listen:%v) terminating stream due to error: %v", rs.responseType, err)
 				rs.terminate(err)
 			}
 			break

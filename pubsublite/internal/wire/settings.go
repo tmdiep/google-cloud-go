@@ -79,6 +79,9 @@ type PublishSettings struct {
 
 	// The user-facing API type.
 	Framework FrameworkType
+
+	// Function to receive INFO log statements. If not set, logs are not written.
+	OnLog LogFunc
 }
 
 // DefaultPublishSettings holds the default values for PublishSettings.
@@ -144,6 +147,9 @@ type ReceiveSettings struct {
 
 	// The user-facing API type.
 	Framework FrameworkType
+
+	// Function to receive INFO log statements. If not set, logs are not written.
+	OnLog LogFunc
 }
 
 // DefaultReceiveSettings holds the default values for ReceiveSettings.
