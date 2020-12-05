@@ -18,11 +18,10 @@ import (
 	"errors"
 	"sync"
 
+	pubsub "cloud.google.com/go/internal/pubsub"
 	"cloud.google.com/go/pubsublite"
 	"cloud.google.com/go/pubsublite/internal/wire"
 	"google.golang.org/api/option"
-
-	pubsub "cloud.google.com/go/pubsublite/internal/pubsub"
 )
 
 var (

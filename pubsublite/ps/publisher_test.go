@@ -18,8 +18,8 @@ import (
 	"errors"
 	"testing"
 
+	pubsub "cloud.google.com/go/internal/pubsub"
 	"cloud.google.com/go/pubsublite/common"
-	pubsub "cloud.google.com/go/pubsublite/internal/pubsub"
 	"cloud.google.com/go/pubsublite/internal/test"
 	"cloud.google.com/go/pubsublite/internal/wire"
 	"google.golang.org/api/support/bundler"

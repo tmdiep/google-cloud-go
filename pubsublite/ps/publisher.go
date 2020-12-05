@@ -17,9 +17,9 @@ import (
 	"context"
 	"sync"
 
+	pubsub "cloud.google.com/go/internal/pubsub"
 	"cloud.google.com/go/pubsublite"
 	"cloud.google.com/go/pubsublite/common"
-	pubsub "cloud.google.com/go/pubsublite/internal/pubsub"
 	"cloud.google.com/go/pubsublite/internal/wire"
 	"golang.org/x/xerrors"
 	"google.golang.org/api/option"
