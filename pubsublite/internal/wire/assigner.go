@@ -160,10 +160,10 @@ func (a *assigner) onResponse(response interface{}) {
 }
 
 func (a *assigner) handleAssignment(assignment *pb.PartitionAssignment) error {
-	a.log.Printf("pubsublite: %s: received partition assignments: %v", a.subscription, assignment.Partitions)
 	if err := a.receiveAssignment(newPartitionSet(assignment)); err != nil {
 		return err
 	}
+	a.log.Printf("pubsublite: %s: subscriber updated partition assignments to %v", a.subscription, assignment.Partitions)
 
 	a.stream.Send(&pb.PartitionAssignmentRequest{
 		Request: &pb.PartitionAssignmentRequest_Ack{

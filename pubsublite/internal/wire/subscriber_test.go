@@ -346,9 +346,6 @@ func TestSubscribeStreamDuplicateInitialResponse(t *testing.T) {
 	defer mockServer.OnTestEnd()
 
 	sub := newTestSubscribeStream(t, subscription, testSubscriberSettings(), acks)
-	if gotErr := sub.StartError(); gotErr != nil {
-		t.Errorf("Start() got err: (%v)", gotErr)
-	}
 	if gotErr, wantErr := sub.FinalError(), errInvalidSubscribeResponse; !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Final err: (%v), want: (%v)", gotErr, wantErr)
 	}
@@ -387,9 +384,6 @@ func TestSubscribeStreamNoMessages(t *testing.T) {
 	defer mockServer.OnTestEnd()
 
 	sub := newTestSubscribeStream(t, subscription, testSubscriberSettings(), acks)
-	if gotErr := sub.StartError(); gotErr != nil {
-		t.Errorf("Start() got err: (%v)", gotErr)
-	}
 	if gotErr, wantErr := sub.FinalError(), errServerNoMessages; !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Final err: (%v), want: (%v)", gotErr, wantErr)
 	}
@@ -412,9 +406,6 @@ func TestSubscribeStreamMessagesOutOfOrder(t *testing.T) {
 	defer mockServer.OnTestEnd()
 
 	sub := newTestSubscribeStream(t, subscription, testSubscriberSettings(), acks)
-	if gotErr := sub.StartError(); gotErr != nil {
-		t.Errorf("Start() got err: (%v)", gotErr)
-	}
 	sub.Receiver.ValidateMsg(msg1)
 	if gotErr, msg := sub.FinalError(), "start offset = 55, expected >= 57"; !test.ErrorHasMsg(gotErr, msg) {
 		t.Errorf("Final err: (%v), want msg: %q", gotErr, msg)
@@ -438,9 +429,6 @@ func TestSubscribeStreamFlowControlOverflow(t *testing.T) {
 	defer mockServer.OnTestEnd()
 
 	sub := newTestSubscribeStream(t, subscription, testSubscriberSettings(), acks)
-	if gotErr := sub.StartError(); gotErr != nil {
-		t.Errorf("Start() got err: (%v)", gotErr)
-	}
 	sub.Receiver.ValidateMsg(msg1)
 	if gotErr, wantErr := sub.FinalError(), errTokenCounterBytesNegative; !test.ErrorEqual(gotErr, wantErr) {
 		t.Errorf("Final err: (%v), want: (%v)", gotErr, wantErr)
