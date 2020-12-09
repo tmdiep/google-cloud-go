@@ -31,6 +31,7 @@ const gibi = 1 << 30
 
 var (
 	resourceIDs = uid.NewSpace("go-admin-test", nil)
+	rng         *rand.Rand
 
 	// A random zone is selected for each integration test run.
 	supportedZones = []string{
@@ -43,7 +44,7 @@ var (
 )
 
 func init() {
-	rand.Seed(time.Now().Unix())
+	rng = testutil.NewRand(time.Now())
 }
 
 func initIntegrationTest(t *testing.T) {
@@ -91,10 +92,10 @@ func cleanUpSubscription(ctx context.Context, t *testing.T, admin *AdminClient, 
 }
 
 func randomLiteZone() string {
-	return supportedZones[rand.Intn(len(supportedZones))]
+	return supportedZones[rng.Intn(len(supportedZones))]
 }
 
-func TestResourceAdminOperations(t *testing.T) {
+func TestIntegration_ResourceAdminOperations(t *testing.T) {
 	initIntegrationTest(t)
 
 	ctx := context.Background()

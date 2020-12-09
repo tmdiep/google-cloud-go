@@ -42,6 +42,7 @@ const (
 
 var (
 	resourceIDs = uid.NewSpace("go-ps-test", nil)
+	rng         *rand.Rand
 
 	// A random zone is selected for each integration test run.
 	supportedZones = []string{
@@ -54,7 +55,7 @@ var (
 )
 
 func init() {
-	rand.Seed(time.Now().Unix())
+	rng = testutil.NewRand(time.Now())
 }
 
 func initIntegrationTest(t *testing.T) {
@@ -112,7 +113,7 @@ func subscriberClient(ctx context.Context, t *testing.T, settings ReceiveSetting
 }
 
 func randomLiteZone() string {
-	return supportedZones[rand.Intn(len(supportedZones))]
+	return supportedZones[rng.Intn(len(supportedZones))]
 }
 
 func initResourcePaths(t *testing.T) (string, pubsublite.TopicPath, pubsublite.SubscriptionPath) {
