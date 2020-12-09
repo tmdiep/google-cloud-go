@@ -561,7 +561,7 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 	// Verifies that large messages can be sent and received.
 	t.Run("LargeMessages", func(t *testing.T) {
 		const messageCount = 10
-		const messageLen = MaxPublishMessageBytes - 50
+		const messageLen = MaxPublishRequestBytes - 50
 
 		// Publish messages.
 		publisher := publisherClient(ctx, t, DefaultPublishSettings, topicPath)
