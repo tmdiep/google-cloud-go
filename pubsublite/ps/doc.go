@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 
 /*
-Package ps contains a publisher and subscriber client for the Cloud Pub/Sub Lite
-service that emulates the Cloud Pub/Sub API.
+Package ps contains publisher and subscriber clients for the Google Cloud
+Pub/Sub Lite service, which emulate the Google Cloud Pub/Sub API.
 
 If interfaces are defined, PublisherClient and SubscriberClient can be used as
 substitutions for pubsub.Topic.Publish() and pubsub.Subscription.Receive(),
@@ -31,7 +31,20 @@ As noted in comments, the two services have some differences:
     subscribe throughput limits are exceeded. Thus publishing can be more
     sensitive to buffer overflow than Cloud Pub/Sub.
 
-For more information about Cloud Pub/Sub Lite, see
-https://cloud.google.com/pubsub/lite/docs.
+More information about Google Cloud Pub/Sub Lite is available at
+https://cloud.google.com/pubsub/lite.
+
+Information about choosing between Google Cloud Pub/Sub vs Pub/Sub Lite is
+available at https://cloud.google.com/pubsub/docs/choosing-pubsub-or-lite.
+
+See https://godoc.org/cloud.google.com/go for authentication, timeouts,
+connection pooling and similar aspects of this package.
+
+Note: This library is in BETA. Backwards-incompatible changes may be made before
+stable v1.0.0 is released.
+
+
+Publishing
+
 */
 package ps // import "cloud.google.com/go/pubsublite/ps"
