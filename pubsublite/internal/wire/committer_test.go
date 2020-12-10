@@ -152,7 +152,7 @@ func TestCommitterTerminateDiscardsOutstandingAcks(t *testing.T) {
 	ack1.Ack()
 	cmt.Terminate()       // Terminate should flush the first offset
 	ack2.Ack()            // Acks after Terminate() are discarded
-	cmt.SendBatchCommit() // Should do nothing
+	cmt.SendBatchCommit() // Should do nothing (server does not expect second commit)
 	if gotErr := cmt.FinalError(); gotErr != nil {
 		t.Errorf("Final err: (%v), want: <nil>", gotErr)
 	}

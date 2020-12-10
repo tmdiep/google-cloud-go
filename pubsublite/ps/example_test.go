@@ -90,7 +90,7 @@ func ExampleSubscriberClient_Receive() {
 		// TODO: Handle error.
 	}
 
-	// NOTE: Call cancel from callback, or another goroutine.
+	// Call cancel from callback, or another goroutine.
 	cancel()
 }
 
@@ -119,6 +119,6 @@ func ExampleSubscriberClient_Receive_maxOutstanding() {
 		// TODO: Handle error.
 	}
 
-	// NOTE: Call cancel from callback, or another goroutine.
+	// Call cancel from callback, or another goroutine.
 	cancel()
 }
