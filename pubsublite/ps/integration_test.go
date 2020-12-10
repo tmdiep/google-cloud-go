@@ -176,7 +176,19 @@ func cleanUpSubscription(ctx context.Context, t *testing.T, admin *pubsublite.Ad
 	}
 }
 
-func publishMessages(t *testing.T, settings PublishSettings, topic pubsublite.TopicPath, msgPrefix string, messageCount int) []string {
+func publishMessages(t *testing.T, settings PublishSettings, topic pubsublite.TopicPath, msgs ...*pubsub.Message) {
+	ctx := context.Background()
+	publisher := publisherClient(ctx, t, settings, topic)
+	defer publisher.Stop()
+
+	var pubResults []*pubsub.PublishResult
+	for _, msg := range msgs {
+		pubResults = append(pubResults, publisher.Publish(ctx, msg))
+	}
+	waitForPublishResults(t, pubResults)
+}
+
+func publishPrefixedMessages(t *testing.T, settings PublishSettings, topic pubsublite.TopicPath, msgPrefix string, messageCount int) []string {
 	ctx := context.Background()
 	publisher := publisherClient(ctx, t, settings, topic)
 	defer publisher.Stop()
@@ -296,9 +308,6 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 
 	// Sets all fields for a message and ensures it is correctly received.
 	t.Run("AllFieldsRoundTrip", func(t *testing.T) {
-		publisher := publisherClient(ctx, t, DefaultPublishSettings, topicPath)
-		defer publisher.Stop()
-
 		msg := &pubsub.Message{
 			Data:        []byte("round_trip"),
 			OrderingKey: "ordering_key",
@@ -307,8 +316,7 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 				"attr2": "value2",
 			},
 		}
-		result := publisher.Publish(ctx, msg)
-		waitForPublishResults(t, []*pubsub.PublishResult{result})
+		publishMessages(t, DefaultPublishSettings, topicPath, msg)
 		receiveAndVerifyMessage(t, msg, recvSettings, subscriptionPath)
 	})
 
@@ -318,15 +326,12 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 		pubSettings.KeyExtractor = func(_ *pubsub.Message) []byte {
 			return []byte("replaced_key")
 		}
-		publisher := publisherClient(ctx, t, pubSettings, topicPath)
-		defer publisher.Stop()
 
 		msg := &pubsub.Message{
 			Data:        []byte("custom_key_extractor"),
 			OrderingKey: "ordering_key",
 		}
-		result := publisher.Publish(ctx, msg)
-		waitForPublishResults(t, []*pubsub.PublishResult{result})
+		publishMessages(t, pubSettings, topicPath, msg)
 
 		want := &pubsub.Message{
 			Data:        []byte("custom_key_extractor"),
@@ -343,8 +348,6 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 			to.Key = []byte(from.OrderingKey + "_transformed")
 			return nil
 		}
-		publisher := publisherClient(ctx, t, pubSettings, topicPath)
-		defer publisher.Stop()
 
 		msg := &pubsub.Message{
 			Data:        []byte("publish_msg_transformer"),
@@ -353,8 +356,7 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 				"attr1": "value1",
 			},
 		}
-		result := publisher.Publish(ctx, msg)
-		waitForPublishResults(t, []*pubsub.PublishResult{result})
+		publishMessages(t, pubSettings, topicPath, msg)
 
 		want := &pubsub.Message{
 			Data:        []byte("publish_msg_transformer_transformed"),
@@ -365,15 +367,11 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 
 	// Verifies a custom message transformer in ReceiveSettings.
 	t.Run("CustomReceiveMessageTransformer", func(t *testing.T) {
-		publisher := publisherClient(ctx, t, DefaultPublishSettings, topicPath)
-		defer publisher.Stop()
-
 		msg := &pubsub.Message{
 			Data:        []byte("receive_msg_transformer"),
 			OrderingKey: "ordering_key",
 		}
-		result := publisher.Publish(ctx, msg)
-		waitForPublishResults(t, []*pubsub.PublishResult{result})
+		publishMessages(t, DefaultPublishSettings, topicPath, msg)
 
 		customSettings := recvSettings
 		customSettings.MessageTransformer = func(wireMsg *pb.SequencedMessage, msg *pubsub.Message) error {
@@ -393,14 +391,9 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 
 	// Verifies that nacks are correctly handled.
 	t.Run("Nack", func(t *testing.T) {
-		publisher := publisherClient(ctx, t, DefaultPublishSettings, topicPath)
-		defer publisher.Stop()
-
 		msg1 := &pubsub.Message{Data: []byte("nack_msg1")}
 		msg2 := &pubsub.Message{Data: []byte("nack_msg2")}
-		result1 := publisher.Publish(ctx, msg1)
-		result2 := publisher.Publish(ctx, msg2)
-		waitForPublishResults(t, []*pubsub.PublishResult{result1, result2})
+		publishMessages(t, DefaultPublishSettings, topicPath, msg1, msg2)
 
 		// Case A: Default nack handler. Terminates subscriber.
 		cctx, _ := context.WithTimeout(context.Background(), defaultTestTimeout)
@@ -443,26 +436,18 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 	// Verifies that SubscriberClient.Receive() can be invoked multiple times
 	// serially (not in parallel).
 	t.Run("SubscriberMultipleReceive", func(t *testing.T) {
-		publisher := publisherClient(ctx, t, DefaultPublishSettings, topicPath)
-		defer publisher.Stop()
-
 		msgs := []*pubsub.Message{
 			{Data: []byte("multiple_receive1")},
 			{Data: []byte("multiple_receive2")},
 			{Data: []byte("multiple_receive3")},
-			{Data: []byte("multiple_receive4")},
 		}
-		var results []*pubsub.PublishResult
-		for _, msg := range msgs {
-			results = append(results, publisher.Publish(ctx, msg))
-		}
-		waitForPublishResults(t, results)
+		publishMessages(t, DefaultPublishSettings, topicPath, msgs...)
 
 		var cctx context.Context
 		var stopSubscriber context.CancelFunc
-		var lastIdx int32 = -1
+		var gotReceivedCount int32
 		messageReceiver := func(ctx context.Context, got *pubsub.Message) {
-			currentIdx := atomic.AddInt32(&lastIdx, 1)
+			currentIdx := atomic.AddInt32(&gotReceivedCount, 1) - 1
 			if diff := messageDiff(got, msgs[currentIdx]); diff != "" {
 				t.Errorf("Received message got: -, want: +\n%s", diff)
 			}
@@ -471,32 +456,33 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 		}
 		subscriber := subscriberClient(cctx, t, recvSettings, subscriptionPath)
 
-		// This test is not guaranteed to be deterministic, as multiple messages
-		// may be delivered before the subscriber actually stops.
-		for i := 0; i < len(msgs); i++ {
+		// The message receiver stops the subscriber after receiving the first
+		// message. However, the subscriber isn't guaranteed to immediately stop, so
+		// allow up to `len(msgs)` iterations.
+		wantReceivedCount := len(msgs)
+		for i := 0; i < wantReceivedCount; i++ {
 			// New cctx must be created for each iteration as it is cancelled each
 			// time stopSubscriber is called.
 			cctx, stopSubscriber = context.WithTimeout(context.Background(), defaultTestTimeout)
 			if err := subscriber.Receive(cctx, messageReceiver); err != nil {
 				t.Errorf("Receive() got err: %v", err)
 			}
-			if lastIdx == int32(len(msgs)-1) {
-				t.Logf("Received %d messages in %d iterations", len(msgs), i+1)
+			if int(gotReceivedCount) == wantReceivedCount {
+				t.Logf("Received %d messages in %d iterations", gotReceivedCount, i+1)
 				break
 			}
+		}
+		if int(gotReceivedCount) != wantReceivedCount {
+			t.Errorf("Received message count: got %d, want %d", gotReceivedCount, wantReceivedCount)
 		}
 	})
 
 	// Verifies that a blocking message receiver is notified of shutdown.
 	t.Run("BlockingMessageReceiver", func(t *testing.T) {
-		publisher := publisherClient(ctx, t, DefaultPublishSettings, topicPath)
-		defer publisher.Stop()
-
 		msg := &pubsub.Message{
 			Data: []byte("blocking_message_receiver"),
 		}
-		result := publisher.Publish(ctx, msg)
-		waitForPublishResults(t, []*pubsub.PublishResult{result})
+		publishMessages(t, DefaultPublishSettings, topicPath, msg)
 
 		cctx, stopSubscriber := context.WithTimeout(context.Background(), defaultSubscriberTestTimeout)
 		messageReceiver := func(ctx context.Context, got *pubsub.Message) {
@@ -504,7 +490,7 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 				t.Errorf("Received message got: -, want: +\n%s", diff)
 			}
 
-			// Ensures the test is deterministic. Wait until the message is received,
+			// Ensure the test is deterministic. Wait until the message is received,
 			// then stop the subscriber, which would cause `ctx` to be done below.
 			stopSubscriber()
 
@@ -528,14 +514,14 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 
 	// Checks that messages are published and received in order.
 	t.Run("Ordering", func(t *testing.T) {
-		const messageCount = 1000
-		const publishBatchSize = 20
+		const messageCount = 500
+		const publishBatchSize = 10
 
 		// Publish messages.
 		pubSettings := DefaultPublishSettings
 		pubSettings.CountThreshold = publishBatchSize
 		pubSettings.DelayThreshold = 100 * time.Millisecond
-		msgs := publishMessages(t, pubSettings, topicPath, "ordering", messageCount)
+		msgs := publishPrefixedMessages(t, pubSettings, topicPath, "ordering", messageCount)
 
 		// Receive messages.
 		msgTracker := test.NewMsgTracker()
@@ -545,11 +531,11 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 
 	// Checks that subscriber flow control works.
 	t.Run("SubscriberFlowControl", func(t *testing.T) {
-		const messageCount = 40
+		const messageCount = 20
 		const maxOutstandingMessages = 2 // Receive small batches of messages
 
 		// Publish messages.
-		msgs := publishMessages(t, DefaultPublishSettings, topicPath, "subscriber_flow_control", messageCount)
+		msgs := publishPrefixedMessages(t, DefaultPublishSettings, topicPath, "subscriber_flow_control", messageCount)
 
 		// Receive messages.
 		msgTracker := test.NewMsgTracker()
@@ -561,21 +547,18 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 
 	// Verifies that large messages can be sent and received.
 	t.Run("LargeMessages", func(t *testing.T) {
-		const messageCount = 10
+		const messageCount = 5
 		const messageLen = MaxPublishRequestBytes - 50
 
 		// Publish messages.
-		publisher := publisherClient(ctx, t, DefaultPublishSettings, topicPath)
-		defer publisher.Stop()
-
 		msgTracker := test.NewMsgTracker()
-		var pubResults []*pubsub.PublishResult
+		var msgs []*pubsub.Message
 		for i := 0; i < messageCount; i++ {
 			data := strings.Repeat(fmt.Sprintf("%d", i), messageLen)
 			msgTracker.Add(data)
-			pubResults = append(pubResults, publisher.Publish(ctx, &pubsub.Message{Data: []byte(data)}))
+			msgs = append(msgs, &pubsub.Message{Data: []byte(data)})
 		}
-		waitForPublishResults(t, pubResults)
+		publishMessages(t, DefaultPublishSettings, topicPath, msgs...)
 
 		// Receive messages.
 		receiveAllMessages(t, msgTracker, recvSettings, subscriptionPath, checkOrdering(false))
@@ -583,11 +566,13 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 }
 
 func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
+	const partitionCount = 3
 	region, topicPath, subscriptionPath := initResourcePaths(t)
 	ctx := context.Background()
-	const partitionCount = 4
 	recvSettings := DefaultReceiveSettings
-	recvSettings.Partitions = []int{0, 1, 2, 3}
+	for i := 0; i < partitionCount; i++ {
+		recvSettings.Partitions = append(recvSettings.Partitions, i)
+	}
 
 	admin := adminClient(ctx, t, region)
 	defer admin.Close()
@@ -606,7 +591,7 @@ func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
 		const messageCount = 10 * partitionCount
 
 		// Publish messages.
-		msgs := publishMessages(t, DefaultPublishSettings, topicPath, "routing_no_key", messageCount)
+		msgs := publishPrefixedMessages(t, DefaultPublishSettings, topicPath, "routing_no_key", messageCount)
 
 		// Receive messages, not checking for ordering since they do not have a key.
 		// However, they would still be ordered within their partition.
@@ -617,15 +602,13 @@ func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
 
 	// Tests messages published with ordering key.
 	t.Run("PublishRoutingWithKey", func(t *testing.T) {
-		const messageCountPerPartition = 10
+		const messageCountPerPartition = 100
+		const publishBatchSize = 10 // Verifies ordering of batches
 
 		// Publish messages.
-		publisher := publisherClient(ctx, t, DefaultPublishSettings, topicPath)
-		defer publisher.Stop()
-
 		orderingSender := test.NewOrderingSender()
 		msgTracker := test.NewMsgTracker()
-		var pubResults []*pubsub.PublishResult
+		var msgs []*pubsub.Message
 		for partition := 0; partition < partitionCount; partition++ {
 			for i := 0; i < messageCountPerPartition; i++ {
 				data := orderingSender.Next("routing_with_key")
@@ -634,10 +617,13 @@ func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
 					Data:        []byte(data),
 					OrderingKey: fmt.Sprintf("p%d", partition),
 				}
-				pubResults = append(pubResults, publisher.Publish(ctx, msg))
+				msgs = append(msgs, msg)
 			}
 		}
-		waitForPublishResults(t, pubResults)
+
+		pubSettings := DefaultPublishSettings
+		pubSettings.CountThreshold = publishBatchSize
+		publishMessages(t, pubSettings, topicPath, msgs...)
 
 		// Receive messages.
 		receiveAllMessages(t, msgTracker, recvSettings, subscriptionPath, checkOrdering(true))
@@ -645,11 +631,11 @@ func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
 
 	// Verifies usage of the partition assignment service.
 	t.Run("PartitionAssignment", func(t *testing.T) {
-		const messageCount = 1000
-		const subscriberCount = 2 // Must be less than partitionCount
+		const messageCount = 100
+		const subscriberCount = 2 // Should be between (1, partitionCount]
 
 		// Publish messages.
-		msgs := publishMessages(t, DefaultPublishSettings, topicPath, "partition_assignment", messageCount)
+		msgs := publishPrefixedMessages(t, DefaultPublishSettings, topicPath, "partition_assignment", messageCount)
 
 		// Start multiple subscribers that use partition assignment.
 		msgTracker := test.NewMsgTracker()
@@ -686,12 +672,10 @@ func TestIntegration_SubscribeFanOut(t *testing.T) {
 	// test as the subscribers should not read from backlog.
 
 	const subscriberCount = 3
-	const messageCount = 500
+	const partitionCount = 2
+	const messageCount = 100
 	region, topicPath, baseSubscriptionPath := initResourcePaths(t)
 	ctx := context.Background()
-	const partitionCount = 2
-	recvSettings := DefaultReceiveSettings
-	recvSettings.Partitions = []int{0, 1}
 
 	admin := adminClient(ctx, t, region)
 	defer admin.Close()
@@ -709,9 +693,14 @@ func TestIntegration_SubscribeFanOut(t *testing.T) {
 	}
 
 	// Publish messages.
-	msgs := publishMessages(t, DefaultPublishSettings, topicPath, "fan_out", messageCount)
+	msgs := publishPrefixedMessages(t, DefaultPublishSettings, topicPath, "fan_out", messageCount)
 
 	// Receive messages from multiple subscriptions.
+	recvSettings := DefaultReceiveSettings
+	for i := 0; i < partitionCount; i++ {
+		recvSettings.Partitions = append(recvSettings.Partitions, i)
+	}
+
 	for _, subscription := range subscriptionPaths {
 		msgTracker := test.NewMsgTracker()
 		msgTracker.Add(msgs...)
