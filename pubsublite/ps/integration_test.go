@@ -320,61 +320,25 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 		receiveAndVerifyMessage(t, msg, recvSettings, subscriptionPath)
 	})
 
-	// Verifies a custom key extractor in PublishSettings.
-	t.Run("CustomKeyExtractor", func(t *testing.T) {
-		pubSettings := DefaultPublishSettings
-		pubSettings.KeyExtractor = func(_ *pubsub.Message) []byte {
-			return []byte("replaced_key")
-		}
-
-		msg := &pubsub.Message{
-			Data:        []byte("custom_key_extractor"),
-			OrderingKey: "ordering_key",
-		}
-		publishMessages(t, pubSettings, topicPath, msg)
-
-		want := &pubsub.Message{
-			Data:        []byte("custom_key_extractor"),
-			OrderingKey: "replaced_key",
-		}
-		receiveAndVerifyMessage(t, want, recvSettings, subscriptionPath)
-	})
-
-	// Verifies a custom message transformer in PublishSettings.
-	t.Run("CustomPublishMessageTransformer", func(t *testing.T) {
-		pubSettings := DefaultPublishSettings
-		pubSettings.MessageTransformer = func(from *pubsub.Message, to *pb.PubSubMessage) error {
-			to.Data = []byte(string(from.Data) + "_transformed")
-			to.Key = []byte(from.OrderingKey + "_transformed")
+	// Verifies custom message transformers.
+	t.Run("CustomMessageTransformers", func(t *testing.T) {
+		customPubSettings := DefaultPublishSettings
+		customPubSettings.MessageTransformer = func(from *pubsub.Message, to *pb.PubSubMessage) error {
+			to.Data = []byte(string(from.Data) + "_foo")
+			to.Key = []byte(from.OrderingKey + "_foo")
 			return nil
 		}
-
 		msg := &pubsub.Message{
-			Data:        []byte("publish_msg_transformer"),
+			Data:        []byte("msg_transformers"),
 			OrderingKey: "ordering_key",
 			Attributes: map[string]string{
 				"attr1": "value1",
 			},
 		}
-		publishMessages(t, pubSettings, topicPath, msg)
+		publishMessages(t, customPubSettings, topicPath, msg)
 
-		want := &pubsub.Message{
-			Data:        []byte("publish_msg_transformer_transformed"),
-			OrderingKey: "ordering_key_transformed",
-		}
-		receiveAndVerifyMessage(t, want, recvSettings, subscriptionPath)
-	})
-
-	// Verifies a custom message transformer in ReceiveSettings.
-	t.Run("CustomReceiveMessageTransformer", func(t *testing.T) {
-		msg := &pubsub.Message{
-			Data:        []byte("receive_msg_transformer"),
-			OrderingKey: "ordering_key",
-		}
-		publishMessages(t, DefaultPublishSettings, topicPath, msg)
-
-		customSettings := recvSettings
-		customSettings.MessageTransformer = func(wireMsg *pb.SequencedMessage, msg *pubsub.Message) error {
+		customRecvSettings := recvSettings
+		customRecvSettings.MessageTransformer = func(wireMsg *pb.SequencedMessage, msg *pubsub.Message) error {
 			// Swaps data and key.
 			msg.Data = wireMsg.GetMessage().GetKey()
 			msg.OrderingKey = string(wireMsg.GetMessage().GetData())
@@ -383,10 +347,10 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 			return nil
 		}
 		want := &pubsub.Message{
-			Data:        []byte("ordering_key"),
-			OrderingKey: "receive_msg_transformer",
+			Data:        []byte("ordering_key_foo"),
+			OrderingKey: "msg_transformers_foo",
 		}
-		receiveAndVerifyMessage(t, want, customSettings, subscriptionPath)
+		receiveAndVerifyMessage(t, want, customRecvSettings, subscriptionPath)
 	})
 
 	// Verifies that nacks are correctly handled.
@@ -547,7 +511,7 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 
 	// Verifies that large messages can be sent and received.
 	t.Run("LargeMessages", func(t *testing.T) {
-		const messageCount = 5
+		const messageCount = 3
 		const messageLen = MaxPublishRequestBytes - 50
 
 		// Publish messages.
@@ -672,7 +636,7 @@ func TestIntegration_SubscribeFanOut(t *testing.T) {
 	// test as the subscribers should not read from backlog.
 
 	const subscriberCount = 3
-	const partitionCount = 2
+	const partitionCount = 1
 	const messageCount = 100
 	region, topicPath, baseSubscriptionPath := initResourcePaths(t)
 	ctx := context.Background()
