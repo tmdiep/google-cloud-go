@@ -53,13 +53,13 @@ func NewAdminClient(ctx context.Context, region string, opts ...option.ClientOpt
 
 // CreateTopic creates a new topic from the given config. If the topic already
 // exists an error will be returned.
-func (ac *AdminClient) CreateTopic(ctx context.Context, config TopicConfig) (*TopicConfig, error) {
+func (a *AdminClient) CreateTopic(ctx context.Context, config TopicConfig) (*TopicConfig, error) {
 	req := &pb.CreateTopicRequest{
 		Parent:  config.Name.location().String(),
 		Topic:   config.toProto(),
 		TopicId: config.Name.TopicID,
 	}
-	topicpb, err := ac.admin.CreateTopic(ctx, req)
+	topicpb, err := a.admin.CreateTopic(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -68,12 +68,12 @@ func (ac *AdminClient) CreateTopic(ctx context.Context, config TopicConfig) (*To
 
 // UpdateTopic updates an existing topic from the given config and returns the
 // new topic config. UpdateTopic returns an error if no fields were modified.
-func (ac *AdminClient) UpdateTopic(ctx context.Context, config TopicConfigToUpdate) (*TopicConfig, error) {
+func (a *AdminClient) UpdateTopic(ctx context.Context, config TopicConfigToUpdate) (*TopicConfig, error) {
 	req := config.toUpdateRequest()
 	if len(req.GetUpdateMask().GetPaths()) == 0 {
 		return nil, errNoTopicFieldsUpdated
 	}
-	topicpb, err := ac.admin.UpdateTopic(ctx, req)
+	topicpb, err := a.admin.UpdateTopic(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -81,13 +81,13 @@ func (ac *AdminClient) UpdateTopic(ctx context.Context, config TopicConfigToUpda
 }
 
 // DeleteTopic deletes a topic.
-func (ac *AdminClient) DeleteTopic(ctx context.Context, topic TopicPath) error {
-	return ac.admin.DeleteTopic(ctx, &pb.DeleteTopicRequest{Name: topic.String()})
+func (a *AdminClient) DeleteTopic(ctx context.Context, topic TopicPath) error {
+	return a.admin.DeleteTopic(ctx, &pb.DeleteTopicRequest{Name: topic.String()})
 }
 
 // Topic retrieves the configuration of a topic.
-func (ac *AdminClient) Topic(ctx context.Context, topic TopicPath) (*TopicConfig, error) {
-	topicpb, err := ac.admin.GetTopic(ctx, &pb.GetTopicRequest{Name: topic.String()})
+func (a *AdminClient) Topic(ctx context.Context, topic TopicPath) (*TopicConfig, error) {
+	topicpb, err := a.admin.GetTopic(ctx, &pb.GetTopicRequest{Name: topic.String()})
 	if err != nil {
 		return nil, err
 	}
@@ -95,8 +95,8 @@ func (ac *AdminClient) Topic(ctx context.Context, topic TopicPath) (*TopicConfig
 }
 
 // TopicPartitions returns the number of partitions for a topic.
-func (ac *AdminClient) TopicPartitions(ctx context.Context, topic TopicPath) (int, error) {
-	partitions, err := ac.admin.GetTopicPartitions(ctx, &pb.GetTopicPartitionsRequest{Name: topic.String()})
+func (a *AdminClient) TopicPartitions(ctx context.Context, topic TopicPath) (int, error) {
+	partitions, err := a.admin.GetTopicPartitions(ctx, &pb.GetTopicPartitionsRequest{Name: topic.String()})
 	if err != nil {
 		return 0, err
 	}
@@ -104,28 +104,28 @@ func (ac *AdminClient) TopicPartitions(ctx context.Context, topic TopicPath) (in
 }
 
 // TopicSubscriptions retrieves the list of subscription paths for a topic.
-func (ac *AdminClient) TopicSubscriptions(ctx context.Context, topic TopicPath) *SubscriptionPathIterator {
+func (a *AdminClient) TopicSubscriptions(ctx context.Context, topic TopicPath) *SubscriptionPathIterator {
 	return &SubscriptionPathIterator{
-		it: ac.admin.ListTopicSubscriptions(ctx, &pb.ListTopicSubscriptionsRequest{Name: topic.String()}),
+		it: a.admin.ListTopicSubscriptions(ctx, &pb.ListTopicSubscriptionsRequest{Name: topic.String()}),
 	}
 }
 
 // Topics retrieves the list of topic configs for a given project and zone.
-func (ac *AdminClient) Topics(ctx context.Context, location LocationPath) *TopicIterator {
+func (a *AdminClient) Topics(ctx context.Context, location LocationPath) *TopicIterator {
 	return &TopicIterator{
-		it: ac.admin.ListTopics(ctx, &pb.ListTopicsRequest{Parent: location.String()}),
+		it: a.admin.ListTopics(ctx, &pb.ListTopicsRequest{Parent: location.String()}),
 	}
 }
 
 // CreateSubscription creates a new subscription from the given config. If the
 // subscription already exists an error will be returned.
-func (ac *AdminClient) CreateSubscription(ctx context.Context, config SubscriptionConfig) (*SubscriptionConfig, error) {
+func (a *AdminClient) CreateSubscription(ctx context.Context, config SubscriptionConfig) (*SubscriptionConfig, error) {
 	req := &pb.CreateSubscriptionRequest{
 		Parent:         config.Name.location().String(),
 		Subscription:   config.toProto(),
 		SubscriptionId: config.Name.SubscriptionID,
 	}
-	subspb, err := ac.admin.CreateSubscription(ctx, req)
+	subspb, err := a.admin.CreateSubscription(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -135,12 +135,12 @@ func (ac *AdminClient) CreateSubscription(ctx context.Context, config Subscripti
 // UpdateSubscription updates an existing subscription from the given config and
 // returns the new subscription config. UpdateSubscription returns an error if
 // no fields were modified.
-func (ac *AdminClient) UpdateSubscription(ctx context.Context, config SubscriptionConfigToUpdate) (*SubscriptionConfig, error) {
+func (a *AdminClient) UpdateSubscription(ctx context.Context, config SubscriptionConfigToUpdate) (*SubscriptionConfig, error) {
 	req := config.toUpdateRequest()
 	if len(req.GetUpdateMask().GetPaths()) == 0 {
 		return nil, errNoSubscriptionFieldsUpdated
 	}
-	subspb, err := ac.admin.UpdateSubscription(ctx, req)
+	subspb, err := a.admin.UpdateSubscription(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -148,13 +148,13 @@ func (ac *AdminClient) UpdateSubscription(ctx context.Context, config Subscripti
 }
 
 // DeleteSubscription deletes a subscription.
-func (ac *AdminClient) DeleteSubscription(ctx context.Context, subscription SubscriptionPath) error {
-	return ac.admin.DeleteSubscription(ctx, &pb.DeleteSubscriptionRequest{Name: subscription.String()})
+func (a *AdminClient) DeleteSubscription(ctx context.Context, subscription SubscriptionPath) error {
+	return a.admin.DeleteSubscription(ctx, &pb.DeleteSubscriptionRequest{Name: subscription.String()})
 }
 
 // Subscription retrieves the configuration of a subscription.
-func (ac *AdminClient) Subscription(ctx context.Context, subscription SubscriptionPath) (*SubscriptionConfig, error) {
-	subspb, err := ac.admin.GetSubscription(ctx, &pb.GetSubscriptionRequest{Name: subscription.String()})
+func (a *AdminClient) Subscription(ctx context.Context, subscription SubscriptionPath) (*SubscriptionConfig, error) {
+	subspb, err := a.admin.GetSubscription(ctx, &pb.GetSubscriptionRequest{Name: subscription.String()})
 	if err != nil {
 		return nil, err
 	}
@@ -163,17 +163,17 @@ func (ac *AdminClient) Subscription(ctx context.Context, subscription Subscripti
 
 // Subscriptions retrieves the list of subscription configs for a given project
 // and zone.
-func (ac *AdminClient) Subscriptions(ctx context.Context, location LocationPath) *SubscriptionIterator {
+func (a *AdminClient) Subscriptions(ctx context.Context, location LocationPath) *SubscriptionIterator {
 	return &SubscriptionIterator{
-		it: ac.admin.ListSubscriptions(ctx, &pb.ListSubscriptionsRequest{Parent: location.String()}),
+		it: a.admin.ListSubscriptions(ctx, &pb.ListSubscriptionsRequest{Parent: location.String()}),
 	}
 }
 
 // Close releases any resources held by the client when it is no longer
 // required. If the client is available for the lifetime of the program, then
 // Close need not be called at exit.
-func (ac *AdminClient) Close() error {
-	return ac.admin.Close()
+func (a *AdminClient) Close() error {
+	return a.admin.Close()
 }
 
 // TopicIterator is an iterator that returns a list of topic configs.
