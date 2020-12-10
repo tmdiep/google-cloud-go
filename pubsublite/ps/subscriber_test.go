@@ -32,6 +32,7 @@ import (
 
 const defaultSubscriberTestTimeout = 10 * time.Second
 
+// mockAckConsumer is a mock implementation of the wire.AckConsumer interface.
 type mockAckConsumer struct {
 	AckCount int
 }
@@ -50,16 +51,22 @@ type mockWireSubscriber struct {
 	Terminated bool
 }
 
+// DeliverMessages should be called from the test to simulate a message
+// delivery.
 func (ms *mockWireSubscriber) DeliverMessages(msgs ...*wire.ReceivedMessage) {
 	for _, m := range msgs {
 		ms.msgsC <- m
 	}
 }
 
+// SimulateFatalError should be called from the test to simulate a fatal error
+// occurring in the wire subscriber.
 func (ms *mockWireSubscriber) SimulateFatalError(err error) {
 	ms.err = err
 	close(ms.stopC)
 }
+
+// wire.Subscriber implementation
 
 func (ms *mockWireSubscriber) Start() {
 	go func() {
@@ -244,14 +251,15 @@ func TestSubscriberInstanceTransformMessageError(t *testing.T) {
 }
 
 func TestSubscriberInstanceNack(t *testing.T) {
+	nackErr := errors.New("message nacked")
+
 	ctx := context.Background()
-	input := &pb.SequencedMessage{
+	msg := &pb.SequencedMessage{
 		Message: &pb.PubSubMessage{
 			Data: []byte("data"),
 			Key:  []byte("key"),
 		},
 	}
-	nackErr := errors.New("message nacked")
 
 	for _, tc := range []struct {
 		desc string
@@ -297,12 +305,17 @@ func TestSubscriberInstanceNack(t *testing.T) {
 			tc.mutateSettings(&settings)
 
 			ack := &mockAckConsumer{}
-			msg := &wire.ReceivedMessage{Msg: input, Ack: ack}
+			msg := &wire.ReceivedMessage{Msg: msg, Ack: ack}
 
 			cctx, stopSubscriber := context.WithTimeout(ctx, defaultSubscriberTestTimeout)
 			messageReceiver := func(ctx context.Context, got *pubsub.Message) {
 				got.Nack()
-				stopSubscriber()
+
+				// Only need to stop the subscriber when the nack handler actually acks
+				// the message. For other cases, the subscriber is forcibly terminated.
+				if tc.wantErr == nil {
+					stopSubscriber()
+				}
 			}
 			subInstance := newTestSubscriberInstance(cctx, settings, messageReceiver)
 			subInstance.wireSub.(*mockWireSubscriber).DeliverMessages(msg)
@@ -339,6 +352,8 @@ func TestSubscriberInstanceWireSubscriberFails(t *testing.T) {
 
 	cctx, _ := context.WithTimeout(ctx, defaultSubscriberTestTimeout)
 	messageReceiver := func(ctx context.Context, got *pubsub.Message) {
+		// Verifies that receivers are notified via ctx.Done when the subscriber is
+		// shutting down.
 		select {
 		case <-time.After(defaultSubscriberTestTimeout):
 			t.Errorf("MessageReceiverFunc context not closed within %v", defaultSubscriberTestTimeout)
@@ -349,7 +364,7 @@ func TestSubscriberInstanceWireSubscriberFails(t *testing.T) {
 	subInstance.wireSub.(*mockWireSubscriber).DeliverMessages(msg)
 	time.AfterFunc(100*time.Millisecond, func() {
 		// Simulates a fatal server error that causes the wire subscriber to
-		// spontaneously stop.
+		// terminate from within.
 		subInstance.wireSub.(*mockWireSubscriber).SimulateFatalError(fatalErr)
 	})
 

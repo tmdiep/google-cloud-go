@@ -84,10 +84,8 @@ func (f *wireSubscriberFactoryImpl) New(receiver wire.MessageReceiverFunc) (wire
 	return wire.NewSubscriber(context.Background(), f.settings, receiver, f.region, f.subscription.String(), f.options...)
 }
 
-// subscriberInstance wraps an instance of a wire.Subscriber and handles the
-// translation of Pub/Sub Lite message protos to pubsub.Messages, as well as
-// ack/nack handling. A new subscriberInstance for each invocation of
-// SubscriberClient.Receive().
+// subscriberInstance wraps an instance of a wire.Subscriber. A new instance is
+// created for each invocation of SubscriberClient.Receive().
 type subscriberInstance struct {
 	settings        ReceiveSettings
 	receiver        MessageReceiverFunc
@@ -160,7 +158,7 @@ func (si *subscriberInstance) shutdown(waitForAcks bool, err error) {
 	// Cancel recvCtx to notify message receiver funcs of shutdown.
 	si.recvCancel()
 
-	// Either wait for acks or terminate quickly upon fatal error.
+	// Either wait for acks, or terminate quickly upon fatal error.
 	if waitForAcks {
 		si.wireSub.Stop()
 	} else {
