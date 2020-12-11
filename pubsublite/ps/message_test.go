@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	pubsub "cloud.google.com/go/internal/pubsub"
 	"cloud.google.com/go/internal/testutil"
+	"cloud.google.com/go/pubsub"
 	"github.com/google/go-cmp/cmp/cmpopts"
 
 	tspb "github.com/golang/protobuf/ptypes/timestamp"

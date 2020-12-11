@@ -18,10 +18,12 @@ import (
 	"errors"
 	"sync"
 
-	pubsub "cloud.google.com/go/internal/pubsub"
+	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/pubsublite"
 	"cloud.google.com/go/pubsublite/internal/wire"
 	"google.golang.org/api/option"
+
+	ipubsub "cloud.google.com/go/internal/pubsub"
 )
 
 var (
@@ -132,7 +134,7 @@ func (si *subscriberInstance) onMessage(msg *wire.ReceivedMessage) {
 		nackh:       si.settings.NackHandler,
 		subInstance: si,
 	}
-	psMsg := pubsub.NewMessage(pslAckh)
+	psMsg := ipubsub.NewMessage(pslAckh)
 	pslAckh.msg = psMsg
 	if err := si.settings.MessageTransformer(msg.Msg, psMsg); err != nil {
 		si.Terminate(err)

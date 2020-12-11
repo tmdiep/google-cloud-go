@@ -18,7 +18,7 @@ import (
 	"errors"
 	"fmt"
 
-	pubsub "cloud.google.com/go/internal/pubsub"
+	"cloud.google.com/go/pubsub"
 	"github.com/golang/protobuf/ptypes"
 	"google.golang.org/protobuf/proto"
 

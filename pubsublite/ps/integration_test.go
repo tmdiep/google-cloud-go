@@ -23,9 +23,9 @@ import (
 	"testing"
 	"time"
 
-	pubsub "cloud.google.com/go/internal/pubsub"
 	"cloud.google.com/go/internal/testutil"
 	"cloud.google.com/go/internal/uid"
+	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/pubsublite"
 	"cloud.google.com/go/pubsublite/internal/test"
 	"github.com/google/go-cmp/cmp/cmpopts"

@@ -18,7 +18,7 @@ import (
 	"errors"
 	"testing"
 
-	pubsub "cloud.google.com/go/internal/pubsub"
+	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/pubsublite/common"
 	"cloud.google.com/go/pubsublite/internal/test"
 	"cloud.google.com/go/pubsublite/internal/wire"
