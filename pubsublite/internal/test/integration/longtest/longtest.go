@@ -43,10 +43,10 @@ import (
 	"time"
 
 	"cloud.google.com/go/pubsublite"
-	"cloud.google.com/go/pubsublite/common"
 	"cloud.google.com/go/pubsublite/internal/test"
 	"cloud.google.com/go/pubsublite/internal/test/integration"
 	"cloud.google.com/go/pubsublite/internal/wire"
+	"cloud.google.com/go/pubsublite/publish"
 
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
@@ -141,7 +141,7 @@ func main() {
 
 	// Setup publisher.
 	publisher := harness.StartPublisher()
-	onPublished := func(pm *common.PublishMetadata, err error) {
+	onPublished := func(pm *publish.Metadata, err error) {
 		if err != nil {
 			log.Fatalf("Publish error: %v, time elapsed: %v", err, time.Now().Sub(start))
 		}

@@ -30,10 +30,10 @@ import (
 	"time"
 
 	"cloud.google.com/go/internal/uid"
-	"cloud.google.com/go/pubsublite/common"
 	"cloud.google.com/go/pubsublite/internal/test"
 	"cloud.google.com/go/pubsublite/internal/test/integration"
 	"cloud.google.com/go/pubsublite/internal/wire"
+	"cloud.google.com/go/pubsublite/publish"
 
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
@@ -56,7 +56,7 @@ func publishBatch(msgTracker *test.MsgTracker, publisher wire.Publisher, batchCo
 	var pubWG sync.WaitGroup
 	pubWG.Add(batchCount)
 
-	onPublished := func(pm *common.PublishMetadata, err error) {
+	onPublished := func(pm *publish.Metadata, err error) {
 		if err != nil {
 			log.Fatalf("Publish error: %v", err)
 		}
