@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 
 /*
-Package ps contains publisher and subscriber clients for the Google Cloud
-Pub/Sub Lite service, which emulate the Google Cloud Pub/Sub API.
+Package ps contains clients for publishing and subscribing using the Google
+Cloud Pub/Sub Lite service.
 
 If interfaces are defined, PublisherClient and SubscriberClient can be used as
 substitutions for pubsub.Topic.Publish() and pubsub.Subscription.Receive(),
-respectively.
+respectively, from the pubsub package.
 
 As noted in comments, the two services have some differences:
   - Pub/Sub Lite does not support nack for messages. By default, this will
@@ -42,9 +42,5 @@ connection pooling and similar aspects of this package.
 
 Note: This library is in BETA. Backwards-incompatible changes may be made before
 stable v1.0.0 is released.
-
-
-Publishing
-
 */
 package ps // import "cloud.google.com/go/pubsublite/ps"
