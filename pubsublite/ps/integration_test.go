@@ -17,7 +17,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -40,23 +39,7 @@ const (
 	defaultTestTimeout = 5 * time.Minute
 )
 
-var (
-	resourceIDs = uid.NewSpace("go-ps-test", nil)
-	rng         *rand.Rand
-
-	// A random zone is selected for each integration test run.
-	supportedZones = []string{
-		"us-central1-a",
-		"us-central1-b",
-		"us-central1-c",
-		"europe-west1-b",
-		"europe-west1-d",
-	}
-)
-
-func init() {
-	rng = testutil.NewRand(time.Now())
-}
+var resourceIDs = uid.NewSpace("go-ps-test", nil)
 
 func initIntegrationTest(t *testing.T) {
 	if testing.Short() {
@@ -112,15 +95,11 @@ func subscriberClient(ctx context.Context, t *testing.T, settings ReceiveSetting
 	return sub
 }
 
-func randomLiteZone() string {
-	return supportedZones[rng.Intn(len(supportedZones))]
-}
-
 func initResourcePaths(t *testing.T) (string, pubsublite.TopicPath, pubsublite.SubscriptionPath) {
 	initIntegrationTest(t)
 
 	proj := testutil.ProjID()
-	zone := randomLiteZone()
+	zone := test.RandomLiteZone()
 	region, _ := pubsublite.ZoneToRegion(zone)
 	resourceID := resourceIDs.New()
 
