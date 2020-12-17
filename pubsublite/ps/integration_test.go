@@ -176,6 +176,14 @@ func cleanUpSubscription(ctx context.Context, t *testing.T, admin *pubsublite.Ad
 	}
 }
 
+func partitionNumbers(partitionCount int) []int {
+	var partitions []int
+	for i := 0; i < partitionCount; i++ {
+		partitions = append(partitions, i)
+	}
+	return partitions
+}
+
 func publishMessages(t *testing.T, settings PublishSettings, topic pubsublite.TopicPath, msgs ...*pubsub.Message) {
 	ctx := context.Background()
 	publisher := publisherClient(ctx, t, settings, topic)
@@ -292,7 +300,7 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 	ctx := context.Background()
 	const partitionCount = 1
 	recvSettings := DefaultReceiveSettings
-	recvSettings.Partitions = []int{0}
+	recvSettings.Partitions = partitionNumbers(partitionCount)
 
 	admin := adminClient(ctx, t, region)
 	defer admin.Close()
@@ -398,7 +406,7 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 	})
 
 	// Verifies that SubscriberClient.Receive() can be invoked multiple times
-	// serially (not in parallel).
+	// serially (note: parallel would error).
 	t.Run("SubscriberMultipleReceive", func(t *testing.T) {
 		msgs := []*pubsub.Message{
 			{Data: []byte("multiple_receive1")},
@@ -465,8 +473,8 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 			}
 
 			// The commit offset for this ack should be processed since the subscriber
-			// not shut down due to fatal error. Not actually detected until the next
-			// test, which would receive an incorrect message.
+			// is not shut down due to fatal error. Not actually detected until the
+			// next test, which would receive an incorrect message.
 			got.Ack()
 		}
 		subscriber := subscriberClient(cctx, t, recvSettings, subscriptionPath)
@@ -534,9 +542,7 @@ func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
 	region, topicPath, subscriptionPath := initResourcePaths(t)
 	ctx := context.Background()
 	recvSettings := DefaultReceiveSettings
-	for i := 0; i < partitionCount; i++ {
-		recvSettings.Partitions = append(recvSettings.Partitions, i)
-	}
+	recvSettings.Partitions = partitionNumbers(partitionCount)
 
 	admin := adminClient(ctx, t, region)
 	defer admin.Close()
@@ -552,7 +558,7 @@ func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
 
 	// Tests messages published without ordering key.
 	t.Run("PublishRoutingNoKey", func(t *testing.T) {
-		const messageCount = 10 * partitionCount
+		const messageCount = 50 * partitionCount
 
 		// Publish messages.
 		msgs := publishPrefixedMessages(t, DefaultPublishSettings, topicPath, "routing_no_key", messageCount)
@@ -567,7 +573,7 @@ func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
 	// Tests messages published with ordering key.
 	t.Run("PublishRoutingWithKey", func(t *testing.T) {
 		const messageCountPerPartition = 100
-		const publishBatchSize = 10 // Verifies ordering of batches
+		const publishBatchSize = 5 // Verifies ordering of batches
 
 		// Publish messages.
 		orderingSender := test.NewOrderingSender()
@@ -596,7 +602,7 @@ func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
 	// Verifies usage of the partition assignment service.
 	t.Run("PartitionAssignment", func(t *testing.T) {
 		const messageCount = 100
-		const subscriberCount = 2 // Should be between (1, partitionCount]
+		const subscriberCount = 2 // Should be between [2, partitionCount]
 
 		// Publish messages.
 		msgs := publishPrefixedMessages(t, DefaultPublishSettings, topicPath, "partition_assignment", messageCount)
@@ -661,13 +667,11 @@ func TestIntegration_SubscribeFanOut(t *testing.T) {
 
 	// Receive messages from multiple subscriptions.
 	recvSettings := DefaultReceiveSettings
-	for i := 0; i < partitionCount; i++ {
-		recvSettings.Partitions = append(recvSettings.Partitions, i)
-	}
+	recvSettings.Partitions = partitionNumbers(partitionCount)
 
 	for _, subscription := range subscriptionPaths {
 		msgTracker := test.NewMsgTracker()
 		msgTracker.Add(msgs...)
-		receiveAllMessages(t, msgTracker, recvSettings, subscription, checkOrdering(false))
+		receiveAllMessages(t, msgTracker, recvSettings, subscription, checkOrdering(partitionCount == 1))
 	}
 }
