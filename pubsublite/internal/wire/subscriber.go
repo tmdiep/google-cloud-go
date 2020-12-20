@@ -45,8 +45,6 @@ type ReceivedMessage struct {
 // MessageReceiverFunc receives a Pub/Sub message from a topic partition.
 type MessageReceiverFunc func(*ReceivedMessage)
 
-const maxMessageBufferSize = 10000
-
 // messageDeliveryQueue delivers received messages to the client-provided
 // MessageReceiverFunc sequentially.
 type messageDeliveryQueue struct {
@@ -58,12 +56,6 @@ type messageDeliveryQueue struct {
 }
 
 func newMessageDeliveryQueue(acks *ackTracker, receiver MessageReceiverFunc, bufferSize int) *messageDeliveryQueue {
-	// The buffer size is based on ReceiveSettings.MaxOutstandingMessages. But
-	// ensure there's a reasonable limit as channel buffer capacity is allocated
-	// on creation.
-	if bufferSize > maxMessageBufferSize {
-		bufferSize = maxMessageBufferSize
-	}
 	return &messageDeliveryQueue{
 		acks:      acks,
 		receiver:  receiver,
@@ -86,11 +78,9 @@ func (mq *messageDeliveryQueue) Stop() {
 	}
 }
 
-func (mq *messageDeliveryQueue) Add(messages []*ReceivedMessage) {
+func (mq *messageDeliveryQueue) Add(msg *ReceivedMessage) {
 	if mq.status == serviceActive {
-		for _, msg := range messages {
-			mq.messagesC <- msg
-		}
+		mq.messagesC <- msg
 	}
 }
 
@@ -130,10 +120,10 @@ type subscribeStream struct {
 	settings     ReceiveSettings
 	subscription subscriptionPartition
 	initialReq   *pb.SubscribeRequest
-	messageQueue *messageDeliveryQueue
 	metadata     pubsubMetadata
 
 	// Fields below must be guarded with mu.
+	messageQueue    *messageDeliveryQueue
 	stream          *retryableStream
 	offsetTracker   subscriberOffsetTracker
 	flowControl     flowControlBatcher
@@ -159,8 +149,8 @@ func newSubscribeStream(ctx context.Context, subClient *vkit.SubscriberClient,
 				},
 			},
 		},
-		messageQueue: newMessageDeliveryQueue(acks, receiver, settings.MaxOutstandingMessages),
 		metadata:     newPubsubMetadata(),
+		messageQueue: newMessageDeliveryQueue(acks, receiver, settings.MaxOutstandingMessages),
 	}
 	s.stream = newRetryableStream(ctx, log, s, settings.Timeout, reflect.TypeOf(pb.SubscribeResponse{}))
 	s.metadata.AddSubscriptionRoutingMetadata(s.subscription)
@@ -287,12 +277,10 @@ func (s *subscribeStream) unsafeOnMessageResponse(response *pb.MessageResponse) 
 		return err
 	}
 
-	var receivedMsgs []*ReceivedMessage
 	for _, msg := range response.Messages {
 		ack := newAckConsumer(msg.GetCursor().GetOffset(), msg.GetSizeBytes(), s.onAck)
-		receivedMsgs = append(receivedMsgs, &ReceivedMessage{Msg: msg, Ack: ack})
+		s.messageQueue.Add(&ReceivedMessage{Msg: msg, Ack: ack})
 	}
-	s.messageQueue.Add(receivedMsgs)
 	return nil
 }
 
