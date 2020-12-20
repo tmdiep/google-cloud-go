@@ -401,13 +401,16 @@ func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSu
 // multiPartitionSubscriber receives messages from a fixed set of topic
 // partitions.
 type multiPartitionSubscriber struct {
+	clients     apiClients
 	subscribers []*singlePartitionSubscriber
 
 	compositeService
 }
 
 func newMultiPartitionSubscriber(subFactory *singlePartitionSubscriberFactory) *multiPartitionSubscriber {
-	ms := new(multiPartitionSubscriber)
+	ms := &multiPartitionSubscriber{
+		clients: apiClients{subFactory.cursorClient, subFactory.subClient},
+	}
 	ms.init()
 
 	for _, partition := range subFactory.settings.Partitions {
@@ -429,11 +432,20 @@ func (ms *multiPartitionSubscriber) Terminate() {
 	}
 }
 
+func (ms *multiPartitionSubscriber) WaitStopped() (retErr error) {
+	retErr = ms.compositeService.WaitStopped()
+	if err := ms.clients.Close(); retErr == nil {
+		retErr = err
+	}
+	return
+}
+
 // assigningSubscriber uses the Pub/Sub Lite partition assignment service to
 // listen to its assigned partition numbers and dynamically add/remove
 // singlePartitionSubscribers.
 type assigningSubscriber struct {
 	// Immutable after creation.
+	clients    apiClients
 	subFactory *singlePartitionSubscriberFactory
 	assigner   *assigner
 
@@ -446,6 +458,7 @@ type assigningSubscriber struct {
 
 func newAssigningSubscriber(assignmentClient *vkit.PartitionAssignmentClient, genUUID generateUUIDFunc, subFactory *singlePartitionSubscriberFactory) (*assigningSubscriber, error) {
 	as := &assigningSubscriber{
+		clients:     apiClients{assignmentClient, subFactory.subClient, subFactory.cursorClient},
 		subFactory:  subFactory,
 		subscribers: make(map[int]*singlePartitionSubscriber),
 	}
@@ -497,6 +510,14 @@ func (as *assigningSubscriber) Terminate() {
 	for _, sub := range as.subscribers {
 		sub.Terminate()
 	}
+}
+
+func (as *assigningSubscriber) WaitStopped() (retErr error) {
+	retErr = as.compositeService.WaitStopped()
+	if err := as.clients.Close(); retErr == nil {
+		retErr = err
+	}
+	return
 }
 
 // Subscriber is the client interface exported from this package for receiving

@@ -170,6 +170,21 @@ func newPartitionAssignmentClient(ctx context.Context, region string, opts ...op
 	return vkit.NewPartitionAssignmentClient(ctx, options...)
 }
 
+type apiClient interface {
+	Close() error
+}
+
+type apiClients []apiClient
+
+func (ac apiClients) Close() (retErr error) {
+	for _, c := range ac {
+		if err := c.Close(); retErr == nil {
+			retErr = err
+		}
+	}
+	return
+}
+
 const (
 	routingMetadataHeader    = "x-goog-request-params"
 	clientInfoMetadataHeader = "x-goog-pubsub-context"

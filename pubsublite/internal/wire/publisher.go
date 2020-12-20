@@ -288,6 +288,7 @@ func (pp *singlePartitionPublisher) wrapError(err error) error {
 // count, but not decreasing.
 type routingPublisher struct {
 	// Immutable after creation.
+	clients          apiClients
 	log              *logger
 	topicPath        string
 	msgRouterFactory *messageRouterFactory
@@ -303,6 +304,7 @@ type routingPublisher struct {
 
 func newRoutingPublisher(adminClient *vkit.AdminClient, msgRouterFactory *messageRouterFactory, pubFactory *singlePartitionPublisherFactory) *routingPublisher {
 	pub := &routingPublisher{
+		clients:          apiClients{adminClient, pubFactory.pubClient},
 		log:              pubFactory.log,
 		topicPath:        pubFactory.topicPath,
 		msgRouterFactory: msgRouterFactory,
@@ -368,6 +370,14 @@ func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*singlePart
 		return nil, err
 	}
 	return rp.publishers[partition], nil
+}
+
+func (rp *routingPublisher) WaitStopped() (retErr error) {
+	retErr = rp.compositeService.WaitStopped()
+	if err := rp.clients.Close(); retErr == nil {
+		retErr = err
+	}
+	return
 }
 
 // Publisher is the client interface exported from this package for publishing
