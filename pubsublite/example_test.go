@@ -36,7 +36,7 @@ func ExampleAdminClient_CreateTopic() {
 			Zone:    "zone",
 			TopicID: "topic-id",
 		},
-		PartitionCount:             2,
+		PartitionCount:             2,        // Must be at least 1.
 		PublishCapacityMiBPerSec:   4,        // Must be 4-16 MiB/s.
 		SubscribeCapacityMiBPerSec: 8,        // Must be 4-32 MiB/s.
 		PerPartitionBytes:          30 * gib, // Must be 30 GiB-10 TiB.
@@ -64,7 +64,8 @@ func ExampleAdminClient_UpdateTopic() {
 		},
 		PublishCapacityMiBPerSec:   8,
 		SubscribeCapacityMiBPerSec: 16,
-		RetentionDuration:          24 * time.Hour,
+		// Garbage collect messages older than 24 hours.
+		RetentionDuration: 24 * time.Hour,
 	}
 	_, err = admin.UpdateTopic(ctx, updateConfig)
 	if err != nil {
@@ -79,7 +80,11 @@ func ExampleAdminClient_DeleteTopic() {
 		// TODO: Handle error.
 	}
 
-	topic := pubsublite.TopicPath{Project: "project-id", Zone: "zone", TopicID: "topic-id"}
+	topic := pubsublite.TopicPath{
+		Project: "project-id",
+		Zone:    "zone",
+		TopicID: "topic-id",
+	}
 	if err := admin.DeleteTopic(ctx, topic); err != nil {
 		// TODO: Handle error.
 	}
@@ -115,7 +120,11 @@ func ExampleAdminClient_TopicSubscriptions() {
 	}
 
 	// List the paths of all subscriptions of a topic.
-	topic := pubsublite.TopicPath{Project: "project-id", Zone: "zone", TopicID: "topic-id"}
+	topic := pubsublite.TopicPath{
+		Project: "project-id",
+		Zone:    "zone",
+		TopicID: "topic-id",
+	}
 	it := admin.TopicSubscriptions(ctx, topic)
 	for {
 		subscriptionPath, err := it.Next()
@@ -147,6 +156,8 @@ func ExampleAdminClient_CreateSubscription() {
 			Zone:    "zone",
 			TopicID: "topic-id",
 		},
+		// Do not wait for a published message to be successfully written to storage
+		// before delivering it to subscribers.
 		DeliveryRequirement: pubsublite.DeliverImmediately,
 	}
 	_, err = admin.CreateSubscription(ctx, subscriptionConfig)
@@ -168,6 +179,8 @@ func ExampleAdminClient_UpdateSubscription() {
 			Zone:           "zone",
 			SubscriptionID: "subscription-id",
 		},
+		// Deliver a published message to subscribers after it has been successfully
+		// written to storage.
 		DeliveryRequirement: pubsublite.DeliverAfterStored,
 	}
 	_, err = admin.UpdateSubscription(ctx, updateConfig)
@@ -183,7 +196,11 @@ func ExampleAdminClient_DeleteSubscription() {
 		// TODO: Handle error.
 	}
 
-	subscription := pubsublite.SubscriptionPath{Project: "project-id", Zone: "zone", SubscriptionID: "subscription-id"}
+	subscription := pubsublite.SubscriptionPath{
+		Project:        "project-id",
+		Zone:           "zone",
+		SubscriptionID: "subscription-id",
+	}
 	if err := admin.DeleteSubscription(ctx, subscription); err != nil {
 		// TODO: Handle error.
 	}

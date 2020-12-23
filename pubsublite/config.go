@@ -186,9 +186,8 @@ const (
 	// UnspecifiedDeliveryRequirement represents and unset delivery requirement.
 	UnspecifiedDeliveryRequirement = DeliveryRequirement(pb.Subscription_DeliveryConfig_DELIVERY_REQUIREMENT_UNSPECIFIED)
 
-	// DeliverImmediately means the server will not not wait for a published
-	// message to be successfully written to storage before delivering it to
-	// subscribers.
+	// DeliverImmediately means the server will not wait for a published message
+	// to be successfully written to storage before delivering it to subscribers.
 	DeliverImmediately = DeliveryRequirement(pb.Subscription_DeliveryConfig_DELIVER_IMMEDIATELY)
 
 	// DeliverAfterStored means the server will not deliver a published message to

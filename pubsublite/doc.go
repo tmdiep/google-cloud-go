@@ -12,19 +12,22 @@
 // See the License for the specific language governing permissions and
 
 /*
-Package pubsublite provides an AdminClient for managing topics and subscriptions
-for Google Cloud Pub/Sub Lite. Subpackage pubsublite/ps provides clients for
-publishing and receiving messages, with a similar API to Google Cloud Pub/Sub.
+Package pubsublite provides an easy way to publish and receive messages using
+Google Cloud Pub/Sub Lite.
 
-Google Cloud Pub/Sub Lite is a zonal, real-time messaging service that lets you
-send and receive messages between independent applications. You can manually
-configure the throughput and storage capacity.
+Google Cloud Pub/Sub Lite is designed to provide reliable, many-to-many,
+asynchronous messaging between applications. Publisher applications can send
+messages to a topic and other applications can subscribe to that topic to
+receive the messages. By decoupling senders and receivers, Google Cloud Pub/Sub
+allows developers to communicate between independently written applications.
+
+Compared to Google Cloud Pub/Sub, Pub/Sub Lite provides partitioned zonal data
+storage with predefined throughput and storage capacity. Guidance on how to
+choose between Google Cloud Pub/Sub and Pub/Sub Lite is available at
+https://cloud.google.com/pubsub/docs/choosing-pubsub-or-lite.
 
 More information about Google Cloud Pub/Sub Lite is available at
 https://cloud.google.com/pubsub/lite.
-
-Information about choosing between Google Cloud Pub/Sub vs Pub/Sub Lite is
-available at https://cloud.google.com/pubsub/docs/choosing-pubsub-or-lite.
 
 See https://godoc.org/cloud.google.com/go for authentication, timeouts,
 connection pooling and similar aspects of this package.
