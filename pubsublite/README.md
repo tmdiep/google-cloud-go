@@ -6,3 +6,70 @@
 
 *This library is in BETA. Backwards-incompatible changes may be made before
  stable v1.0.0 is released.*
+
+### Example Usage
+
+[snip]:# (imports)
+```go
+import (
+	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsublite"
+	"cloud.google.com/go/pubsublite/ps"
+)
+```
+
+To publish messages to a topic:
+
+[snip]:# (publish)
+```go
+// Create a PublisherClient.
+// See https://cloud.google.com/pubsub/lite/docs/locations for available zones.
+topic := pubsublite.TopicPath{
+    Project: "project-id",
+    Zone:    "us-central1-b",
+    TopicID: "topic1",
+}
+pub, err := ps.NewPublisherClient(ctx, ps.DefaultPublishSettings, topic)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Publish "hello world" on topic1.
+res := pub.Publish(ctx, &pubsub.Message{
+	Data: []byte("hello world"),
+})
+// The publish happens asynchronously.
+// Later, you can get the result from res:
+...
+msgID, err := res.Get(ctx)
+if err != nil {
+	log.Fatal(err)
+}
+```
+
+To receive messages for a subscription:
+
+[snip]:# (subscribe)
+```go
+// Create a SubscriberClient.
+subscription := pubsublite.SubscriptionPath{
+    Project:        "project-id",
+    Zone:           "us-central1-b",
+    SubscriptionID: "subscription1",
+}
+subscriber, err := ps.NewSubscriberClient(ctx, ps.DefaultReceiveSettings, subscription)
+if err != nil {
+	log.Fatal(err)
+}
+
+// Use a callback to receive messages via subscription1.
+// Call cancel() elsewhere to stop receiving messages.
+cctx, cancel := context.WithCancel(ctx)
+err = subscriber.Receive(cctx, func(ctx context.Context, m *pubsub.Message) {
+	fmt.Println(m.Data)
+	m.Ack() // Acknowledge that we've consumed the message.
+})
+if err != nil {
+	log.Println(err)
+}
+```
