@@ -389,15 +389,16 @@ func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSu
 // multiPartitionSubscriber receives messages from a fixed set of topic
 // partitions.
 type multiPartitionSubscriber struct {
+	// Immutable after creation.
 	clients     apiClients
 	subscribers []*singlePartitionSubscriber
 
 	compositeService
 }
 
-func newMultiPartitionSubscriber(subFactory *singlePartitionSubscriberFactory) *multiPartitionSubscriber {
+func newMultiPartitionSubscriber(allClients apiClients, subFactory *singlePartitionSubscriberFactory) *multiPartitionSubscriber {
 	ms := &multiPartitionSubscriber{
-		clients: apiClients{subFactory.cursorClient, subFactory.subClient},
+		clients: allClients,
 	}
 	ms.init()
 
@@ -420,12 +421,10 @@ func (ms *multiPartitionSubscriber) Terminate() {
 	}
 }
 
-func (ms *multiPartitionSubscriber) WaitStopped() (retErr error) {
-	retErr = ms.compositeService.WaitStopped()
-	if err := ms.clients.Close(); retErr == nil {
-		retErr = err
-	}
-	return
+func (ms *multiPartitionSubscriber) WaitStopped() error {
+	err := ms.compositeService.WaitStopped()
+	ms.clients.Close()
+	return err
 }
 
 // assigningSubscriber uses the Pub/Sub Lite partition assignment service to
@@ -444,9 +443,11 @@ type assigningSubscriber struct {
 	compositeService
 }
 
-func newAssigningSubscriber(assignmentClient *vkit.PartitionAssignmentClient, genUUID generateUUIDFunc, subFactory *singlePartitionSubscriberFactory) (*assigningSubscriber, error) {
+func newAssigningSubscriber(allClients apiClients, assignmentClient *vkit.PartitionAssignmentClient,
+	genUUID generateUUIDFunc, subFactory *singlePartitionSubscriberFactory) (*assigningSubscriber, error) {
+
 	as := &assigningSubscriber{
-		clients:     apiClients{assignmentClient, subFactory.subClient, subFactory.cursorClient},
+		clients:     allClients,
 		subFactory:  subFactory,
 		subscribers: make(map[int]*singlePartitionSubscriber),
 	}
@@ -500,12 +501,10 @@ func (as *assigningSubscriber) Terminate() {
 	}
 }
 
-func (as *assigningSubscriber) WaitStopped() (retErr error) {
-	retErr = as.compositeService.WaitStopped()
-	if err := as.clients.Close(); retErr == nil {
-		retErr = err
-	}
-	return
+func (as *assigningSubscriber) WaitStopped() error {
+	err := as.compositeService.WaitStopped()
+	as.clients.Close()
+	return err
 }
 
 // Subscriber is the client interface exported from this package for receiving
@@ -534,6 +533,7 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 	if err != nil {
 		return nil, err
 	}
+	allClients := apiClients{subClient, cursorClient}
 
 	subFactory := &singlePartitionSubscriberFactory{
 		ctx:              ctx,
@@ -546,11 +546,12 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 	}
 
 	if len(settings.Partitions) > 0 {
-		return newMultiPartitionSubscriber(subFactory), nil
+		return newMultiPartitionSubscriber(allClients, subFactory), nil
 	}
 	partitionClient, err := newPartitionAssignmentClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err
 	}
-	return newAssigningSubscriber(partitionClient, uuid.NewRandom, subFactory)
+	allClients = append(allClients, partitionClient)
+	return newAssigningSubscriber(allClients, partitionClient, uuid.NewRandom, subFactory)
 }

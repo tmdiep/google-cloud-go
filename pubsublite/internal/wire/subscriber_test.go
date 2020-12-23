@@ -631,6 +631,7 @@ func newTestMultiPartitionSubscriber(t *testing.T, receiverFunc MessageReceiverF
 	if err != nil {
 		t.Fatal(err)
 	}
+	allClients := apiClients{subClient, cursorClient}
 
 	f := &singlePartitionSubscriberFactory{
 		ctx:              ctx,
@@ -643,7 +644,7 @@ func newTestMultiPartitionSubscriber(t *testing.T, receiverFunc MessageReceiverF
 		disableTasks:     true, // Background tasks disabled to control event order
 	}
 	f.settings.Partitions = partitions
-	sub := newMultiPartitionSubscriber(f)
+	sub := newMultiPartitionSubscriber(allClients, f)
 	sub.Start()
 	return sub
 }
@@ -783,6 +784,7 @@ func newTestAssigningSubscriber(t *testing.T, receiverFunc MessageReceiverFunc, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	allClients := apiClients{subClient, cursorClient, assignmentClient}
 
 	f := &singlePartitionSubscriberFactory{
 		ctx:              ctx,
@@ -794,7 +796,7 @@ func newTestAssigningSubscriber(t *testing.T, receiverFunc MessageReceiverFunc, 
 		receiver:         receiverFunc,
 		disableTasks:     true, // Background tasks disabled to control event order
 	}
-	sub, err := newAssigningSubscriber(assignmentClient, fakeGenerateUUID, f)
+	sub, err := newAssigningSubscriber(allClients, assignmentClient, fakeGenerateUUID, f)
 	if err != nil {
 		t.Fatal(err)
 	}

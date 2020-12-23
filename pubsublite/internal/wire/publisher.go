@@ -302,9 +302,11 @@ type routingPublisher struct {
 	compositeService
 }
 
-func newRoutingPublisher(adminClient *vkit.AdminClient, msgRouterFactory *messageRouterFactory, pubFactory *singlePartitionPublisherFactory) *routingPublisher {
+func newRoutingPublisher(allClients apiClients, adminClient *vkit.AdminClient,
+	msgRouterFactory *messageRouterFactory, pubFactory *singlePartitionPublisherFactory) *routingPublisher {
+
 	pub := &routingPublisher{
-		clients:          apiClients{adminClient, pubFactory.pubClient},
+		clients:          allClients,
 		log:              pubFactory.log,
 		topicPath:        pubFactory.topicPath,
 		msgRouterFactory: msgRouterFactory,
@@ -372,12 +374,10 @@ func (rp *routingPublisher) routeToPublisher(msg *pb.PubSubMessage) (*singlePart
 	return rp.publishers[partition], nil
 }
 
-func (rp *routingPublisher) WaitStopped() (retErr error) {
-	retErr = rp.compositeService.WaitStopped()
-	if err := rp.clients.Close(); retErr == nil {
-		retErr = err
-	}
-	return
+func (rp *routingPublisher) WaitStopped() error {
+	err := rp.compositeService.WaitStopped()
+	rp.clients.Close()
+	return err
 }
 
 // Publisher is the client interface exported from this package for publishing
@@ -408,6 +408,7 @@ func NewPublisher(ctx context.Context, settings PublishSettings, region, topicPa
 	if err != nil {
 		return nil, err
 	}
+	allClients := apiClients{pubClient, adminClient}
 
 	msgRouterFactory := newMessageRouterFactory(rand.New(rand.NewSource(time.Now().UnixNano())))
 	pubFactory := &singlePartitionPublisherFactory{
@@ -417,5 +418,5 @@ func NewPublisher(ctx context.Context, settings PublishSettings, region, topicPa
 		settings:  settings,
 		topicPath: topicPath,
 	}
-	return newRoutingPublisher(adminClient, msgRouterFactory, pubFactory), nil
+	return newRoutingPublisher(allClients, adminClient, msgRouterFactory, pubFactory), nil
 }

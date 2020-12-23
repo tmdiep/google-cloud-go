@@ -515,6 +515,7 @@ func newTestRoutingPublisher(t *testing.T, topicPath string, settings PublishSet
 	if err != nil {
 		t.Fatal(err)
 	}
+	allClients := apiClients{pubClient, adminClient}
 
 	source := &test.FakeSource{Ret: fakeSourceVal}
 	msgRouterFactory := newMessageRouterFactory(rand.New(source))
@@ -525,7 +526,7 @@ func newTestRoutingPublisher(t *testing.T, topicPath string, settings PublishSet
 		settings:  settings,
 		topicPath: topicPath,
 	}
-	pub := newRoutingPublisher(adminClient, msgRouterFactory, pubFactory)
+	pub := newRoutingPublisher(allClients, adminClient, msgRouterFactory, pubFactory)
 	pub.Start()
 	return &testRoutingPublisher{t: t, pub: pub}
 }

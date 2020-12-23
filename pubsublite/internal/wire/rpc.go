@@ -144,6 +144,21 @@ func defaultClientOptions(region string) []option.ClientOption {
 	}
 }
 
+type apiClient interface {
+	Close() error
+}
+
+type apiClients []apiClient
+
+func (ac apiClients) Close() (retErr error) {
+	for _, c := range ac {
+		if err := c.Close(); retErr == nil {
+			retErr = err
+		}
+	}
+	return
+}
+
 // NewAdminClient creates a new gapic AdminClient for a region.
 func NewAdminClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.AdminClient, error) {
 	options := append(defaultClientOptions(region), opts...)
@@ -168,21 +183,6 @@ func newCursorClient(ctx context.Context, region string, opts ...option.ClientOp
 func newPartitionAssignmentClient(ctx context.Context, region string, opts ...option.ClientOption) (*vkit.PartitionAssignmentClient, error) {
 	options := append(defaultClientOptions(region), opts...)
 	return vkit.NewPartitionAssignmentClient(ctx, options...)
-}
-
-type apiClient interface {
-	Close() error
-}
-
-type apiClients []apiClient
-
-func (ac apiClients) Close() (retErr error) {
-	for _, c := range ac {
-		if err := c.Close(); retErr == nil {
-			retErr = err
-		}
-	}
-	return
 }
 
 const (
