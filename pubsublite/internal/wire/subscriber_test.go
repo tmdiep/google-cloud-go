@@ -187,7 +187,7 @@ type testSubscribeStream struct {
 
 func newTestSubscribeStream(t *testing.T, subscription subscriptionPartition, settings ReceiveSettings, acks *ackTracker) *testSubscribeStream {
 	ctx := context.Background()
-	subClient, err := newSubscriberClient(ctx, "ignored", testClientOpts...)
+	subClient, err := newSubscriberClient(ctx, "ignored", testServer.ClientConn())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,11 +435,11 @@ func TestSubscribeStreamFlowControlOverflow(t *testing.T) {
 
 func newTestSinglePartitionSubscriber(t *testing.T, receiverFunc MessageReceiverFunc, subscription subscriptionPartition) *singlePartitionSubscriber {
 	ctx := context.Background()
-	subClient, err := newSubscriberClient(ctx, "ignored", testClientOpts...)
+	subClient, err := newSubscriberClient(ctx, "ignored", testServer.ClientConn())
 	if err != nil {
 		t.Fatal(err)
 	}
-	cursorClient, err := newCursorClient(ctx, "ignored", testClientOpts...)
+	cursorClient, err := newCursorClient(ctx, "ignored", testServer.ClientConn())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,11 +623,11 @@ func TestSinglePartitionSubscriberStopDuringReceive(t *testing.T) {
 
 func newTestMultiPartitionSubscriber(t *testing.T, receiverFunc MessageReceiverFunc, subscriptionPath string, partitions []int) *multiPartitionSubscriber {
 	ctx := context.Background()
-	subClient, err := newSubscriberClient(ctx, "ignored", testClientOpts...)
+	subClient, err := newSubscriberClient(ctx, "ignored", testServer.ClientConn())
 	if err != nil {
 		t.Fatal(err)
 	}
-	cursorClient, err := newCursorClient(ctx, "ignored", testClientOpts...)
+	cursorClient, err := newCursorClient(ctx, "ignored", testServer.ClientConn())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -771,15 +771,15 @@ func (as *assigningSubscriber) FlushCommits() {
 
 func newTestAssigningSubscriber(t *testing.T, receiverFunc MessageReceiverFunc, subscriptionPath string) *assigningSubscriber {
 	ctx := context.Background()
-	subClient, err := newSubscriberClient(ctx, "ignored", testClientOpts...)
+	subClient, err := newSubscriberClient(ctx, "ignored", testServer.ClientConn())
 	if err != nil {
 		t.Fatal(err)
 	}
-	cursorClient, err := newCursorClient(ctx, "ignored", testClientOpts...)
+	cursorClient, err := newCursorClient(ctx, "ignored", testServer.ClientConn())
 	if err != nil {
 		t.Fatal(err)
 	}
-	assignmentClient, err := newPartitionAssignmentClient(ctx, "ignored", testClientOpts...)
+	assignmentClient, err := newPartitionAssignmentClient(ctx, "ignored", testServer.ClientConn())
 	if err != nil {
 		t.Fatal(err)
 	}
