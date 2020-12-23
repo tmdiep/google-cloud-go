@@ -49,14 +49,14 @@ func ExamplePublisherClient_Publish() {
 func ExamplePublisherClient_Error() {
 	ctx := context.Background()
 	topic := pubsublite.TopicPath{Project: "project-id", Zone: "zone", TopicID: "topic-id"}
-	pub, err := ps.NewPublisherClient(ctx, ps.DefaultPublishSettings, topic)
+	publisher, err := ps.NewPublisherClient(ctx, ps.DefaultPublishSettings, topic)
 	if err != nil {
 		// TODO: Handle error.
 	}
-	defer pub.Stop()
+	defer publisher.Stop()
 
 	var results []*pubsub.PublishResult
-	r := pub.Publish(ctx, &pubsub.Message{
+	r := publisher.Publish(ctx, &pubsub.Message{
 		Data: []byte("hello world"),
 	})
 	results = append(results, r)
@@ -66,7 +66,7 @@ func ExamplePublisherClient_Error() {
 		if err != nil {
 			// TODO: Handle error.
 			if err == ps.ErrPublisherStopped {
-				fmt.Printf("Publisher client stopped due to error: %v\n", pub.Error())
+				fmt.Printf("Publisher client stopped due to error: %v\n", publisher.Error())
 			}
 		}
 		fmt.Printf("Published a message with a message ID: %s\n", id)
@@ -76,12 +76,12 @@ func ExamplePublisherClient_Error() {
 func ExampleSubscriberClient_Receive() {
 	ctx := context.Background()
 	subscription := pubsublite.SubscriptionPath{Project: "project-id", Zone: "zone", SubscriptionID: "subscription-id"}
-	sub, err := ps.NewSubscriberClient(ctx, ps.DefaultReceiveSettings, subscription)
+	subscriber, err := ps.NewSubscriberClient(ctx, ps.DefaultReceiveSettings, subscription)
 	if err != nil {
 		// TODO: Handle error.
 	}
 	cctx, cancel := context.WithCancel(ctx)
-	err = sub.Receive(cctx, func(ctx context.Context, m *pubsub.Message) {
+	err = subscriber.Receive(cctx, func(ctx context.Context, m *pubsub.Message) {
 		// TODO: Handle message.
 		// NOTE: May be called concurrently; synchronize access to shared memory.
 		m.Ack()
@@ -105,12 +105,12 @@ func ExampleSubscriberClient_Receive_maxOutstanding() {
 	settings := ps.DefaultReceiveSettings
 	settings.MaxOutstandingMessages = 5
 	settings.MaxOutstandingBytes = 10e6
-	sub, err := ps.NewSubscriberClient(ctx, settings, subscription)
+	subscriber, err := ps.NewSubscriberClient(ctx, settings, subscription)
 	if err != nil {
 		// TODO: Handle error.
 	}
 	cctx, cancel := context.WithCancel(ctx)
-	err = sub.Receive(cctx, func(ctx context.Context, m *pubsub.Message) {
+	err = subscriber.Receive(cctx, func(ctx context.Context, m *pubsub.Message) {
 		// TODO: Handle message.
 		// NOTE: May be called concurrently; synchronize access to shared memory.
 		m.Ack()
