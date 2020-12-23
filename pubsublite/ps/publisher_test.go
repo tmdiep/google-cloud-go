@@ -22,6 +22,7 @@ import (
 	"cloud.google.com/go/pubsublite/internal/test"
 	"cloud.google.com/go/pubsublite/internal/wire"
 	"cloud.google.com/go/pubsublite/publish"
+	"golang.org/x/xerrors"
 	"google.golang.org/api/support/bundler"
 
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
@@ -196,6 +197,11 @@ func TestPublisherClientTranslatePublishResultErrors(t *testing.T) {
 		{
 			desc:    "oversized message",
 			wireErr: wire.ErrOversizedMessage,
+			wantErr: bundler.ErrOversizedItem,
+		},
+		{
+			desc:    "oversized message wrapped",
+			wireErr: xerrors.Errorf("placeholder error message: %w", wire.ErrOversizedMessage),
 			wantErr: bundler.ErrOversizedItem,
 		},
 		{
