@@ -39,16 +39,19 @@ import (
 )
 
 var (
-	messageCount       = flag.Int("message_count", 4000, "the number of messages to publish and receive")
+	messageCount       = flag.Int("message_count", 2000, "the number of messages to publish and receive")
 	messageSize        = flag.Int("message_size", 500000, "the size (bytes) of each message")
-	batchSize          = flag.Int("batch_size", 1000, "the maximum number of messages per batch")
+	batchSize          = flag.Int("batch_size", 500, "the maximum number of messages per batch")
 	printInterval      = flag.Int("print_interval", 100, "print status every n-th message sent/received")
 	maxReceiveWaitTime = flag.Duration("receive_wait", 30*time.Minute, "wait to receive all messages before terminating subscriber")
 
 	msgTags = uid.NewSpace("loadtest", nil)
 )
 
-const tagAttribute = "tag"
+const (
+	tagAttribute = "tag"
+	mibi         = 1 << 20
+)
 
 // publishBatch publishes a batch of messages and waits until all publish
 // results have been received.
@@ -87,10 +90,14 @@ func publishBatch(msgTracker *test.MsgTracker, publisher wire.Publisher, batchCo
 }
 
 func publishAll(harness *integration.TestHarness, msgTracker *test.MsgTracker) {
+	totalBytes := float64(*messageCount) * float64(*messageSize)
+	log.Printf("Transmitting %d messages, %d bytes per message, total %.2f MiB", *messageCount, *messageSize, totalBytes/float64(mibi))
+
 	start := time.Now()
 	publisher := harness.StartPublisher()
-	log.Printf("Publisher started in: %v", time.Now().Sub(start))
+	log.Printf("Publisher started in: %v", time.Since(start))
 
+	start = time.Now()
 	var publishedCount int32
 	for messagesRemaining := *messageCount; messagesRemaining > 0; {
 		batchCount := messagesRemaining
@@ -101,12 +108,14 @@ func publishAll(harness *integration.TestHarness, msgTracker *test.MsgTracker) {
 		publishBatch(msgTracker, publisher, batchCount, &publishedCount)
 	}
 
+	duration := time.Since(start)
+	rate := totalBytes / duration.Seconds() / float64(mibi)
+
 	publisher.Stop()
-	log.Printf("**** Publish elapsed time: %v ****", time.Now().Sub(start))
+	log.Printf("**** Publish elapsed time: %v (%.2f MiB/s) ****", time.Since(start), rate)
 }
 
 func receiveAll(harness *integration.TestHarness, msgTracker *test.MsgTracker) {
-	start := time.Now()
 	var receivedCount int32
 
 	onReceive := func(m *wire.ReceivedMessage) {
@@ -129,20 +138,25 @@ func receiveAll(harness *integration.TestHarness, msgTracker *test.MsgTracker) {
 		}
 	}
 
+	start := time.Now()
 	subscriber := harness.StartFirstSubscriber(onReceive)
-	log.Printf("Subscriber started in: %v", time.Now().Sub(start))
+	log.Printf("Subscriber started in: %v", time.Since(start))
+	start = time.Now()
 
 	go func() {
 		log.Printf("Receiving...")
 		err := subscriber.WaitStopped()
 		if err != nil {
-			log.Fatalf("Subscriber stopped with error: %v, time elapsed: %v", err, time.Now().Sub(start))
+			log.Fatalf("Subscriber stopped with error: %v", err)
 		}
 	}()
 
 	msgTracker.Wait(*maxReceiveWaitTime)
+	duration := time.Since(start)
+	rate := float64(*messageCount) * float64(*messageSize) / duration.Seconds() / float64(mibi)
+
 	subscriber.Stop()
-	log.Printf("**** Receive elapsed time: %v ****", time.Now().Sub(start))
+	log.Printf("**** Receive elapsed time: %v (%.2f MiB/s) ****", time.Since(start), rate)
 }
 
 func main() {
@@ -150,7 +164,6 @@ func main() {
 	harness.PublishSettings.BufferedByteLimit = 2 * *batchSize * *messageSize
 	msgTracker := test.NewMsgTracker()
 
-	log.Printf("Transmitting %d messages, %d bytes per message, %d total bytes", *messageCount, *messageSize, *messageCount**messageSize)
 	publishAll(harness, msgTracker)
 	receiveAll(harness, msgTracker)
 }
