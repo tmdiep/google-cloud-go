@@ -1,10 +1,11 @@
-## Cloud Pub/Sub Lite [![GoDoc](https://godoc.org/cloud.google.com/go/pubsublite?status.svg)](https://godoc.org/cloud.google.com/go/pubsublite)
+## Cloud Pub/Sub Lite [![GoDoc](https://godoc.org/cloud.google.com/go/pubsublite?status.svg)](https://pkg.go.dev/cloud.google.com/go/pubsublite)
 
 - [About Cloud Pub/Sub Lite](https://cloud.google.com/pubsub/lite)
+- [Client library documentation](https://cloud.google.com/pubsub/lite/docs/reference/libraries)
 - [API documentation](https://cloud.google.com/pubsub/lite/docs/apis)
-- [Go client documentation](https://godoc.org/cloud.google.com/go/pubsublite)
+- [Go client documentation](https://pkg.go.dev/cloud.google.com/go/pubsublite)
 
-*This library is in BETA. Backwards-incompatible changes may be made before
+*This library is in ALPHA. Backwards-incompatible changes may be made before
  stable v1.0.0 is released.*
 
 ### Example Usage
@@ -22,20 +23,20 @@ To publish messages to a topic:
 
 [snip]:# (publish)
 ```go
-// Create a PublisherClient.
+// Create a PublisherClient for topic1.
 // See https://cloud.google.com/pubsub/lite/docs/locations for available zones.
 topic := pubsublite.TopicPath{
     Project: "project-id",
     Zone:    "us-central1-b",
     TopicID: "topic1",
 }
-pub, err := ps.NewPublisherClient(ctx, ps.DefaultPublishSettings, topic)
+publisher, err := ps.NewPublisherClient(ctx, ps.DefaultPublishSettings, topic)
 if err != nil {
     log.Fatal(err)
 }
 
-// Publish "hello world" on topic1.
-res := pub.Publish(ctx, &pubsub.Message{
+// Publish "hello world".
+res := publisher.Publish(ctx, &pubsub.Message{
 	Data: []byte("hello world"),
 })
 // The publish happens asynchronously.
@@ -51,7 +52,7 @@ To receive messages for a subscription:
 
 [snip]:# (subscribe)
 ```go
-// Create a SubscriberClient.
+// Create a SubscriberClient for subscription1.
 subscription := pubsublite.SubscriptionPath{
     Project:        "project-id",
     Zone:           "us-central1-b",
@@ -62,8 +63,8 @@ if err != nil {
 	log.Fatal(err)
 }
 
-// Use a callback to receive messages via subscription1.
-// Call cancel() elsewhere to stop receiving messages.
+// Use a callback to receive messages.
+// Call cancel() to stop receiving messages.
 cctx, cancel := context.WithCancel(ctx)
 err = subscriber.Receive(cctx, func(ctx context.Context, m *pubsub.Message) {
 	fmt.Println(m.Data)
