@@ -29,7 +29,7 @@ https://cloud.google.com/pubsub/docs/choosing-pubsub-or-lite.
 More information about Google Cloud Pub/Sub Lite is available at
 https://cloud.google.com/pubsub/lite.
 
-See https://godoc.org/cloud.google.com/go for authentication, timeouts,
+See https://pkg.go.dev/cloud.google.com/go for authentication, timeouts,
 connection pooling and similar aspects of this package.
 
 Note: This library is in ALPHA. Backwards-incompatible changes may be made
@@ -67,9 +67,9 @@ Publishing
 
 The pubsublite/ps subpackage contains clients for publishing and receiving
 messages, which have similar interfaces to their Topic and Subscription
-counterparts in the pubsub package. Cloud Pub/Sub Lite uses gRPC streams
-extensively for high throughput. For more differences, see
-https://godoc.org/cloud.google.com/go/pubsublite/ps.
+counterparts in the cloud.google.com/go/pubsub library. Cloud Pub/Sub Lite uses
+gRPC streams extensively for high throughput. For more differences, see
+https://pkg.go.dev/cloud.google.com/go/pubsublite/ps.
 
 To publish messages to a topic, first create a PublisherClient:
 

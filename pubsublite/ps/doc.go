@@ -17,7 +17,7 @@ Cloud Pub/Sub Lite service.
 
 If interfaces are defined, PublisherClient and SubscriberClient can be used as
 substitutions for pubsub.Topic.Publish() and pubsub.Subscription.Receive(),
-respectively, from the pubsub package.
+respectively, from the cloud.google.com/go/pubsub library.
 
 As noted in comments, the two services have some differences:
   - Pub/Sub Lite does not support NACK for messages. By default, this will
@@ -40,7 +40,7 @@ https://cloud.google.com/pubsub/lite.
 Information about choosing between Google Cloud Pub/Sub vs Pub/Sub Lite is
 available at https://cloud.google.com/pubsub/docs/choosing-pubsub-or-lite.
 
-See https://godoc.org/cloud.google.com/go for authentication, timeouts,
+See https://pkg.go.dev/cloud.google.com/go for authentication, timeouts,
 connection pooling and similar aspects of this package.
 */
 package ps // import "cloud.google.com/go/pubsublite/ps"
