@@ -616,6 +616,7 @@ func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
 		// Wait until all messages have been received.
 		msgTracker.Wait(defaultTestTimeout)
 		stopSubscribers()
+		// Wait until all subscribers have terminated.
 		g.Wait()
 	})
 }
