@@ -28,7 +28,7 @@ Example for testing ordering:
 
 Example for testing throughput:
   go run longtest.go --project=<project> --zone=<zone> --topic=<topic id> \
-    --message_count=100 --sleep=0s --verbose=false
+    --message_count=50 --sleep=1s --verbose=false
 
 Example for testing multiple subscriptions:
   go run longtest.go --project=<project> --zone=<zone> --topic=<topic id> \
@@ -37,18 +37,18 @@ Example for testing multiple subscriptions:
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
-	"cloud.google.com/go/pubsublite"
+	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/pubsublite/internal/test"
 	"cloud.google.com/go/pubsublite/internal/test/integration"
 	"cloud.google.com/go/pubsublite/internal/wire"
-	"cloud.google.com/go/pubsublite/publish"
-
-	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
+	"cloud.google.com/go/pubsublite/pscompat"
 )
 
 var (
@@ -69,14 +69,14 @@ func truncateMsg(msg string) string {
 
 // subscriber contains a wire subscriber with message validators.
 type subscriber struct {
-	Subscription      pubsublite.SubscriptionPath
-	Sub               wire.Subscriber
+	Subscription      wire.SubscriptionPath
+	Sub               *pscompat.SubscriberClient
 	MsgTracker        *test.MsgTracker
 	OrderingValidator *test.OrderingReceiver
 	DuplicateDetector *test.DuplicateMsgDetector
 }
 
-func newSubscriber(harness *integration.TestHarness, subscription pubsublite.SubscriptionPath) *subscriber {
+func newSubscriber(harness *integration.TestHarness, subscription wire.SubscriptionPath) *subscriber {
 	s := &subscriber{
 		Subscription:      subscription,
 		MsgTracker:        test.NewMsgTracker(),
@@ -84,21 +84,21 @@ func newSubscriber(harness *integration.TestHarness, subscription pubsublite.Sub
 		DuplicateDetector: test.NewDuplicateMsgDetector(),
 	}
 
-	sub := harness.StartSubscriber(subscription, s.onReceive)
+	sub := harness.StartSubscriber(subscription)
 	s.Sub = sub
 	go func() {
 		log.Printf("Subscriber %s listening to messages...", subscription)
-		err := sub.WaitStopped()
+		err := sub.Receive(context.Background(), s.onReceive)
 		log.Fatalf("%s: stopped with error: %v", subscription, err)
 	}()
 
 	return s
 }
 
-func (s *subscriber) onReceive(m *wire.ReceivedMessage) {
-	m.Ack.Ack()
+func (s *subscriber) onReceive(ctx context.Context, msg *pubsub.Message) {
+	msg.Ack()
 
-	data := string(m.Msg.GetMessage().GetData())
+	data := string(msg.Data)
 	if !s.MsgTracker.Remove(data) {
 		// Ignore messages from a previous test run.
 		if *verbose {
@@ -107,8 +107,8 @@ func (s *subscriber) onReceive(m *wire.ReceivedMessage) {
 		return
 	}
 
-	offset := m.Msg.GetCursor().GetOffset()
-	key := string(m.Msg.GetMessage().GetKey())
+	offset, _ := strconv.ParseInt(msg.ID, 10, 64)
+	key := msg.OrderingKey
 	if *verbose {
 		log.Printf("Received: (key=%s, offset=%d) %s", key, offset, data)
 	}
@@ -130,6 +130,7 @@ func (s *subscriber) Wait() {
 }
 
 func main() {
+	ctx := context.Background()
 	harness := integration.NewTestHarness()
 	start := time.Now()
 
@@ -141,14 +142,6 @@ func main() {
 
 	// Setup publisher.
 	publisher := harness.StartPublisher()
-	onPublished := func(pm *publish.Metadata, err error) {
-		if err != nil {
-			log.Fatalf("Publish error: %v, time elapsed: %v", err, time.Now().Sub(start))
-		}
-		if *verbose {
-			log.Printf("Published: (partition=%d, offset=%d)", pm.Partition, pm.Offset)
-		}
-	}
 
 	// Main publishing loop.
 	log.Printf("Starting test...")
@@ -158,7 +151,7 @@ func main() {
 
 	for {
 		cycleStart := time.Now()
-		var toPublish []*pb.PubSubMessage
+		var toPublish []*pubsub.Message
 		var trackedMsgs []string
 
 		for partition := 0; partition < harness.TopicPartitionCount; partition++ {
@@ -166,7 +159,7 @@ func main() {
 				key := fmt.Sprintf("p%d", partition)
 				data := orderingSender.Next(msgPrefix)
 				trackedMsgs = append(trackedMsgs, data)
-				toPublish = append(toPublish, &pb.PubSubMessage{Key: []byte(key), Data: []byte(data)})
+				toPublish = append(toPublish, &pubsub.Message{OrderingKey: key, Data: []byte(data)})
 				if *verbose {
 					log.Printf("Publishing: (key=%s) %s", key, data)
 				}
@@ -179,9 +172,9 @@ func main() {
 			sub.MsgTracker.Add(trackedMsgs...)
 		}
 
-		// Now publish.
+		// Now publish. Results not checked.
 		for _, msg := range toPublish {
-			publisher.Publish(msg, onPublished)
+			publisher.Publish(ctx, msg)
 		}
 
 		// Wait for all subscribers to receive all messages for the cycle.

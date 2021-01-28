@@ -22,6 +22,7 @@ import (
 
 	"cloud.google.com/go/pubsublite"
 	"cloud.google.com/go/pubsublite/internal/wire"
+	"cloud.google.com/go/pubsublite/pscompat"
 )
 
 var (
@@ -35,12 +36,12 @@ var (
 )
 
 type TestHarness struct {
-	PublishSettings     wire.PublishSettings
-	ReceiveSettings     wire.ReceiveSettings
+	PublishSettings     pscompat.PublishSettings
+	ReceiveSettings     pscompat.ReceiveSettings
 	EnableAssignment    bool
 	TopicPartitionCount int
-	Topic               pubsublite.TopicPath
-	Subscriptions       []pubsublite.SubscriptionPath
+	Topic               wire.TopicPath
+	Subscriptions       []wire.SubscriptionPath
 
 	region string
 }
@@ -74,7 +75,7 @@ func (th *TestHarness) init() {
 	}
 
 	var err error
-	th.region, err = pubsublite.ZoneToRegion(*zone)
+	th.region, err = wire.ZoneToRegion(*zone)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -84,63 +85,56 @@ func (th *TestHarness) init() {
 		log.Fatal(err)
 	}
 
-	th.Topic = pubsublite.TopicPath{Project: proj, Zone: *zone, TopicID: *topicID}
-	th.TopicPartitionCount, err = admin.TopicPartitions(ctx, th.Topic)
+	th.Topic = wire.TopicPath{Project: proj, Zone: *zone, TopicID: *topicID}
+	th.TopicPartitionCount, err = admin.TopicPartitionCount(ctx, th.Topic.String())
 	if err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("Topic %s has %d partitions", th.Topic, th.TopicPartitionCount)
 
 	for _, subsID := range strings.Split(subsIDs, ",") {
-		subscription := pubsublite.SubscriptionPath{Project: proj, Zone: *zone, SubscriptionID: subsID}
-		if _, err := admin.Subscription(ctx, subscription); err != nil {
+		subscription := wire.SubscriptionPath{Project: proj, Zone: *zone, SubscriptionID: subsID}
+		if _, err := admin.Subscription(ctx, subscription.String()); err != nil {
 			log.Fatal(err)
 		}
 		th.Subscriptions = append(th.Subscriptions, subscription)
 	}
 
-	th.PublishSettings = wire.DefaultPublishSettings
+	th.PublishSettings = pscompat.DefaultPublishSettings
 	th.PublishSettings.CountThreshold = *publishBatchSize
-	th.ReceiveSettings = wire.DefaultReceiveSettings
+	th.ReceiveSettings = pscompat.DefaultReceiveSettings
 	th.EnableAssignment = *enableAssignment
-	if *enableLogging {
-		onLog := func(msg string) {
-			log.Printf(msg)
-		}
-		th.PublishSettings.OnLog = onLog
-		th.ReceiveSettings.OnLog = onLog
-	}
+	/*
+		if *enableLogging {
+			onLog := func(msg string) {
+				log.Printf(msg)
+			}
+			th.PublishSettings.OnLog = onLog
+			th.ReceiveSettings.OnLog = onLog
+		}*/
 }
 
-func (th *TestHarness) StartPublisher() wire.Publisher {
-	publisher, err := wire.NewPublisher(context.Background(), th.PublishSettings, th.region, th.Topic.String())
+func (th *TestHarness) StartPublisher() *pscompat.PublisherClient {
+	publisher, err := pscompat.NewPublisherClientWithSettings(context.Background(), th.Topic.String(), th.PublishSettings)
 	if err != nil {
-		log.Fatal(err)
-	}
-	publisher.Start()
-	if err := publisher.WaitStarted(); err != nil {
 		log.Fatal(err)
 	}
 	return publisher
 }
 
-func (th *TestHarness) StartFirstSubscriber(onReceive wire.MessageReceiverFunc) wire.Subscriber {
-	return th.StartSubscriber(th.Subscriptions[0], onReceive)
+func (th *TestHarness) StartFirstSubscriber() *pscompat.SubscriberClient {
+	return th.StartSubscriber(th.Subscriptions[0])
 }
 
-func (th *TestHarness) StartSubscriber(subscription pubsublite.SubscriptionPath, onReceive wire.MessageReceiverFunc) wire.Subscriber {
+func (th *TestHarness) StartSubscriber(subscription wire.SubscriptionPath) *pscompat.SubscriberClient {
 	settings := th.ReceiveSettings
 	if !th.EnableAssignment {
 		for p := 0; p < th.TopicPartitionCount; p++ {
 			settings.Partitions = append(settings.Partitions, p)
 		}
 	}
-	subscriber, err := wire.NewSubscriber(context.Background(), settings, onReceive, th.region, subscription.String())
+	subscriber, err := pscompat.NewSubscriberClientWithSettings(context.Background(), subscription.String(), settings)
 	if err != nil {
-		log.Fatal(err)
-	}
-	subscriber.Start()
-	if err := subscriber.WaitStarted(); err != nil {
 		log.Fatal(err)
 	}
 	return subscriber

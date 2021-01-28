@@ -23,19 +23,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"flag"
+	"fmt"
 	"log"
-	"sync"
 	"sync/atomic"
 	"time"
 
-	"cloud.google.com/go/internal/uid"
+	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/pubsublite/internal/test"
 	"cloud.google.com/go/pubsublite/internal/test/integration"
-	"cloud.google.com/go/pubsublite/internal/wire"
-	"cloud.google.com/go/pubsublite/publish"
-
-	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
+	"cloud.google.com/go/pubsublite/pscompat"
 )
 
 var (
@@ -45,7 +43,7 @@ var (
 	printInterval      = flag.Int("print_interval", 100, "print status every n-th message sent/received")
 	maxReceiveWaitTime = flag.Duration("receive_wait", 30*time.Minute, "wait to receive all messages before terminating subscriber")
 
-	msgTags = uid.NewSpace("loadtest", nil)
+	msgTagPrefix = fmt.Sprintf("loadtest-%d", time.Now().Unix())
 )
 
 const (
@@ -55,41 +53,38 @@ const (
 
 // publishBatch publishes a batch of messages and waits until all publish
 // results have been received.
-func publishBatch(msgTracker *test.MsgTracker, publisher wire.Publisher, batchCount int, publishedCount *int32) {
-	var pubWG sync.WaitGroup
-	pubWG.Add(batchCount)
+func publishBatch(ctx context.Context, msgTracker *test.MsgTracker, publisher *pscompat.PublisherClient, batchCount int, publishedCount *int32) {
+	var tags []string
+	var results []*pubsub.PublishResult
+	for i := 0; i < batchCount; i++ {
+		tag := fmt.Sprintf("%s-%d", *publishedCount+int32(i))
+		tags = append(tags, tag)
 
-	onPublished := func(pm *publish.Metadata, err error) {
+		msg := &pubsub.Message{
+			Data: bytes.Repeat([]byte{'*'}, *messageSize),
+			Attributes: map[string]string{
+				tagAttribute: tag,
+			},
+		}
+		results = append(results, publisher.Publish(ctx, msg))
+	}
+
+	msgTracker.Add(tags...)
+
+	for _, result := range results {
+		id, err := result.Get(ctx)
 		if err != nil {
 			log.Fatalf("Publish error: %v", err)
 		}
 
-		pubWG.Done()
 		count := atomic.AddInt32(publishedCount, 1)
 		if count%int32(*printInterval) == 0 {
-			log.Printf("Published: msg #%d (partition=%d, offset=%d)", count, pm.Partition, pm.Offset)
+			log.Printf("Published: msg #%d (%s)", count, id)
 		}
 	}
-
-	var tags []string
-	for i := 0; i < batchCount; i++ {
-		tag := msgTags.New()
-		tags = append(tags, tag)
-
-		msg := &pb.PubSubMessage{
-			Data: bytes.Repeat([]byte{'*'}, *messageSize),
-			Attributes: map[string]*pb.AttributeValues{
-				tagAttribute: {Values: [][]byte{[]byte(tag)}},
-			},
-		}
-		publisher.Publish(msg, onPublished)
-	}
-
-	msgTracker.Add(tags...)
-	pubWG.Wait()
 }
 
-func publishAll(harness *integration.TestHarness, msgTracker *test.MsgTracker) {
+func publishAll(ctx context.Context, harness *integration.TestHarness, msgTracker *test.MsgTracker) {
 	totalBytes := float64(*messageCount) * float64(*messageSize)
 	log.Printf("Transmitting %d messages, %d bytes per message, total %.2f MiB", *messageCount, *messageSize, totalBytes/float64(mibi))
 
@@ -105,7 +100,7 @@ func publishAll(harness *integration.TestHarness, msgTracker *test.MsgTracker) {
 			batchCount = *batchSize
 		}
 		messagesRemaining -= batchCount
-		publishBatch(msgTracker, publisher, batchCount, &publishedCount)
+		publishBatch(ctx, msgTracker, publisher, batchCount, &publishedCount)
 	}
 
 	duration := time.Since(start)
@@ -115,17 +110,16 @@ func publishAll(harness *integration.TestHarness, msgTracker *test.MsgTracker) {
 	log.Printf("**** Publish elapsed time: %v (%.2f MiB/s) ****", time.Since(start), rate)
 }
 
-func receiveAll(harness *integration.TestHarness, msgTracker *test.MsgTracker) {
+func receiveAll(ctx context.Context, harness *integration.TestHarness, msgTracker *test.MsgTracker) {
+	start := time.Now()
 	var receivedCount int32
 
-	onReceive := func(m *wire.ReceivedMessage) {
-		m.Ack.Ack()
+	onReceive := func(ctx context.Context, msg *pubsub.Message) {
+		msg.Ack()
 
 		var tag string
-		if values, exists := m.Msg.GetMessage().Attributes[tagAttribute]; exists {
-			if len(values.Values) > 0 {
-				tag = string(values.Values[0])
-			}
+		if value, exists := msg.Attributes[tagAttribute]; exists {
+			tag = value
 		}
 		if !msgTracker.Remove(tag) {
 			// Ignore messages that were not sent during this test run.
@@ -133,19 +127,21 @@ func receiveAll(harness *integration.TestHarness, msgTracker *test.MsgTracker) {
 		}
 
 		count := atomic.AddInt32(&receivedCount, 1)
+		if count == 1 {
+			log.Printf("Subscriber started in: %v", time.Since(start))
+			start = time.Now()
+		}
 		if count%int32(*printInterval) == 0 {
-			log.Printf("Received: msg #%d (offset=%d)", count, m.Msg.GetCursor().GetOffset())
+			log.Printf("Received: msg #%d (offset=%s)", count, msg.ID)
 		}
 	}
 
-	start := time.Now()
-	subscriber := harness.StartFirstSubscriber(onReceive)
-	log.Printf("Subscriber started in: %v", time.Since(start))
-	start = time.Now()
+	subscriber := harness.StartFirstSubscriber()
+	cctx, stop := context.WithCancel(ctx)
 
 	go func() {
 		log.Printf("Receiving...")
-		err := subscriber.WaitStopped()
+		err := subscriber.Receive(cctx, onReceive)
 		if err != nil {
 			log.Fatalf("Subscriber stopped with error: %v", err)
 		}
@@ -155,7 +151,7 @@ func receiveAll(harness *integration.TestHarness, msgTracker *test.MsgTracker) {
 	duration := time.Since(start)
 	rate := float64(*messageCount) * float64(*messageSize) / duration.Seconds() / float64(mibi)
 
-	subscriber.Stop()
+	stop()
 	log.Printf("**** Receive elapsed time: %v (%.2f MiB/s) ****", time.Since(start), rate)
 }
 
@@ -164,6 +160,7 @@ func main() {
 	harness.PublishSettings.BufferedByteLimit = 2 * *batchSize * *messageSize
 	msgTracker := test.NewMsgTracker()
 
-	publishAll(harness, msgTracker)
-	receiveAll(harness, msgTracker)
+	ctx := context.Background()
+	publishAll(ctx, harness, msgTracker)
+	receiveAll(ctx, harness, msgTracker)
 }
