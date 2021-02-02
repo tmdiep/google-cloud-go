@@ -190,7 +190,7 @@ func TestTopicUpdateRequest(t *testing.T) {
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
 			if got := tc.config.toUpdateRequest(); !proto.Equal(got, tc.want) {
-				t.Errorf("TopicConfigToUpdate: %v\ntoUpdateRequest(): got: %v\nwant: %v", tc.config, got, tc.want)
+				t.Errorf("TopicConfigToUpdate(%v).toUpdateRequest():\ngot: %v\nwant: %v", tc.config, got, tc.want)
 			}
 		})
 	}
