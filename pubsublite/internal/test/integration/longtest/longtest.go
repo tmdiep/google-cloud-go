@@ -42,6 +42,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/pubsub"
@@ -52,10 +53,11 @@ import (
 )
 
 var (
-	messageCount = flag.Int("message_count", 5, "the number of messages to publish and receive per cycle, per partition")
-	sleepPeriod  = flag.Duration("sleep", time.Minute, "the duration to sleep between cycles")
-	waitTimeout  = flag.Duration("timeout", 2*time.Minute, "timeout for receiving all messages per cycle")
-	verbose      = flag.Bool("verbose", true, "whether to log verbose messages")
+	messageCount   = flag.Int("message_count", 5, "the number of messages to publish and receive per cycle, per partition")
+	messagePadding = flag.Int("padding_bytes", 0, "the number of bytes to pad (divided by message count)")
+	sleepPeriod    = flag.Duration("sleep", time.Minute, "the duration to sleep between cycles")
+	waitTimeout    = flag.Duration("timeout", 2*time.Minute, "timeout for receiving all messages per cycle")
+	verbose        = flag.Bool("verbose", true, "whether to log verbose messages")
 )
 
 const maxPrintMsgLen = 70
@@ -148,6 +150,7 @@ func main() {
 	msgPrefix := fmt.Sprintf("longtest-%d", start.Unix())
 	orderingSender := test.NewOrderingSender()
 	cycleMsgCount := *messageCount * harness.TopicPartitionCount
+	padding := *messagePadding / *messageCount
 
 	for {
 		cycleStart := time.Now()
@@ -159,7 +162,11 @@ func main() {
 				key := fmt.Sprintf("p%d", partition)
 				data := orderingSender.Next(msgPrefix)
 				trackedMsgs = append(trackedMsgs, data)
-				toPublish = append(toPublish, &pubsub.Message{OrderingKey: key, Data: []byte(data)})
+				msg := &pubsub.Message{OrderingKey: key, Data: []byte(data)}
+				if padding > 0 {
+					msg.Attributes = map[string]string{"padding": strings.Repeat("*", padding)}
+				}
+				toPublish = append(toPublish, msg)
 				if *verbose {
 					log.Printf("Publishing: (key=%s) %s", key, data)
 				}

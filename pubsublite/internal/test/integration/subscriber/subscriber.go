@@ -18,8 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"strconv"
-	"time"
+	"sync/atomic"
 
 	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/pubsublite/internal/test"
@@ -30,8 +29,8 @@ import (
 )
 
 var (
-	waitTimeout = flag.Duration("timeout", 2*time.Minute, "timeout for receiving all messages per cycle")
-	verbose     = flag.Bool("verbose", true, "whether to log verbose messages")
+	printInterval = flag.Int("print_interval", 100, "print status every n-th message sent/received")
+	verbose       = flag.Bool("verbose", false, "whether to log verbose messages")
 )
 
 const maxPrintMsgLen = 70
@@ -49,6 +48,7 @@ type subscriber struct {
 	Sub               *pscompat.SubscriberClient
 	OrderingValidator *test.OrderingReceiver
 	DuplicateDetector *test.DuplicateMsgDetector
+	receiveCount      int64
 }
 
 func newSubscriber(ctx context.Context, harness *integration.TestHarness, subscription wire.SubscriptionPath, group *errgroup.Group) *subscriber {
@@ -72,20 +72,20 @@ func newSubscriber(ctx context.Context, harness *integration.TestHarness, subscr
 
 func (s *subscriber) onReceive(ctx context.Context, msg *pubsub.Message) {
 	msg.Ack()
-
-	data := string(msg.Data)
-	offset, _ := strconv.ParseInt(msg.ID, 10, 64)
-	key := msg.OrderingKey
-	log.Printf("Received: (key=%s, offset=%d) %s", key, offset, data)
-
-	// Ordering and duplicate validation.
-	if err := s.OrderingValidator.Receive(data, key); err != nil {
-		log.Fatalf("%s: %v", s.Subscription, err)
+	count := atomic.AddInt64(&s.receiveCount, 1)
+	if *verbose || count%int64(*printInterval) == 0 {
+		log.Printf("Received: key=%s, offset=%s, data=%s", msg.OrderingKey, msg.ID, truncateMsg(string(msg.Data)))
 	}
-	s.DuplicateDetector.Receive(data, offset)
-	if s.DuplicateDetector.HasReceiveDuplicates() {
-		log.Fatalf("%s: %s", s.Subscription, s.DuplicateDetector.Status())
-	}
+	/*
+		// Ordering and duplicate validation.
+		if err := s.OrderingValidator.Receive(data, key); err != nil {
+			log.Fatalf("%s: %v", s.Subscription, err)
+		}
+		s.DuplicateDetector.Receive(data, offset)
+		if s.DuplicateDetector.HasReceiveDuplicates() {
+			log.Fatalf("%s: %s", s.Subscription, s.DuplicateDetector.Status())
+		}
+	*/
 }
 
 func main() {
