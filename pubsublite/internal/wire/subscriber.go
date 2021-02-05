@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/xerrors"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 
@@ -38,8 +37,9 @@ var (
 // ReceivedMessage stores a received Pub/Sub message and AckConsumer for
 // acknowledging the message.
 type ReceivedMessage struct {
-	Msg *pb.SequencedMessage
-	Ack AckConsumer
+	Msg       *pb.SequencedMessage
+	Ack       AckConsumer
+	Partition int
 }
 
 // MessageReceiverFunc receives a Pub/Sub message from a topic partition.
@@ -279,7 +279,7 @@ func (s *subscribeStream) unsafeOnMessageResponse(response *pb.MessageResponse) 
 
 	for _, msg := range response.Messages {
 		ack := newAckConsumer(msg.GetCursor().GetOffset(), msg.GetSizeBytes(), s.onAck)
-		s.messageQueue.Add(&ReceivedMessage{Msg: msg, Ack: ack})
+		s.messageQueue.Add(&ReceivedMessage{Msg: msg, Ack: ack, Partition: s.subscription.Partition})
 	}
 	return nil
 }
@@ -326,7 +326,7 @@ func (s *subscribeStream) unsafeSendFlowControl(req *pb.FlowControlRequest) {
 }
 
 func (s *subscribeStream) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
-	if !s.unsafeUpdateStatus(targetStatus, s.wrapError(err)) {
+	if !s.unsafeUpdateStatus(targetStatus, wrapError("subscriber", s.subscription.String(), err)) {
 		return
 	}
 
@@ -334,13 +334,6 @@ func (s *subscribeStream) unsafeInitiateShutdown(targetStatus serviceStatus, err
 	s.messageQueue.Stop()
 	s.pollFlowControl.Stop()
 	s.stream.Stop()
-}
-
-func (s *subscribeStream) wrapError(err error) error {
-	if err != nil {
-		return xerrors.Errorf("subscriber(%s): %w", s.subscription, err)
-	}
-	return err
 }
 
 // singlePartitionSubscriber receives messages from a single topic partition.

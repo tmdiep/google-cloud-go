@@ -21,7 +21,6 @@ import (
 	"reflect"
 	"time"
 
-	"golang.org/x/xerrors"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 
@@ -238,7 +237,7 @@ func (pp *singlePartitionPublisher) onResponse(response interface{}) {
 //
 // Expected to be called with singlePartitionPublisher.mu held.
 func (pp *singlePartitionPublisher) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {
-	if !pp.unsafeUpdateStatus(targetStatus, pp.wrapError(err)) {
+	if !pp.unsafeUpdateStatus(targetStatus, wrapError("publisher", pp.topic.String(), err)) {
 		return
 	}
 
@@ -274,13 +273,6 @@ func (pp *singlePartitionPublisher) unsafeCheckDone() {
 	if pp.status == serviceTerminating && pp.batcher.InFlightBatchesEmpty() {
 		pp.stream.Stop()
 	}
-}
-
-func (pp *singlePartitionPublisher) wrapError(err error) error {
-	if err != nil {
-		return xerrors.Errorf("publisher(%s): %w", pp.topic, err)
-	}
-	return err
 }
 
 // routingPublisher publishes messages to multiple topic partitions, each
