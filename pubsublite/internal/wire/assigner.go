@@ -62,7 +62,6 @@ type partitionAssignmentReceiver func(partitionSet) error
 // the server sends a new set of partition assignments for a subscriber.
 type assigner struct {
 	// Immutable after creation.
-	log               *logger
 	assignmentClient  *vkit.PartitionAssignmentClient
 	subscription      string
 	initialReq        *pb.PartitionAssignmentRequest
@@ -75,18 +74,15 @@ type assigner struct {
 	abstractService
 }
 
-func newAssigner(ctx context.Context, assignmentClient *vkit.PartitionAssignmentClient,
-	log *logger, genUUID generateUUIDFunc, settings ReceiveSettings, subscriptionPath string,
-	receiver partitionAssignmentReceiver) (*assigner, error) {
+func newAssigner(ctx context.Context, assignmentClient *vkit.PartitionAssignmentClient, genUUID generateUUIDFunc, settings ReceiveSettings, subscriptionPath string, receiver partitionAssignmentReceiver) (*assigner, error) {
 
 	clientID, err := genUUID()
 	if err != nil {
 		return nil, fmt.Errorf("pubsublite: failed to generate client UUID: %v", err)
 	}
-	log.Printf("pubsublite: %s: client ID for partition assignment: %s", subscriptionPath, clientID)
+	//log.Printf("pubsublite: %s: client ID for partition assignment: %s", subscriptionPath, clientID)
 
 	a := &assigner{
-		log:              log,
 		assignmentClient: assignmentClient,
 		subscription:     subscriptionPath,
 		initialReq: &pb.PartitionAssignmentRequest{
@@ -100,7 +96,7 @@ func newAssigner(ctx context.Context, assignmentClient *vkit.PartitionAssignment
 		receiveAssignment: receiver,
 		metadata:          newPubsubMetadata(),
 	}
-	a.stream = newRetryableStream(ctx, log, a, settings.Timeout, reflect.TypeOf(pb.PartitionAssignment{}))
+	a.stream = newRetryableStream(ctx, a, settings.Timeout, reflect.TypeOf(pb.PartitionAssignment{}))
 	a.metadata.AddClientInfo(settings.Framework)
 	return a, nil
 }
@@ -162,7 +158,7 @@ func (a *assigner) handleAssignment(assignment *pb.PartitionAssignment) error {
 	if err := a.receiveAssignment(newPartitionSet(assignment)); err != nil {
 		return err
 	}
-	a.log.Printf("pubsublite: %s: subscriber updated partition assignments to %v", a.subscription, assignment.Partitions)
+	//log.Printf("pubsublite: %s: subscriber updated partition assignments to %v", a.subscription, assignment.Partitions)
 
 	a.stream.Send(&pb.PartitionAssignmentRequest{
 		Request: &pb.PartitionAssignmentRequest_Ack{

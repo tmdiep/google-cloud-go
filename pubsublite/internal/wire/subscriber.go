@@ -133,9 +133,8 @@ type subscribeStream struct {
 	abstractService
 }
 
-func newSubscribeStream(ctx context.Context, subClient *vkit.SubscriberClient,
-	log *logger, settings ReceiveSettings, receiver MessageReceiverFunc,
-	subscription subscriptionPartition, acks *ackTracker, disableTasks bool) *subscribeStream {
+func newSubscribeStream(ctx context.Context, subClient *vkit.SubscriberClient, settings ReceiveSettings,
+	receiver MessageReceiverFunc, subscription subscriptionPartition, acks *ackTracker, disableTasks bool) *subscribeStream {
 
 	s := &subscribeStream{
 		subClient:    subClient,
@@ -149,10 +148,10 @@ func newSubscribeStream(ctx context.Context, subClient *vkit.SubscriberClient,
 				},
 			},
 		},
-		metadata:     newPubsubMetadata(),
 		messageQueue: newMessageDeliveryQueue(acks, receiver, settings.MaxOutstandingMessages),
+		metadata:     newPubsubMetadata(),
 	}
-	s.stream = newRetryableStream(ctx, log, s, settings.Timeout, reflect.TypeOf(pb.SubscribeResponse{}))
+	s.stream = newRetryableStream(ctx, s, settings.Timeout, reflect.TypeOf(pb.SubscribeResponse{}))
 	s.metadata.AddSubscriptionRoutingMetadata(s.subscription)
 	s.metadata.AddClientInfo(settings.Framework)
 
@@ -356,7 +355,6 @@ func (s *singlePartitionSubscriber) Terminate() {
 
 type singlePartitionSubscriberFactory struct {
 	ctx              context.Context
-	log              *logger
 	subClient        *vkit.SubscriberClient
 	cursorClient     *vkit.CursorClient
 	settings         ReceiveSettings
@@ -368,8 +366,8 @@ type singlePartitionSubscriberFactory struct {
 func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSubscriber {
 	subscription := subscriptionPartition{Path: f.subscriptionPath, Partition: partition}
 	acks := newAckTracker()
-	commit := newCommitter(f.ctx, f.cursorClient, f.log, f.settings, subscription, acks, f.disableTasks)
-	sub := newSubscribeStream(f.ctx, f.subClient, f.log, f.settings, f.receiver, subscription, acks, f.disableTasks)
+	commit := newCommitter(f.ctx, f.cursorClient, f.settings, subscription, acks, f.disableTasks)
+	sub := newSubscribeStream(f.ctx, f.subClient, f.settings, f.receiver, subscription, acks, f.disableTasks)
 	ps := &singlePartitionSubscriber{
 		subscriber: sub,
 		committer:  commit,
@@ -436,9 +434,7 @@ type assigningSubscriber struct {
 	compositeService
 }
 
-func newAssigningSubscriber(allClients apiClients, assignmentClient *vkit.PartitionAssignmentClient,
-	genUUID generateUUIDFunc, subFactory *singlePartitionSubscriberFactory) (*assigningSubscriber, error) {
-
+func newAssigningSubscriber(allClients apiClients, assignmentClient *vkit.PartitionAssignmentClient, genUUID generateUUIDFunc, subFactory *singlePartitionSubscriberFactory) (*assigningSubscriber, error) {
 	as := &assigningSubscriber{
 		clients:     allClients,
 		subFactory:  subFactory,
@@ -446,7 +442,7 @@ func newAssigningSubscriber(allClients apiClients, assignmentClient *vkit.Partit
 	}
 	as.init()
 
-	assigner, err := newAssigner(subFactory.ctx, assignmentClient, subFactory.log, genUUID, subFactory.settings, subFactory.subscriptionPath, as.handleAssignment)
+	assigner, err := newAssigner(subFactory.ctx, assignmentClient, genUUID, subFactory.settings, subFactory.subscriptionPath, as.handleAssignment)
 	if err != nil {
 		return nil, err
 	}
@@ -534,7 +530,6 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 
 	subFactory := &singlePartitionSubscriberFactory{
 		ctx:              ctx,
-		log:              newLogger(settings.OnLog),
 		subClient:        subClient,
 		cursorClient:     cursorClient,
 		settings:         settings,

@@ -68,7 +68,6 @@ type singlePartitionPublisher struct {
 // for given partition numbers.
 type singlePartitionPublisherFactory struct {
 	ctx       context.Context
-	log       *logger
 	pubClient *vkit.PublisherClient
 	settings  PublishSettings
 	topicPath string
@@ -89,7 +88,7 @@ func (f *singlePartitionPublisherFactory) New(partition int) *singlePartitionPub
 		metadata: newPubsubMetadata(),
 	}
 	pp.batcher = newPublishMessageBatcher(&f.settings, partition, pp.onNewBatch)
-	pp.stream = newRetryableStream(f.ctx, f.log, pp, f.settings.Timeout, reflect.TypeOf(pb.PublishResponse{}))
+	pp.stream = newRetryableStream(f.ctx, pp, f.settings.Timeout, reflect.TypeOf(pb.PublishResponse{}))
 	pp.metadata.AddTopicRoutingMetadata(pp.topic)
 	pp.metadata.AddClientInfo(f.settings.Framework)
 	return pp
@@ -281,7 +280,6 @@ func (pp *singlePartitionPublisher) unsafeCheckDone() {
 type routingPublisher struct {
 	// Immutable after creation.
 	clients          apiClients
-	log              *logger
 	topicPath        string
 	msgRouterFactory *messageRouterFactory
 	pubFactory       *singlePartitionPublisherFactory
@@ -294,12 +292,10 @@ type routingPublisher struct {
 	compositeService
 }
 
-func newRoutingPublisher(allClients apiClients, adminClient *vkit.AdminClient,
-	msgRouterFactory *messageRouterFactory, pubFactory *singlePartitionPublisherFactory) *routingPublisher {
+func newRoutingPublisher(allClients apiClients, adminClient *vkit.AdminClient, msgRouterFactory *messageRouterFactory, pubFactory *singlePartitionPublisherFactory) *routingPublisher {
 
 	pub := &routingPublisher{
 		clients:          allClients,
-		log:              pubFactory.log,
 		topicPath:        pubFactory.topicPath,
 		msgRouterFactory: msgRouterFactory,
 		pubFactory:       pubFactory,
@@ -321,7 +317,7 @@ func (rp *routingPublisher) onPartitionCountChanged(partitionCount int) {
 		return
 	}
 	if partitionCount < len(rp.publishers) {
-		rp.log.Printf("pubsublite: %s: ignoring topic partition count decrease from %d to %d", rp.topicPath, len(rp.publishers), partitionCount)
+		//log.Printf("pubsublite: %s: ignoring topic partition count decrease from %d to %d", rp.topicPath, len(rp.publishers), partitionCount)
 		return
 	}
 
@@ -405,7 +401,6 @@ func NewPublisher(ctx context.Context, settings PublishSettings, region, topicPa
 	msgRouterFactory := newMessageRouterFactory(rand.New(rand.NewSource(time.Now().UnixNano())))
 	pubFactory := &singlePartitionPublisherFactory{
 		ctx:       ctx,
-		log:       newLogger(settings.OnLog),
 		pubClient: pubClient,
 		settings:  settings,
 		topicPath: topicPath,

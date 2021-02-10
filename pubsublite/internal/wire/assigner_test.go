@@ -84,7 +84,7 @@ func newTestAssigner(t *testing.T, subscription string) *testAssigner {
 		t:          t,
 		partitions: make(chan []int, 1),
 	}
-	asn, err := newAssigner(ctx, assignmentClient, nilLogger(), fakeGenerateUUID, testReceiveSettings(), subscription, ta.receiveAssignment)
+	asn, err := newAssigner(ctx, assignmentClient, fakeGenerateUUID, testReceiveSettings(), subscription, ta.receiveAssignment)
 	if err != nil {
 		t.Fatal(err)
 	}

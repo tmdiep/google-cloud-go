@@ -54,7 +54,6 @@ func newTestSinglePartitionPublisher(t *testing.T, topic topicPartition, setting
 
 	pubFactory := &singlePartitionPublisherFactory{
 		ctx:       ctx,
-		log:       nilLogger(),
 		pubClient: pubClient,
 		settings:  settings,
 		topicPath: topic.Path,
@@ -521,7 +520,6 @@ func newTestRoutingPublisher(t *testing.T, topicPath string, settings PublishSet
 	msgRouterFactory := newMessageRouterFactory(rand.New(source))
 	pubFactory := &singlePartitionPublisherFactory{
 		ctx:       ctx,
-		log:       nilLogger(),
 		pubClient: pubClient,
 		settings:  settings,
 		topicPath: topicPath,
