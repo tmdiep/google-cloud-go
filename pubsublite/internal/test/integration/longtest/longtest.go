@@ -41,7 +41,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 
@@ -109,17 +108,19 @@ func (s *subscriber) onReceive(ctx context.Context, msg *pubsub.Message) {
 		return
 	}
 
-	offset, _ := strconv.ParseInt(msg.ID, 10, 64)
-	key := msg.OrderingKey
+	metadata, _ := pscompat.ParseMessageMetadata(msg.ID)
+	//key := msg.OrderingKey
 	if *verbose {
-		log.Printf("Received: (key=%s, offset=%d) %s", key, offset, data)
+		//log.Printf("Received: (key=%s, partition=%d, offset=%d) %s", key, metadata.Partition, metadata.Offset, data)
+		log.Printf("Received: (partition=%d, offset=%d) %s", metadata.Partition, metadata.Offset, data)
 	}
 
 	// Ordering and duplicate validation.
-	if err := s.OrderingValidator.Receive(data, key); err != nil {
+	//if err := s.OrderingValidator.Receive(data, key); err != nil {
+	if err := s.OrderingValidator.Receive(data, fmt.Sprintf("%d", metadata.Partition)); err != nil {
 		log.Fatalf("%s: %v", s.Subscription, err)
 	}
-	s.DuplicateDetector.Receive(data, offset)
+	s.DuplicateDetector.Receive(data, metadata.Offset)
 	if s.DuplicateDetector.HasReceiveDuplicates() {
 		log.Fatalf("%s: %s", s.Subscription, s.DuplicateDetector.Status())
 	}
@@ -159,16 +160,18 @@ func main() {
 
 		for partition := 0; partition < harness.TopicPartitionCount; partition++ {
 			for i := 0; i < *messageCount; i++ {
-				key := fmt.Sprintf("p%d", partition)
+				//key := fmt.Sprintf("p%d", partition)
 				data := orderingSender.Next(msgPrefix)
 				trackedMsgs = append(trackedMsgs, data)
-				msg := &pubsub.Message{OrderingKey: key, Data: []byte(data)}
+				//msg := &pubsub.Message{OrderingKey: key, Data: []byte(data)}
+				msg := &pubsub.Message{Data: []byte(data)}
 				if padding > 0 {
 					msg.Attributes = map[string]string{"padding": strings.Repeat("*", padding)}
 				}
 				toPublish = append(toPublish, msg)
 				if *verbose {
-					log.Printf("Publishing: (key=%s) %s", key, data)
+					//log.Printf("Publishing: (key=%s) %s", key, data)
+					log.Printf("Publishing: %s", data)
 				}
 			}
 		}

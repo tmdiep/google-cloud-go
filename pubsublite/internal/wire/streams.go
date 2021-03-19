@@ -16,8 +16,10 @@ package wire
 import (
 	"context"
 	"io"
+	"log"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -271,8 +273,21 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 			// terminated.
 			rs.setCancel(cancelFunc)
 
+			var connectCanceled atomic.Value
+			connectTimeout := time.AfterFunc(10*time.Second, func() {
+				log.Println(">>>> Stream connect timed out - cancel <<<<")
+				connectCanceled.Store(true)
+				cancelFunc()
+			})
+			defer connectTimeout.Stop()
+
 			newStream, err = rs.handler.newStream(cctx)
+			connectTimeout.Stop()
 			if err != nil {
+				if connectCanceled.Load() != nil {
+					log.Println(">>>> Stream connect timed out - detected <<<<")
+					//return r.RetryRecv(nil)
+				}
 				return r.RetryRecv(err)
 			}
 			initReq, needsResponse := rs.handler.initialRequest()

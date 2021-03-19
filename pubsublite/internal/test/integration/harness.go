@@ -19,6 +19,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"cloud.google.com/go/pubsublite"
 	"cloud.google.com/go/pubsublite/internal/wire"
@@ -102,7 +103,9 @@ func (th *TestHarness) init() {
 
 	th.PublishSettings = pscompat.DefaultPublishSettings
 	th.PublishSettings.CountThreshold = *publishBatchSize
+	th.PublishSettings.Timeout = 1 * time.Minute
 	th.ReceiveSettings = pscompat.DefaultReceiveSettings
+	th.ReceiveSettings.Timeout = 1 * time.Minute
 	th.EnableAssignment = *enableAssignment
 	/*
 		if *enableLogging {
