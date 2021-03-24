@@ -52,24 +52,22 @@ func newStreamRetryer(timeout time.Duration) *streamRetryer {
 	}
 }
 
-func (r *streamRetryer) RetrySend(err error) (time.Duration, bool) {
-	if time.Now().After(r.deadline) {
-		return 0, false
-	}
+func (r *streamRetryer) RetrySend(err error) (backoff time.Duration, shouldRetry bool) {
 	if isRetryableSendError(err) {
 		return r.bo.Pause(), true
 	}
 	return 0, false
 }
 
-func (r *streamRetryer) RetryRecv(err error) (time.Duration, bool) {
-	if time.Now().After(r.deadline) {
-		return 0, false
-	}
+func (r *streamRetryer) RetryRecv(err error) (backoff time.Duration, shouldRetry bool) {
 	if isRetryableRecvError(err) {
 		return r.bo.Pause(), true
 	}
 	return 0, false
+}
+
+func (r *streamRetryer) ExceededDeadline() bool {
+	return time.Now().After(r.deadline)
 }
 
 func isRetryableSendCode(code codes.Code) bool {
