@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log"
 	"reflect"
 	"sync"
 	"time"
@@ -286,10 +287,13 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 			// Bounds the duration of the stream initialization attempt - from stream
 			// creation to the initial response.
 			status := initInProgress
-			initTimer := time.AfterFunc(rs.streamInitTimeout, func() {
+			statusMsg := ""
+			initTimer := time.AfterFunc(20*time.Minute, func() {
 				initStatusMu.Lock()
 				defer initStatusMu.Unlock()
 				if status == initInProgress {
+					initReq, _ := rs.handler.initialRequest()
+					log.Fatalf("*** Init timer fired, checkpoint=%q, req=%T, %v", statusMsg, initReq, initReq)
 					status = initCanceled
 					cancelFunc()
 				}
@@ -313,17 +317,26 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 				err = resolveError(err)
 				return r.RetryRecv(err)
 			}
+			initStatusMu.Lock()
+			statusMsg = "stream created"
+			initStatusMu.Unlock()
 			initReq, needsResponse := rs.handler.initialRequest()
 			if err = newStream.SendMsg(initReq); err != nil {
 				err = resolveError(err)
 				return r.RetrySend(err)
 			}
+			initStatusMu.Lock()
+			statusMsg = "sent initial request"
+			initStatusMu.Unlock()
 			if needsResponse {
 				response := reflect.New(rs.responseType).Interface()
 				if err = newStream.RecvMsg(response); err != nil {
 					err = resolveError(err)
 					return r.RetryRecv(err)
 				}
+				initStatusMu.Lock()
+				statusMsg = "received initial response"
+				initStatusMu.Unlock()
 				if err = rs.handler.validateInitialResponse(response); err != nil {
 					// An unexpected initial response from the server is a permanent error.
 					cancelFunc()

@@ -49,13 +49,14 @@ import (
 	"cloud.google.com/go/pubsublite/internal/test/integration"
 	"cloud.google.com/go/pubsublite/internal/wire"
 	"cloud.google.com/go/pubsublite/pscompat"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
 	messageCount   = flag.Int("message_count", 5, "the number of messages to publish and receive per cycle, per partition")
-	messagePadding = flag.Int("padding_bytes", 0, "the number of bytes to pad (divided by message count)")
+	messagePadding = flag.Int("padding_bytes", 0, "the number of bytes to pad per partition (divided by message count)")
 	sleepPeriod    = flag.Duration("sleep", time.Minute, "the duration to sleep between cycles")
-	waitTimeout    = flag.Duration("timeout", 2*time.Minute, "timeout for receiving all messages per cycle")
+	waitTimeout    = flag.Duration("timeout", 5*time.Minute, "timeout for receiving all messages per cycle")
 	verbose        = flag.Bool("verbose", true, "whether to log verbose messages")
 )
 
@@ -108,21 +109,21 @@ func (s *subscriber) onReceive(ctx context.Context, msg *pubsub.Message) {
 		return
 	}
 
-	metadata, _ := pscompat.ParseMessageMetadata(msg.ID)
-	//key := msg.OrderingKey
+	metadata, err := pscompat.ParseMessageMetadata(msg.ID)
+	if err != nil {
+		log.Fatalf("Error parsing message metadata %q: %v", msg.ID, err)
+	}
 	if *verbose {
-		//log.Printf("Received: (key=%s, partition=%d, offset=%d) %s", key, metadata.Partition, metadata.Offset, data)
 		log.Printf("Received: (partition=%d, offset=%d) %s", metadata.Partition, metadata.Offset, data)
 	}
 
 	// Ordering and duplicate validation.
-	//if err := s.OrderingValidator.Receive(data, key); err != nil {
 	if err := s.OrderingValidator.Receive(data, fmt.Sprintf("%d", metadata.Partition)); err != nil {
-		log.Fatalf("%s: %v", s.Subscription, err)
+		log.Fatalf("Ordering failed: %s: %v", s.Subscription, err)
 	}
 	s.DuplicateDetector.Receive(data, metadata.Offset)
 	if s.DuplicateDetector.HasReceiveDuplicates() {
-		log.Fatalf("%s: %s", s.Subscription, s.DuplicateDetector.Status())
+		log.Fatalf("Detected duplicates: %s: %s", s.Subscription, s.DuplicateDetector.Status())
 	}
 }
 
@@ -160,19 +161,13 @@ func main() {
 
 		for partition := 0; partition < harness.TopicPartitionCount; partition++ {
 			for i := 0; i < *messageCount; i++ {
-				//key := fmt.Sprintf("p%d", partition)
 				data := orderingSender.Next(msgPrefix)
 				trackedMsgs = append(trackedMsgs, data)
-				//msg := &pubsub.Message{OrderingKey: key, Data: []byte(data)}
 				msg := &pubsub.Message{Data: []byte(data)}
 				if padding > 0 {
 					msg.Attributes = map[string]string{"padding": strings.Repeat("*", padding)}
 				}
 				toPublish = append(toPublish, msg)
-				if *verbose {
-					//log.Printf("Publishing: (key=%s) %s", key, data)
-					log.Printf("Publishing: %s", data)
-				}
 			}
 		}
 
@@ -182,9 +177,23 @@ func main() {
 			sub.MsgTracker.Add(trackedMsgs...)
 		}
 
-		// Now publish. Results not checked.
-		for _, msg := range toPublish {
-			publisher.Publish(ctx, msg)
+		// Now publish.
+		g := new(errgroup.Group)
+		for _, tp := range toPublish {
+			msg := tp // Ensure msg is bound to loop element.
+			result := publisher.Publish(ctx, msg)
+			g.Go(func() error {
+				cctx, cancel := context.WithTimeout(ctx, *waitTimeout)
+				id, err := result.Get(cctx)
+				cancel()
+				if err != nil {
+					log.Fatalf("Publish failed: %v. Publisher error: %v", err, publisher.Error())
+				}
+				if *verbose && err == nil {
+					log.Printf("Published: (id=%s) %s", id, string(msg.Data))
+				}
+				return err
+			})
 		}
 
 		// Wait for all subscribers to receive all messages for the cycle.
@@ -194,6 +203,11 @@ func main() {
 			if len(duplicates) > 0 {
 				log.Printf("%s: %s", sub.Subscription, duplicates)
 			}
+		}
+
+		// Ensure all publish results succeeded.
+		if err := g.Wait(); err != nil {
+			log.Fatalf("Publish failed: %v", err)
 		}
 
 		now := time.Now()
