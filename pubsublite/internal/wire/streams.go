@@ -220,8 +220,11 @@ func (rs *retryableStream) connectStream() {
 		rs.mu.Lock()
 		defer rs.mu.Unlock()
 
-		if rs.status == streamReconnecting || rs.status == streamTerminated {
+		if rs.status == streamReconnecting {
 			// There can only be 1 goroutine reconnecting.
+			return false
+		}
+		if rs.status == streamTerminated {
 			return false
 		}
 		rs.status = streamReconnecting
