@@ -18,6 +18,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"runtime/pprof"
 	"strings"
 	"time"
 
@@ -34,6 +35,8 @@ var (
 	enableAssignment = flag.Bool("assignment", false, "use partition assignment for subscribers")
 	publishBatchSize = flag.Int("publish_setting_batch", 100, "publish batch size")
 	enableLogging    = flag.Bool("logging", true, "log informational messages")
+	cpuprofile       = flag.String("cpuprofile", "", "write cpu profile to `file`")
+	memprofile       = flag.String("memprofile", "", "write memory profile to `file`")
 )
 
 type TestHarness struct {
@@ -55,6 +58,18 @@ func NewTestHarness() *TestHarness {
 
 func (th *TestHarness) init() {
 	flag.Parse()
+
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal("could not create CPU profile: ", err)
+		}
+		defer f.Close() // error handling omitted for example
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatal("could not start CPU profile: ", err)
+		}
+		defer pprof.StopCPUProfile()
+	}
 
 	proj := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	if *project != "" {
@@ -141,4 +156,18 @@ func (th *TestHarness) StartSubscriber(subscription wire.SubscriptionPath) *psco
 		log.Fatal(err)
 	}
 	return subscriber
+}
+
+func (th *TestHarness) WriteMemProfile() {
+	if *memprofile != "" {
+		f, err := os.Create(*memprofile)
+		if err != nil {
+			log.Fatal("could not create memory profile: ", err)
+		}
+		defer f.Close() // error handling omitted for example
+		//runtime.GC() // get up-to-date statistics
+		if err := pprof.WriteHeapProfile(f); err != nil {
+			log.Fatal("could not write memory profile: ", err)
+		}
+	}
 }

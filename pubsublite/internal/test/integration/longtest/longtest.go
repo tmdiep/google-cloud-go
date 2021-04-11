@@ -59,6 +59,7 @@ var (
 	sleepPeriod    = flag.Duration("sleep", time.Minute, "the duration to sleep between cycles")
 	waitTimeout    = flag.Duration("timeout", 5*time.Minute, "timeout for receiving all messages per cycle")
 	verbose        = flag.Bool("verbose", true, "whether to log verbose messages")
+	duplicates     = flag.Bool("duplicates", false, "whether to detect duplicates")
 )
 
 const maxPrintMsgLen = 70
@@ -122,9 +123,12 @@ func (s *subscriber) onReceive(ctx context.Context, msg *pubsub.Message) {
 	if err := s.OrderingValidator.Receive(data, fmt.Sprintf("%d", metadata.Partition)); err != nil {
 		log.Fatalf("Ordering failed: %s: %v", s.Subscription, err)
 	}
-	s.DuplicateDetector.Receive(data, metadata.Offset)
-	if s.DuplicateDetector.HasReceiveDuplicates() {
-		log.Fatalf("Detected duplicates: %s: %s", s.Subscription, s.DuplicateDetector.Status())
+	if *duplicates {
+		// Note: This causes OOMs when the test runs too long.
+		s.DuplicateDetector.Receive(data, metadata.Offset)
+		if s.DuplicateDetector.HasReceiveDuplicates() {
+			log.Fatalf("Detected duplicates: %s: %s", s.Subscription, s.DuplicateDetector.Status())
+		}
 	}
 }
 
@@ -214,9 +218,12 @@ func main() {
 				mu.Unlock()
 				log.Fatalf("%s: failed waiting for messages: %v", sub.Subscription, err)
 			}
-			duplicates := sub.DuplicateDetector.Status()
-			if len(duplicates) > 0 {
-				log.Printf("%s: %s", sub.Subscription, duplicates)
+
+			if *duplicates {
+				dup := sub.DuplicateDetector.Status()
+				if len(dup) > 0 {
+					log.Printf("%s: %s", sub.Subscription, dup)
+				}
 			}
 		}
 
@@ -228,6 +235,8 @@ func main() {
 		now := time.Now()
 		log.Printf("*** Cycle elapsed: %v, cycle messages: %d, total elapsed: %v, total messages: %d ****",
 			now.Sub(cycleStart), cycleMsgCount, now.Sub(start), orderingSender.TotalMsgCount)
+
+		harness.WriteMemProfile()
 
 		if *sleepPeriod > 0 {
 			time.Sleep(*sleepPeriod)
