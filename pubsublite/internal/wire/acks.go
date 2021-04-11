@@ -16,6 +16,7 @@ package wire
 import (
 	"container/list"
 	"fmt"
+	"log"
 	"sync"
 )
 
@@ -42,6 +43,10 @@ type ackConsumer struct {
 	mu    sync.Mutex
 	acked bool
 	onAck ackedFunc
+}
+
+func (ac *ackConsumer) LogState() {
+	log.Printf("    offset=%d, acked=%v", ac.Offset, ac.acked)
 }
 
 func newAckConsumer(offset, msgBytes int64, onAck ackedFunc) *ackConsumer {
@@ -93,6 +98,14 @@ type ackTracker struct {
 	outstandingAcks *list.List // Value = *ackConsumer
 	// Whether new acks can be pushed.
 	enablePush bool
+}
+
+func (at *ackTracker) LogState() {
+	log.Printf("  ackTracker: ackedPrefixOffset=%v", at.ackedPrefixOffset)
+	for elem := at.outstandingAcks.Front(); elem != nil; elem = elem.Next() {
+		ack, _ := elem.Value.(*ackConsumer)
+		ack.LogState()
+	}
 }
 
 func newAckTracker() *ackTracker {
@@ -195,6 +208,10 @@ type commitCursorTracker struct {
 	lastConfirmedOffset int64
 	// Queue of committed offsets awaiting confirmation from the server.
 	pendingOffsets *list.List // Value = int64
+}
+
+func (ct *commitCursorTracker) LogState() {
+	log.Printf("  commitCursorTracker: lastConfirmedOffset=%v, pendingOffsets.len=%d", ct.lastConfirmedOffset, ct.pendingOffsets.Len())
 }
 
 func newCommitCursorTracker(acks *ackTracker) *commitCursorTracker {

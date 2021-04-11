@@ -42,6 +42,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/pubsub"
@@ -127,10 +128,8 @@ func (s *subscriber) onReceive(ctx context.Context, msg *pubsub.Message) {
 	}
 }
 
-func (s *subscriber) Wait() {
-	if err := s.MsgTracker.Wait(*waitTimeout); err != nil {
-		log.Fatalf("%s: failed waiting for messages: %v", s.Subscription, err)
-	}
+func (s *subscriber) Wait() ([]string, error) {
+	return s.MsgTracker.Wait(*waitTimeout)
 }
 
 func main() {
@@ -179,6 +178,8 @@ func main() {
 
 		// Now publish.
 		g := new(errgroup.Group)
+		var mu sync.Mutex
+		msgMap := make(map[string]string)
 		for _, tp := range toPublish {
 			msg := tp // Ensure msg is bound to loop element.
 			result := publisher.Publish(ctx, msg)
@@ -192,13 +193,27 @@ func main() {
 				if *verbose && err == nil {
 					log.Printf("Published: (id=%s) %s", id, string(msg.Data))
 				}
+				mu.Lock()
+				msgMap[string(msg.Data)] = id
+				mu.Unlock()
 				return err
 			})
 		}
 
 		// Wait for all subscribers to receive all messages for the cycle.
 		for _, sub := range subscribers {
-			sub.Wait()
+			if msgs, err := sub.Wait(); err != nil {
+				log.Println("BEGIN DUMP STATE")
+				publisher.LogState()
+				sub.Sub.LogState()
+				log.Println("END DUMP STATE")
+				mu.Lock()
+				for _, msg := range msgs {
+					log.Printf("%s | %s", msg, msgMap[msg])
+				}
+				mu.Unlock()
+				log.Fatalf("%s: failed waiting for messages: %v", sub.Subscription, err)
+			}
 			duplicates := sub.DuplicateDetector.Status()
 			if len(duplicates) > 0 {
 				log.Printf("%s: %s", sub.Subscription, duplicates)

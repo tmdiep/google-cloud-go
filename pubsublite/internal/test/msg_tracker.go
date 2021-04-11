@@ -70,26 +70,30 @@ func (mt *MsgTracker) Remove(msg string) bool {
 }
 
 // Wait up to `timeout` to receive all tracked messages.
-func (mt *MsgTracker) Wait(timeout time.Duration) error {
+func (mt *MsgTracker) Wait(timeout time.Duration) ([]string, error) {
 	mt.mu.Lock()
 	totalCount := len(mt.msgMap)
 	mt.mu.Unlock()
 
 	if totalCount == 0 {
-		return nil
+		return nil, nil
 	}
 
 	select {
 	case <-time.After(timeout):
 		mt.mu.Lock()
 		receivedCount := totalCount - len(mt.msgMap)
+		var remaining []string
+		for k, _ := range mt.msgMap {
+			remaining = append(remaining, k)
+		}
 		err := fmt.Errorf("received %d of %d messages", receivedCount, totalCount)
 		mt.msgMap = make(map[string]bool)
 		mt.mu.Unlock()
-		return err
+		return remaining, err
 
 	case <-mt.done:
-		return nil
+		return nil, nil
 	}
 }
 

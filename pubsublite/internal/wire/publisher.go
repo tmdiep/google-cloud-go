@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"reflect"
 	"time"
@@ -71,6 +72,11 @@ type singlePartitionPublisherFactory struct {
 	pubClient *vkit.PublisherClient
 	settings  PublishSettings
 	topicPath string
+}
+
+func (pp *singlePartitionPublisher) LogState() {
+	log.Printf("singlePartitionPublisher(%s): stream.status=%d", pp.topic, pp.stream.status)
+	pp.batcher.LogState()
 }
 
 func (f *singlePartitionPublisherFactory) New(partition int) *singlePartitionPublisher {
@@ -292,6 +298,12 @@ type routingPublisher struct {
 	compositeService
 }
 
+func (rp *routingPublisher) LogState() {
+	for _, p := range rp.publishers {
+		p.LogState()
+	}
+}
+
 func newRoutingPublisher(allClients apiClients, adminClient *vkit.AdminClient, msgRouterFactory *messageRouterFactory, pubFactory *singlePartitionPublisherFactory) *routingPublisher {
 
 	pub := &routingPublisher{
@@ -378,6 +390,7 @@ type Publisher interface {
 	Stop()
 	WaitStopped() error
 	Error() error
+	LogState()
 }
 
 // NewPublisher creates a new client for publishing messages.

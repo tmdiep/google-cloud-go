@@ -240,6 +240,7 @@ type MessageReceiverFunc func(context.Context, *pubsub.Message)
 type SubscriberClient struct {
 	settings       ReceiveSettings
 	wireSubFactory wireSubscriberFactory
+	instance       *subscriberInstance
 
 	// Fields below must be guarded with mu.
 	mu            sync.Mutex
@@ -280,6 +281,12 @@ func NewSubscriberClientWithSettings(ctx context.Context, subscription string, s
 	return subClient, nil
 }
 
+func (s *SubscriberClient) LogState() {
+	if s.instance != nil {
+		s.instance.wireSub.LogState()
+	}
+}
+
 // Receive calls f with the messages from the subscription. It blocks until ctx
 // is done, or the service returns a non-retryable error.
 //
@@ -317,6 +324,7 @@ func (s *SubscriberClient) Receive(ctx context.Context, f MessageReceiverFunc) e
 
 	// Wait for the subscriber without mutex held. Overlapping Receive invocations
 	// will return an error.
+	s.instance = subInstance
 	return subInstance.Wait(ctx)
 }
 

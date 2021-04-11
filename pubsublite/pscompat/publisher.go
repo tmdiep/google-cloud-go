@@ -61,6 +61,10 @@ type PublisherClient struct {
 	err error
 }
 
+func (p *PublisherClient) LogState() {
+	p.wirePub.LogState()
+}
+
 // NewPublisherClient creates a new Pub/Sub Lite publisher client to publish
 // messages to a given topic, using DefaultPublishSettings. A valid topic path
 // has the format: "projects/PROJECT_ID/locations/ZONE/topics/TOPIC_ID".

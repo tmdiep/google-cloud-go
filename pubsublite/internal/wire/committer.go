@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"time"
 
@@ -54,6 +55,12 @@ type committer struct {
 	enableCommits bool
 
 	abstractService
+}
+
+func (c *committer) LogState() {
+	log.Printf("committer(%s): stream.status=%d", c.subscription, c.stream.status)
+	c.acks.LogState()
+	c.cursorTracker.LogState()
 }
 
 func newCommitter(ctx context.Context, cursor *vkit.CursorClient, settings ReceiveSettings,

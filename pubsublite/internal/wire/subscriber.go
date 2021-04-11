@@ -16,6 +16,7 @@ package wire
 import (
 	"context"
 	"errors"
+	"log"
 	"reflect"
 	"time"
 
@@ -131,6 +132,12 @@ type subscribeStream struct {
 	seekInFlight    bool
 
 	abstractService
+}
+
+func (s *subscribeStream) LogState() {
+	log.Printf("subscribeStream(%s): stream.status=%d", s.subscription, s.stream.status)
+	s.offsetTracker.LogState()
+	s.flowControl.LogState()
 }
 
 func newSubscribeStream(ctx context.Context, subClient *vkit.SubscriberClient, settings ReceiveSettings,
@@ -346,6 +353,11 @@ type singlePartitionSubscriber struct {
 	compositeService
 }
 
+func (s *singlePartitionSubscriber) LogState() {
+	s.subscriber.LogState()
+	s.committer.LogState()
+}
+
 // Terminate shuts down the singlePartitionSubscriber without waiting for
 // outstanding acks. Alternatively, Stop() will wait for outstanding acks.
 func (s *singlePartitionSubscriber) Terminate() {
@@ -385,6 +397,12 @@ type multiPartitionSubscriber struct {
 	subscribers []*singlePartitionSubscriber
 
 	compositeService
+}
+
+func (ms *multiPartitionSubscriber) LogState() {
+	for _, s := range ms.subscribers {
+		s.LogState()
+	}
 }
 
 func newMultiPartitionSubscriber(allClients apiClients, subFactory *singlePartitionSubscriberFactory) *multiPartitionSubscriber {
@@ -432,6 +450,12 @@ type assigningSubscriber struct {
 	subscribers map[int]*singlePartitionSubscriber
 
 	compositeService
+}
+
+func (as *assigningSubscriber) LogState() {
+	for _, v := range as.subscribers {
+		v.LogState()
+	}
 }
 
 func newAssigningSubscriber(allClients apiClients, assignmentClient *vkit.PartitionAssignmentClient, genUUID generateUUIDFunc, subFactory *singlePartitionSubscriberFactory) (*assigningSubscriber, error) {
@@ -508,6 +532,7 @@ type Subscriber interface {
 	Stop()
 	WaitStopped() error
 	Terminate()
+	LogState()
 }
 
 // NewSubscriber creates a new client for receiving messages.

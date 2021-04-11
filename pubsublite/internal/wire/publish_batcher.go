@@ -17,6 +17,7 @@ import (
 	"container/list"
 	"errors"
 	"fmt"
+	"log"
 
 	"golang.org/x/xerrors"
 	"google.golang.org/api/support/bundler"
@@ -74,6 +75,10 @@ type publishMessageBatcher struct {
 	// The available buffer size is managed by this batcher rather than the
 	// Bundler due to the in-flight publish queue.
 	availableBufferBytes int
+}
+
+func (b *publishMessageBatcher) LogState() {
+	log.Printf("  publishMessageBatcher: publishQueue.len=%d, minExpectedNextOffset=%v, availableBufferBytes=%d", b.publishQueue.Len(), b.minExpectedNextOffset, b.availableBufferBytes)
 }
 
 func newPublishMessageBatcher(settings *PublishSettings, partition int, onNewBatch func(*publishBatch)) *publishMessageBatcher {

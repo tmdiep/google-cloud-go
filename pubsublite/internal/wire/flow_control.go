@@ -16,6 +16,7 @@ package wire
 import (
 	"errors"
 	"fmt"
+	"log"
 	"math"
 
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
@@ -37,6 +38,10 @@ type flowControlTokens struct {
 type tokenCounter struct {
 	Bytes    int64
 	Messages int64
+}
+
+func (tc *tokenCounter) String() string {
+	return fmt.Sprintf("messages=%v, bytes=%v", tc.Messages, tc.Bytes)
 }
 
 func saturatedAdd(sum, delta int64) int64 {
@@ -87,6 +92,10 @@ type flowControlBatcher struct {
 	clientTokens tokenCounter
 	// The pending batch flow control request that needs to be sent to the stream.
 	pendingTokens tokenCounter
+}
+
+func (fc *flowControlBatcher) LogState() {
+	log.Printf("  flowControlBatcher: clientTokens: %s | pendingTokens: %s", fc.clientTokens.String(), fc.pendingTokens.String())
 }
 
 const expediteBatchRequestRatio = 0.5
@@ -145,6 +154,10 @@ func (fc *flowControlBatcher) ShouldExpediteBatchRequest() bool {
 // received from the server. It is only accessed by the subscribeStream.
 type subscriberOffsetTracker struct {
 	minNextOffset int64
+}
+
+func (ot *subscriberOffsetTracker) LogState() {
+	log.Printf("  subscriberOffsetTracker: minNextOffset=%v", ot.minNextOffset)
 }
 
 // RequestForRestart returns the seek request to send when a new subscribe
