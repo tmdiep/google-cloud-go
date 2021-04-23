@@ -59,6 +59,7 @@ type committer struct {
 
 func (c *committer) LogState() {
 	log.Printf("committer(%s): stream.status=%d", c.subscription, c.stream.status)
+	c.stream.LogState()
 	c.acks.LogState()
 	c.cursorTracker.LogState()
 }

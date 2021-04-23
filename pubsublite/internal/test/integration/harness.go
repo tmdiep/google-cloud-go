@@ -118,9 +118,9 @@ func (th *TestHarness) init() {
 
 	th.PublishSettings = pscompat.DefaultPublishSettings
 	th.PublishSettings.CountThreshold = *publishBatchSize
-	th.PublishSettings.Timeout = 20 * time.Minute
+	th.PublishSettings.Timeout = 5 * time.Minute
 	th.ReceiveSettings = pscompat.DefaultReceiveSettings
-	th.ReceiveSettings.Timeout = 20 * time.Minute
+	th.ReceiveSettings.Timeout = 5 * time.Minute
 	th.EnableAssignment = *enableAssignment
 	/*
 		if *enableLogging {

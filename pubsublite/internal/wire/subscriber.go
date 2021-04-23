@@ -136,6 +136,7 @@ type subscribeStream struct {
 
 func (s *subscribeStream) LogState() {
 	log.Printf("subscribeStream(%s): stream.status=%d", s.subscription, s.stream.status)
+	s.stream.LogState()
 	s.offsetTracker.LogState()
 	s.flowControl.LogState()
 }

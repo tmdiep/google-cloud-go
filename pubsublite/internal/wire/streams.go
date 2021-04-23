@@ -109,9 +109,32 @@ type retryableStream struct {
 	// The current connected stream.
 	stream grpc.ClientStream
 	// Function to cancel the current stream (which may be reconnecting).
-	cancelStream context.CancelFunc
-	status       streamStatus
-	finalErr     error
+	cancelStream      context.CancelFunc
+	status            streamStatus
+	finalErr          error
+	lastRecvErr       error
+	lastRecvTime      time.Time
+	lastSendErr       error
+	lastSendTime      time.Time
+	lastReconnectTime time.Time
+	lastNewStreamTime time.Time
+	initStatus        string
+}
+
+func (rs *retryableStream) LogState() {
+	now := time.Now()
+	warning := ""
+	if now.Sub(rs.lastReconnectTime) > 6*time.Minute {
+		warning = "[OVERDUE] "
+	}
+	log.Printf(" %slastInitStatus=%s | lastReconnect=%v,lastNewStream=%v | lastRecv=%v,err=%v | lastSend=%v,err=%v",
+		warning, rs.initStatus,
+		now.Sub(rs.lastReconnectTime),
+		now.Sub(rs.lastNewStreamTime),
+		now.Sub(rs.lastRecvTime),
+		rs.lastRecvErr,
+		now.Sub(rs.lastSendTime),
+		rs.lastSendErr)
 }
 
 // newRetryableStream creates a new retryable stream wrapper. `timeout` is the
@@ -153,6 +176,9 @@ func (rs *retryableStream) Send(request interface{}) (sent bool) {
 	if rs.stream != nil {
 		initReq, _ := rs.handler.initialRequest()
 		err := rs.stream.SendMsg(request)
+		rs.lastSendTime = time.Now()
+		rs.lastSendErr = err
+		rs.initStatus = "sent msg"
 		// Note: if SendMsg returns an error, the stream is aborted.
 		switch {
 		case err == nil:
@@ -281,6 +307,8 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 	r := newStreamRetryer(rs.timeout)
 	var initStatusMu sync.Mutex
 	attempt := 0
+	rs.lastReconnectTime = time.Now()
+	rs.initStatus = "begin initNewStream"
 
 	for {
 		attempt++
@@ -296,14 +324,14 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 			// Bounds the duration of the stream initialization attempt - from stream
 			// creation to the initial response.
 			status := initInProgress
-			statusMsg := ""
-			initTimer := time.AfterFunc(20*time.Minute, func() {
+			initTimer := time.AfterFunc(2*time.Minute, func() {
 				initStatusMu.Lock()
 				defer initStatusMu.Unlock()
 				if status == initInProgress {
-					log.Printf("*** Init timer fired, checkpoint=%q, req=%T, %v", statusMsg, initReq, initReq)
-					//status = initCanceled
-					//cancelFunc()
+					rs.LogState()
+					status = initCanceled
+					cancelFunc()
+					log.Fatalf("*** Init timer fired, checkpoint=%q, req=%T, %v", rs.initStatus, initReq, initReq)
 				}
 			})
 			defer initTimer.Stop()
@@ -320,36 +348,43 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 				return err
 			}
 
+			rs.lastNewStreamTime = time.Now()
+			rs.initStatus = "before newStream"
 			newStream, err = rs.handler.newStream(cctx)
 			if err != nil {
 				err = resolveError(err)
 				return r.RetryRecv(err)
 			}
-			initStatusMu.Lock()
-			statusMsg = "stream created"
-			initStatusMu.Unlock()
+			rs.initStatus = "stream created"
+
 			initReq, needsResponse := rs.handler.initialRequest()
-			if err = newStream.SendMsg(initReq); err != nil {
+			err = newStream.SendMsg(initReq)
+			rs.lastSendTime = time.Now()
+			rs.lastSendErr = err
+			if err != nil {
 				err = resolveError(err)
 				return r.RetrySend(err)
 			}
-			initStatusMu.Lock()
-			statusMsg = "sent initial request"
-			initStatusMu.Unlock()
+			rs.initStatus = "sent initial request"
+
 			if needsResponse {
+				rs.initStatus = "receiving initial response"
 				response := reflect.New(rs.responseType).Interface()
-				if err = newStream.RecvMsg(response); err != nil {
+				err = newStream.RecvMsg(response)
+				rs.lastRecvTime = time.Now()
+				rs.lastRecvErr = err
+				if err != nil {
 					err = resolveError(err)
 					return r.RetryRecv(err)
 				}
-				initStatusMu.Lock()
-				statusMsg = "received initial response"
-				initStatusMu.Unlock()
+				rs.initStatus = "received initial response"
+
 				if err = rs.handler.validateInitialResponse(response); err != nil {
 					// An unexpected initial response from the server is a permanent error.
 					cancelFunc()
 					return 0, false
 				}
+				rs.initStatus = "validated initial response"
 			}
 
 			initStatusMu.Lock()
@@ -362,6 +397,7 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 			}
 			// We have a valid connection and should break from the outer loop.
 			status = initSuccess
+			rs.initStatus = "init success"
 			return 0, false
 		}()
 
@@ -404,6 +440,9 @@ func (rs *retryableStream) listen(recvStream grpc.ClientStream) {
 	for {
 		response := reflect.New(rs.responseType).Interface()
 		err := recvStream.RecvMsg(response)
+		rs.lastRecvTime = time.Now()
+		rs.lastRecvErr = err
+		rs.initStatus = "recv msg"
 
 		// If the current stream has changed while listening, any errors or messages
 		// received now are obsolete. Discard and end the goroutine. Assume the

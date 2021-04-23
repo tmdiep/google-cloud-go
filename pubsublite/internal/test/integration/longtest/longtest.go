@@ -93,6 +93,9 @@ func newSubscriber(harness *integration.TestHarness, subscription wire.Subscript
 	go func() {
 		log.Printf("Subscriber %s listening to messages...", subscription)
 		err := sub.Receive(context.Background(), s.onReceive)
+		log.Println("BEGIN DUMP STATE")
+		sub.LogState()
+		log.Println("END DUMP STATE")
 		log.Fatalf("%s: stopped with error: %v", subscription, err)
 	}()
 
@@ -136,10 +139,16 @@ func (s *subscriber) Wait() ([]string, error) {
 	return s.MsgTracker.Wait(*waitTimeout)
 }
 
+type ElapsedCounter struct {
+	Threshold time.Duration
+	Count     int64
+}
+
 func main() {
 	ctx := context.Background()
 	harness := integration.NewTestHarness()
 	start := time.Now()
+	cycleCount := 0
 
 	// Setup subscribers.
 	var subscribers []*subscriber
@@ -154,10 +163,20 @@ func main() {
 	log.Printf("Starting test...")
 	msgPrefix := fmt.Sprintf("longtest-%d", start.Unix())
 	orderingSender := test.NewOrderingSender()
-	cycleMsgCount := *messageCount * harness.TopicPartitionCount
 	padding := *messagePadding / *messageCount
+	counters := []*ElapsedCounter{
+		{2 * time.Second, 0},
+		{5 * time.Second, 0},
+		{10 * time.Second, 0},
+		{30 * time.Second, 0},
+		{time.Minute, 0},
+		{2 * time.Minute, 0},
+		{5 * time.Minute, 0},
+		{10 * time.Minute, 0},
+	}
 
 	for {
+		cycleCount++
 		cycleStart := time.Now()
 		var toPublish []*pubsub.Message
 		var trackedMsgs []string
@@ -211,11 +230,15 @@ func main() {
 				publisher.LogState()
 				sub.Sub.LogState()
 				log.Println("END DUMP STATE")
+
 				mu.Lock()
+				log.Println("BEGIN OUTSTANDING MESSAGES")
 				for _, msg := range msgs {
 					log.Printf("%s | %s", msg, msgMap[msg])
 				}
+				log.Println("END OUTSTANDING MESSAGES")
 				mu.Unlock()
+
 				log.Fatalf("%s: failed waiting for messages: %v", sub.Subscription, err)
 			}
 
@@ -233,8 +256,21 @@ func main() {
 		}
 
 		now := time.Now()
-		log.Printf("*** Cycle elapsed: %v, cycle messages: %d, total elapsed: %v, total messages: %d ****",
-			now.Sub(cycleStart), cycleMsgCount, now.Sub(start), orderingSender.TotalMsgCount)
+		cycleElapsed := now.Sub(cycleStart)
+		var statuses []string
+		counterPrefix := ""
+		for _, counter := range counters {
+			if cycleCount > 1 && cycleElapsed > counter.Threshold {
+				counter.Count++
+			}
+			statuses = append(statuses, fmt.Sprintf(">%v=%d", counter.Threshold, counter.Count))
+			if counter.Count > 0 {
+				counterPrefix = "! "
+			}
+		}
+		log.Printf("*** Cycle elapsed: %v, total elapsed: %v, total messages: %d ****",
+			cycleElapsed, now.Sub(start), orderingSender.TotalMsgCount)
+		log.Printf("    %scycles=%d, %s", counterPrefix, cycleCount, strings.Join(statuses, ", "))
 
 		harness.WriteMemProfile()
 

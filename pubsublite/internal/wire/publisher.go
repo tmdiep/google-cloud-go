@@ -76,6 +76,7 @@ type singlePartitionPublisherFactory struct {
 
 func (pp *singlePartitionPublisher) LogState() {
 	log.Printf("singlePartitionPublisher(%s): stream.status=%d", pp.topic, pp.stream.status)
+	pp.stream.LogState()
 	pp.batcher.LogState()
 }
 
