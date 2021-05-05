@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 
 	"cloud.google.com/go/internal/gapicgen/execv"
+	"cloud.google.com/go/internal/gapicgen/git"
 )
 
 // Config contains inputs needed to generate sources.
@@ -37,22 +38,23 @@ type Config struct {
 	GapicToGenerate   string
 	OnlyGenerateGapic bool
 	LocalMode         bool
+	RegenOnly         bool
 }
 
 // Generate generates genproto and gapics.
-func Generate(ctx context.Context, conf *Config) ([]*ChangeInfo, error) {
+func Generate(ctx context.Context, conf *Config) ([]*git.ChangeInfo, error) {
 	if !conf.OnlyGenerateGapic {
-		protoGenerator := NewGenprotoGenerator(conf.GenprotoDir, conf.GoogleapisDir, conf.ProtoDir)
+		protoGenerator := NewGenprotoGenerator(conf)
 		if err := protoGenerator.Regen(ctx); err != nil {
 			return nil, fmt.Errorf("error generating genproto (may need to check logs for more errors): %v", err)
 		}
 	}
-	gapicGenerator := NewGapicGenerator(conf.GoogleapisDir, conf.ProtoDir, conf.GapicDir, conf.GenprotoDir, conf.GapicToGenerate)
+	gapicGenerator := NewGapicGenerator(conf)
 	if err := gapicGenerator.Regen(ctx); err != nil {
 		return nil, fmt.Errorf("error generating gapics (may need to check logs for more errors): %v", err)
 	}
 
-	var changes []*ChangeInfo
+	var changes []*git.ChangeInfo
 	if !conf.LocalMode {
 		var err error
 		changes, err = gatherChanges(conf.GoogleapisDir, conf.GenprotoDir)
@@ -67,17 +69,21 @@ func Generate(ctx context.Context, conf *Config) ([]*ChangeInfo, error) {
 	return changes, nil
 }
 
-func gatherChanges(googleapisDir, genprotoDir string) ([]*ChangeInfo, error) {
+func gatherChanges(googleapisDir, genprotoDir string) ([]*git.ChangeInfo, error) {
 	// Get the last processed googleapis hash.
 	lastHash, err := ioutil.ReadFile(filepath.Join(genprotoDir, "regen.txt"))
 	if err != nil {
 		return nil, err
 	}
-	commits, err := CommitsSinceHash(googleapisDir, string(lastHash), false)
+	commits, err := git.CommitsSinceHash(googleapisDir, string(lastHash), false)
 	if err != nil {
 		return nil, err
 	}
-	changes, err := ParseChangeInfo(googleapisDir, commits)
+	gapicPkgs := make(map[string]string)
+	for _, v := range microgenGapicConfigs {
+		gapicPkgs[v.inputDirectoryPath] = git.ParseConventionalCommitPkg(v.importPath)
+	}
+	changes, err := git.ParseChangeInfo(googleapisDir, commits, gapicPkgs)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +94,7 @@ func gatherChanges(googleapisDir, genprotoDir string) ([]*ChangeInfo, error) {
 // recordGoogleapisHash parses the latest commit in googleapis and records it to
 // regen.txt in go-genproto.
 func recordGoogleapisHash(googleapisDir, genprotoDir string) error {
-	commits, err := CommitsSinceHash(googleapisDir, "HEAD", true)
+	commits, err := git.CommitsSinceHash(googleapisDir, "HEAD", true)
 	if err != nil {
 		return err
 	}
