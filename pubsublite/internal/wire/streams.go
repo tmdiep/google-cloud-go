@@ -102,6 +102,7 @@ type retryableStream struct {
 	responseType      reflect.Type
 	timeout           time.Duration
 	streamInitTimeout time.Duration
+	initReq           interface{}
 
 	// Guards access to fields below.
 	mu sync.Mutex
@@ -141,12 +142,14 @@ func (rs *retryableStream) LogState() {
 // maximum duration for reconnection. `responseType` is the type of the response
 // proto received on the stream.
 func newRetryableStream(ctx context.Context, handler streamHandler, timeout time.Duration, responseType reflect.Type) *retryableStream {
+	initReq, _ := handler.initialRequest()
 	return &retryableStream{
 		ctx:               ctx,
 		handler:           handler,
 		responseType:      responseType,
 		timeout:           timeout,
 		streamInitTimeout: defaultStreamInitTimeout,
+		initReq:           initReq,
 	}
 }
 
@@ -174,7 +177,6 @@ func (rs *retryableStream) Send(request interface{}) (sent bool) {
 	defer rs.mu.Unlock()
 
 	if rs.stream != nil {
-		initReq, _ := rs.handler.initialRequest()
 		err := rs.stream.SendMsg(request)
 		rs.lastSendTime = time.Now()
 		rs.lastSendErr = err
@@ -186,13 +188,13 @@ func (rs *retryableStream) Send(request interface{}) (sent bool) {
 		case err == io.EOF:
 			// If SendMsg returns io.EOF, RecvMsg will return the status of the
 			// stream. Nothing to do here.
-			log.Printf("SendIOF: [%T] %v", initReq, initReq)
+			log.Printf("SendIOF: [%T] %v", rs.initReq, rs.initReq)
 			break
 		case isRetryableSendError(err):
-			log.Printf("SendRetryable: [%T] %v", initReq, initReq)
+			log.Printf("SendRetryable: [%T] %v", rs.initReq, rs.initReq)
 			go rs.connectStream()
 		default:
-			log.Printf("SendFatalError: [%T] %v", initReq, initReq)
+			log.Printf("SendFatalError: [%T] %v", rs.initReq, rs.initReq)
 			rs.unsafeTerminate(err)
 		}
 	}
@@ -303,7 +305,6 @@ const (
 )
 
 func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelFunc context.CancelFunc, err error) {
-	initReq, _ := rs.handler.initialRequest()
 	r := newStreamRetryer(rs.timeout)
 	var initStatusMu sync.Mutex
 	attempt := 0
@@ -312,7 +313,7 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 
 	for {
 		attempt++
-		log.Printf("ConnectStart(%d): [%T] %v", attempt, initReq, initReq)
+		log.Printf("ConnectStart(%d): [%T] %v", attempt, rs.initReq, rs.initReq)
 
 		backoff, shouldRetry := func() (time.Duration, bool) {
 			var cctx context.Context
@@ -331,7 +332,7 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 					rs.LogState()
 					status = initCanceled
 					cancelFunc()
-					log.Fatalf("*** Init timer fired, checkpoint=%q, req=%T, %v", rs.initStatus, initReq, initReq)
+					log.Fatalf("*** Init timer fired, checkpoint=%q, req=%T, %v", rs.initStatus, rs.initReq, rs.initReq)
 				}
 			})
 			defer initTimer.Stop()
@@ -351,40 +352,42 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 			rs.lastNewStreamTime = time.Now()
 			rs.initStatus = "before newStream"
 			newStream, err = rs.handler.newStream(cctx)
+			rs.initStatus = "stream created"
 			if err != nil {
 				err = resolveError(err)
 				return r.RetryRecv(err)
 			}
-			rs.initStatus = "stream created"
 
 			initReq, needsResponse := rs.handler.initialRequest()
 			err = newStream.SendMsg(initReq)
+			rs.initStatus = "sent initial request"
+			rs.initReq = initReq
 			rs.lastSendTime = time.Now()
 			rs.lastSendErr = err
 			if err != nil {
 				err = resolveError(err)
 				return r.RetrySend(err)
 			}
-			rs.initStatus = "sent initial request"
 
 			if needsResponse {
 				rs.initStatus = "receiving initial response"
 				response := reflect.New(rs.responseType).Interface()
 				err = newStream.RecvMsg(response)
+				rs.initStatus = "received initial response"
 				rs.lastRecvTime = time.Now()
 				rs.lastRecvErr = err
 				if err != nil {
 					err = resolveError(err)
 					return r.RetryRecv(err)
 				}
-				rs.initStatus = "received initial response"
 
-				if err = rs.handler.validateInitialResponse(response); err != nil {
+				err = rs.handler.validateInitialResponse(response)
+				rs.initStatus = "validated initial response"
+				if err != nil {
 					// An unexpected initial response from the server is a permanent error.
 					cancelFunc()
 					return 0, false
 				}
-				rs.initStatus = "validated initial response"
 			}
 
 			initStatusMu.Lock()
@@ -409,24 +412,24 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 		}
 		if !shouldRetry || rs.Status() == streamTerminated {
 			if err != nil {
-				log.Printf("ConnectFatalError(%d): [%T] %v: %v", attempt, initReq, initReq, err)
+				log.Printf("ConnectFatalError(%d): [%T] %v: %v", attempt, rs.initReq, rs.initReq, err)
 			}
 			if rs.Status() == streamTerminated {
-				log.Printf("ConnectStreamTerminated(%d): [%T] %v: %v", attempt, initReq, initReq)
+				log.Printf("ConnectStreamTerminated(%d): [%T] %v: %v", attempt, rs.initReq, rs.initReq)
 			}
 			if newStream != nil {
-				log.Printf("Connected(%d): [%T] %v", attempt, initReq, initReq)
+				log.Printf("Connected(%d): [%T] %v", attempt, rs.initReq, rs.initReq)
 			}
 			break
 		}
-		log.Printf("ConnectRetryable(%d): [%T] %v: %v", attempt, initReq, initReq, err)
+		log.Printf("ConnectRetryable(%d): [%T] %v: %v", attempt, rs.initReq, rs.initReq, err)
 		if r.ExceededDeadline() {
-			log.Printf("ConnectTimedOut(%d): [%T] %v", attempt, initReq, initReq)
+			log.Printf("ConnectTimedOut(%d): [%T] %v", attempt, rs.initReq, rs.initReq)
 			err = xerrors.Errorf("%v: %w", err, ErrBackendUnavailable)
 			break
 		}
 		if err = gax.Sleep(rs.ctx, backoff); err != nil {
-			log.Printf("ConnectGaxSleep(%d): [%T] %v: %v", attempt, initReq, initReq, err)
+			log.Printf("ConnectGaxSleep(%d): [%T] %v: %v", attempt, rs.initReq, rs.initReq, err)
 			break
 		}
 	}
@@ -436,7 +439,6 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 // listen receives responses from the current stream. It initiates reconnection
 // upon retryable errors or terminates the stream upon permanent error.
 func (rs *retryableStream) listen(recvStream grpc.ClientStream) {
-	initReq, _ := rs.handler.initialRequest()
 	for {
 		response := reflect.New(rs.responseType).Interface()
 		err := recvStream.RecvMsg(response)
@@ -448,15 +450,15 @@ func (rs *retryableStream) listen(recvStream grpc.ClientStream) {
 		// received now are obsolete. Discard and end the goroutine. Assume the
 		// stream has been cancelled elsewhere.
 		if rs.currentStream() != recvStream {
-			log.Printf("RecvObsolete: [%T] %v: %v", initReq, initReq, err)
+			log.Printf("RecvObsolete: [%T] %v: %v", rs.initReq, rs.initReq, err)
 			break
 		}
 		if err != nil {
 			if isRetryableRecvError(err) {
-				log.Printf("RecvRetryable: [%T] %v: %v", initReq, initReq, err)
+				log.Printf("RecvRetryable: [%T] %v: %v", rs.initReq, rs.initReq, err)
 				go rs.connectStream()
 			} else {
-				log.Printf("RecvFatal: [%T] %v: %v", initReq, initReq, err)
+				log.Printf("RecvFatal: [%T] %v: %v", rs.initReq, rs.initReq, err)
 				rs.terminate(err)
 			}
 			break

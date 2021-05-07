@@ -108,9 +108,9 @@ func (s *subscriber) onReceive(ctx context.Context, msg *pubsub.Message) {
 	data := string(msg.Data)
 	if !s.MsgTracker.Remove(data) {
 		// Ignore messages from a previous test run.
-		if *verbose {
-			log.Printf("Ignoring %s", truncateMsg(data))
-		}
+		//if *verbose {
+		log.Printf("### Ignoring %s: %s", msg.ID, truncateMsg(data))
+		//}
 		return
 	}
 
