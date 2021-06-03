@@ -19,8 +19,8 @@ import (
 
 	"cloud.google.com/go/internal/testutil"
 	"cloud.google.com/go/pubsublite/internal/test"
+	"github.com/golang/protobuf/proto"
 	"github.com/google/go-cmp/cmp"
-	"google.golang.org/protobuf/proto"
 
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
 )
@@ -222,11 +222,33 @@ func TestFlowControlBatcher(t *testing.T) {
 	})
 }
 
-func TestOffsetTrackerCursorForRestart(t *testing.T) {
+func TestFlowControlBatcherReset(t *testing.T) {
+	var batcher flowControlBatcher
+
+	initialTokens := flowControlTokens{Bytes: 400, Messages: 40}
+	batcher.OnClientFlow(initialTokens)
+	if got, want := batcher.clientTokens.ToFlowControlRequest(), flowControlReq(initialTokens); !proto.Equal(got, want) {
+		t.Errorf("flowControlBatcher.clientTokens.ToFlowControlRequest(): got %v, want %v", got, want)
+	}
+	if got, want := batcher.pendingTokens.ToFlowControlRequest(), flowControlReq(initialTokens); !proto.Equal(got, want) {
+		t.Errorf("flowControlBatcher.pendingTokens.ToFlowControlRequest(): got %v, want %v", got, want)
+	}
+
+	updatedTokens := flowControlTokens{Bytes: 500, Messages: 50}
+	batcher.Reset(updatedTokens)
+	if got, want := batcher.clientTokens.ToFlowControlRequest(), flowControlReq(updatedTokens); !proto.Equal(got, want) {
+		t.Errorf("flowControlBatcher.clientTokens.ToFlowControlRequest(): got %v, want %v", got, want)
+	}
+	if got, want := batcher.pendingTokens.ToFlowControlRequest(), (*pb.FlowControlRequest)(nil); !proto.Equal(got, want) {
+		t.Errorf("flowControlBatcher.pendingTokens.ToFlowControlRequest(): got %v, want %v", got, want)
+	}
+}
+
+func TestOffsetTrackerRequestForRestart(t *testing.T) {
 	for _, tc := range []struct {
 		desc    string
 		tracker subscriberOffsetTracker
-		want    *pb.Cursor
+		want    *pb.SeekRequest
 	}{
 		{
 			desc:    "Uninitialized tracker",
@@ -236,13 +258,17 @@ func TestOffsetTrackerCursorForRestart(t *testing.T) {
 		{
 			desc:    "Next offset positive",
 			tracker: subscriberOffsetTracker{minNextOffset: 1},
-			want:    &pb.Cursor{Offset: 1},
+			want: &pb.SeekRequest{
+				Target: &pb.SeekRequest_Cursor{
+					Cursor: &pb.Cursor{Offset: 1},
+				},
+			},
 		},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
-			got := tc.tracker.CursorForRestart()
+			got := tc.tracker.RequestForRestart()
 			if !proto.Equal(got, tc.want) {
-				t.Errorf("subscriberOffsetTracker(%v).CursorForRestart(): got %v, want %v", tc.tracker, got, tc.want)
+				t.Errorf("subscriberOffsetTracker(%v).RequestForRestart(): got %v, want %v", tc.tracker, got, tc.want)
 			}
 		})
 	}

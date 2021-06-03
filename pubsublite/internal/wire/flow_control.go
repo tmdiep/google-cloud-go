@@ -16,7 +16,6 @@ package wire
 import (
 	"errors"
 	"fmt"
-	"log"
 	"math"
 
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
@@ -38,10 +37,6 @@ type flowControlTokens struct {
 type tokenCounter struct {
 	Bytes    int64
 	Messages int64
-}
-
-func (tc *tokenCounter) String() string {
-	return fmt.Sprintf("messages=%v, bytes=%v", tc.Messages, tc.Bytes)
 }
 
 func saturatedAdd(sum, delta int64) int64 {
@@ -94,14 +89,17 @@ type flowControlBatcher struct {
 	pendingTokens tokenCounter
 }
 
-func (fc *flowControlBatcher) LogState() {
-	log.Printf("  flowControlBatcher: clientTokens: %s | pendingTokens: %s", fc.clientTokens.String(), fc.pendingTokens.String())
-}
-
 const expediteBatchRequestRatio = 0.5
 
 func exceedsExpediteRatio(pending, client int64) bool {
 	return client > 0 && (float64(pending)/float64(client)) >= expediteBatchRequestRatio
+}
+
+// Reset client tokens to the given values and reset pending tokens.
+func (fc *flowControlBatcher) Reset(tokens flowControlTokens) {
+	fc.clientTokens.Reset()
+	fc.clientTokens.Add(tokens)
+	fc.pendingTokens.Reset()
 }
 
 // OnClientFlow increments flow control tokens. This occurs when:
@@ -156,18 +154,23 @@ type subscriberOffsetTracker struct {
 	minNextOffset int64
 }
 
-func (ot *subscriberOffsetTracker) LogState() {
-	log.Printf("  subscriberOffsetTracker: minNextOffset=%v", ot.minNextOffset)
+// Reset the offset tracker to the initial state.
+func (ot *subscriberOffsetTracker) Reset() {
+	ot.minNextOffset = 0
 }
 
-// CursorForRestart returns the initial cursor to use when a new subscribe
+// RequestForRestart returns the seek request to send when a new subscribe
 // stream reconnects. Returns nil if the subscriber has just started, in which
-// case the server uses the offset of the last committed cursor.
-func (ot *subscriberOffsetTracker) CursorForRestart() *pb.Cursor {
+// case the server returns the offset of the last committed cursor.
+func (ot *subscriberOffsetTracker) RequestForRestart() *pb.SeekRequest {
 	if ot.minNextOffset <= 0 {
 		return nil
 	}
-	return &pb.Cursor{Offset: ot.minNextOffset}
+	return &pb.SeekRequest{
+		Target: &pb.SeekRequest_Cursor{
+			Cursor: &pb.Cursor{Offset: ot.minNextOffset},
+		},
+	}
 }
 
 // OnMessages verifies that messages are delivered in order and updates the next
