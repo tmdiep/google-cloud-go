@@ -16,6 +16,7 @@ package wire
 import (
 	"errors"
 	"fmt"
+	"log"
 	"math"
 
 	pb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
@@ -79,6 +80,10 @@ func (tc *tokenCounter) ToFlowControlRequest() *pb.FlowControlRequest {
 	}
 }
 
+func (tc *tokenCounter) String() string {
+	return fmt.Sprintf("messages=%v, bytes=%v", tc.Messages, tc.Bytes)
+}
+
 // flowControlBatcher tracks flow control tokens and manages batching of flow
 // control requests to avoid overwhelming the server. It is only accessed by
 // the subscribeStream.
@@ -93,6 +98,10 @@ const expediteBatchRequestRatio = 0.5
 
 func exceedsExpediteRatio(pending, client int64) bool {
 	return client > 0 && (float64(pending)/float64(client)) >= expediteBatchRequestRatio
+}
+
+func (fc *flowControlBatcher) LogState() {
+	log.Printf("  flowControlBatcher: clientTokens: %s | pendingTokens: %s", fc.clientTokens.String(), fc.pendingTokens.String())
 }
 
 // Reset client tokens to the given values and reset pending tokens.
@@ -154,17 +163,24 @@ type subscriberOffsetTracker struct {
 	minNextOffset int64
 }
 
+func (ot *subscriberOffsetTracker) LogState() {
+	log.Printf("  subscriberOffsetTracker: minNextOffset=%v", ot.minNextOffset)
+}
+
 // Reset the offset tracker to the initial state.
 func (ot *subscriberOffsetTracker) Reset() {
 	ot.minNextOffset = 0
 }
 
 // RequestForRestart returns the seek request to send when a new subscribe
-// stream reconnects. Returns nil if the subscriber has just started, in which
-// case the server returns the offset of the last committed cursor.
+// stream reconnects.
 func (ot *subscriberOffsetTracker) RequestForRestart() *pb.SeekRequest {
 	if ot.minNextOffset <= 0 {
-		return nil
+		return &pb.SeekRequest{
+			Target: &pb.SeekRequest_NamedTarget_{
+				NamedTarget: pb.SeekRequest_COMMITTED_CURSOR,
+			},
+		}
 	}
 	return &pb.SeekRequest{
 		Target: &pb.SeekRequest_Cursor{

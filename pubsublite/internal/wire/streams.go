@@ -386,25 +386,24 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 			if needsResponse {
 				rs.initStatus = "receiving initial response"
 				response := reflect.New(rs.responseType).Interface()
-				if err = newStream.RecvMsg(response); err != nil {
-					rs.initStatus = "received initial response"
-					rs.lastRecvTime = time.Now()
-					rs.lastRecvErr = err
-					if err != nil {
-						if isStreamResetSignal(err) {
-							rs.handler.onStreamStatusChange(streamResetState)
-						}
-						err = resolveError(err)
-						return r.RetryRecv(err)
+				err = newStream.RecvMsg(response)
+				rs.initStatus = "received initial response"
+				rs.lastRecvTime = time.Now()
+				rs.lastRecvErr = err
+				if err != nil {
+					if isStreamResetSignal(err) {
+						rs.handler.onStreamStatusChange(streamResetState)
 					}
+					err = resolveError(err)
+					return r.RetryRecv(err)
+				}
 
-					err = rs.handler.validateInitialResponse(response)
-					rs.initStatus = "validated initial response"
-					if err != nil {
-						// An unexpected initial response from the server is a permanent error.
-						cancelFunc()
-						return 0, false
-					}
+				err = rs.handler.validateInitialResponse(response)
+				rs.initStatus = "validated initial response"
+				if err != nil {
+					// An unexpected initial response from the server is a permanent error.
+					cancelFunc()
+					return 0, false
 				}
 			}
 
@@ -433,7 +432,7 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, cancelF
 				log.Printf("ConnectFatalError(%d): [%T] %v: %v", attempt, rs.initReq, rs.initReq, err)
 			}
 			if rs.Status() == streamTerminated {
-				log.Printf("ConnectStreamTerminated(%d): [%T] %v: %v", attempt, rs.initReq, rs.initReq)
+				log.Printf("ConnectStreamTerminated(%d): [%T] %v", attempt, rs.initReq, rs.initReq)
 			}
 			if newStream != nil {
 				log.Printf("Connected(%d): [%T] %v", attempt, rs.initReq, rs.initReq)

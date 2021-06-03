@@ -126,6 +126,10 @@ func (mq *messageDeliveryQueue) deliverMessages(messagesC chan *ReceivedMessage,
 // The frequency of sending batch flow control requests.
 const batchFlowControlPeriod = 100 * time.Millisecond
 
+// Handles subscriber reset actions that are external to the subscribeStream
+// (e.g. wait for the committer to flush commits).
+type subscriberResetHandler func() error
+
 // subscribeStream directly wraps the subscribe client stream. It passes
 // messages to the message receiver and manages flow control. Flow control
 // tokens are batched and sent to the stream via a periodic background task,
@@ -137,7 +141,7 @@ type subscribeStream struct {
 	subClient    *vkit.SubscriberClient
 	settings     ReceiveSettings
 	subscription subscriptionPartition
-	initialReq   *pb.SubscribeRequest
+	handleReset  subscriberResetHandler
 	metadata     pubsubMetadata
 
 	// Fields below must be guarded with mu.
@@ -159,12 +163,14 @@ func (s *subscribeStream) LogState() {
 }
 
 func newSubscribeStream(ctx context.Context, subClient *vkit.SubscriberClient, settings ReceiveSettings,
-	receiver MessageReceiverFunc, subscription subscriptionPartition, acks *ackTracker, disableTasks bool) *subscribeStream {
+	receiver MessageReceiverFunc, subscription subscriptionPartition, acks *ackTracker,
+	handleReset subscriberResetHandler, disableTasks bool) *subscribeStream {
 
 	s := &subscribeStream{
 		subClient:    subClient,
 		settings:     settings,
 		subscription: subscription,
+		handleReset:  handleReset,
 		messageQueue: newMessageDeliveryQueue(acks, receiver, settings.MaxOutstandingMessages),
 		metadata:     newPubsubMetadata(),
 	}
@@ -209,19 +215,15 @@ func (s *subscribeStream) newStream(ctx context.Context) (grpc.ClientStream, err
 	return s.subClient.Subscribe(s.metadata.AddToContext(ctx))
 }
 
-func (s *subscribeStream) lockedInitCursor() *pb.Cursor {
+func (s *subscribeStream) initialRequest() (interface{}, initialResponseRequired) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.offsetTracker.CursorForRestart()
-}
-
-func (s *subscribeStream) initialRequest() (interface{}, initialResponseRequired) {
 	initReq := &pb.SubscribeRequest{
 		Request: &pb.SubscribeRequest_Initial{
 			Initial: &pb.InitialSubscribeRequest{
-				Subscription:  s.subscription.Path,
-				Partition:     int64(s.subscription.Partition),
-				InitialCursor: s.lockedInitCursor(),
+				Subscription:    s.subscription.Path,
+				Partition:       int64(s.subscription.Partition),
+				InitialLocation: s.offsetTracker.RequestForRestart(),
 			},
 		},
 	}
@@ -243,6 +245,9 @@ func (s *subscribeStream) onStreamStatusChange(status streamStatus) {
 	switch status {
 	case streamConnected:
 		s.unsafeUpdateStatus(serviceActive, nil)
+
+		// Reinitialize the flow control tokens when a new subscribe stream instance
+		// is connected.
 		s.unsafeSendFlowControl(s.flowControl.RequestForRestart())
 		s.enableBatchFlowControl = true
 		s.pollFlowControl.Start()
@@ -252,6 +257,31 @@ func (s *subscribeStream) onStreamStatusChange(status streamStatus) {
 		// is sent above when a new subscribe stream is initialized.
 		s.enableBatchFlowControl = false
 		s.pollFlowControl.Stop()
+
+	case streamResetState:
+		// Handle out-of-band seek notifications from the server. Committer and
+		// subscriber state are reset.
+
+		s.messageQueue.Stop()
+
+		// Wait for all message receiver callbacks to finish and the committer to
+		// flush pending commits and reset its state. Release the mutex while
+		// waiting.
+		s.mu.Unlock()
+		s.messageQueue.Wait()
+		err := s.handleReset()
+		s.mu.Lock()
+
+		if err != nil {
+			s.unsafeInitiateShutdown(serviceTerminating, nil)
+			return
+		}
+		s.messageQueue.Start()
+		s.offsetTracker.Reset()
+		s.flowControl.Reset(flowControlTokens{
+			Bytes:    int64(s.settings.MaxOutstandingBytes),
+			Messages: int64(s.settings.MaxOutstandingMessages),
+		})
 
 	case streamTerminated:
 		s.unsafeInitiateShutdown(serviceTerminated, s.stream.Error())
@@ -384,7 +414,7 @@ func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSu
 	subscription := subscriptionPartition{Path: f.subscriptionPath, Partition: partition}
 	acks := newAckTracker()
 	commit := newCommitter(f.ctx, f.cursorClient, f.settings, subscription, acks, f.disableTasks)
-	sub := newSubscribeStream(f.ctx, f.subClient, f.settings, f.receiver, subscription, acks, f.disableTasks)
+	sub := newSubscribeStream(f.ctx, f.subClient, f.settings, f.receiver, subscription, acks, commit.BlockingReset, f.disableTasks)
 	ps := &singlePartitionSubscriber{
 		subscriber: sub,
 		committer:  commit,

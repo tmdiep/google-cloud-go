@@ -134,24 +134,33 @@ func msgPubResp(cursor int64) *pb.PublishResponse {
 
 // SubscriberService
 
-func initSubReq(subscription subscriptionPartition) *pb.SubscribeRequest {
+func initSubReqCommit(subscription subscriptionPartition) *pb.SubscribeRequest {
 	return &pb.SubscribeRequest{
 		Request: &pb.SubscribeRequest_Initial{
 			Initial: &pb.InitialSubscribeRequest{
 				Subscription: subscription.Path,
 				Partition:    int64(subscription.Partition),
+				InitialLocation: &pb.SeekRequest{
+					Target: &pb.SeekRequest_NamedTarget_{
+						NamedTarget: pb.SeekRequest_COMMITTED_CURSOR,
+					},
+				},
 			},
 		},
 	}
 }
 
-func initSubReqWithOffset(subscription subscriptionPartition, init_offset int64) *pb.SubscribeRequest {
+func initSubReqCursor(subscription subscriptionPartition, offset int64) *pb.SubscribeRequest {
 	return &pb.SubscribeRequest{
 		Request: &pb.SubscribeRequest_Initial{
 			Initial: &pb.InitialSubscribeRequest{
-				Subscription:  subscription.Path,
-				Partition:     int64(subscription.Partition),
-				InitialCursor: &pb.Cursor{Offset: init_offset},
+				Subscription: subscription.Path,
+				Partition:    int64(subscription.Partition),
+				InitialLocation: &pb.SeekRequest{
+					Target: &pb.SeekRequest_Cursor{
+						Cursor: &pb.Cursor{Offset: offset},
+					},
+				},
 			},
 		},
 	}
