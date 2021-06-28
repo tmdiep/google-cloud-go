@@ -45,6 +45,7 @@ func (mp *mockWirePublisher) Publish(msg *pb.PubSubMessage, onResult wire.Publis
 	onResult(result, nil)
 }
 
+func (mp *mockWirePublisher) LogState()          {}
 func (mp *mockWirePublisher) Start()             {}
 func (mp *mockWirePublisher) Stop()              { mp.Stopped = true }
 func (mp *mockWirePublisher) WaitStarted() error { return mp.err }

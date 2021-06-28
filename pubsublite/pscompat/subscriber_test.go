@@ -68,6 +68,9 @@ func (ms *mockWireSubscriber) SimulateFatalError(err error) {
 
 // wire.Subscriber implementation
 
+func (ms *mockWireSubscriber) LogState() {
+}
+
 func (ms *mockWireSubscriber) Start() {
 	go func() {
 		for {

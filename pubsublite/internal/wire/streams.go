@@ -346,23 +346,23 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, err err
 			}
 
 			initReq, needsResponse := rs.handler.initialRequest()
-			err = newStream.SendMsg(initReq)
+			err = it.ResolveError(newStream.SendMsg(initReq))
 			rs.initStatus = "sent initial request"
 			rs.initReq = initReq
 			rs.lastSendTime = time.Now()
 			rs.lastSendErr = err
-			if err = it.ResolveError(newStream.SendMsg(initReq)); err != nil {
+			if err != nil {
 				return r.RetrySend(err)
 			}
 
 			if needsResponse {
 				rs.initStatus = "receiving initial response"
 				response := reflect.New(rs.responseType).Interface()
-				err = newStream.RecvMsg(response)
+				err = it.ResolveError(newStream.RecvMsg(response))
 				rs.initStatus = "received initial response"
 				rs.lastRecvTime = time.Now()
 				rs.lastRecvErr = err
-				if err = it.ResolveError(newStream.RecvMsg(response)); err != nil {
+				if err != nil {
 					if isStreamResetSignal(err) {
 						rs.handler.onStreamStatusChange(streamResetState)
 					}
