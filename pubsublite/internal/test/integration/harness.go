@@ -35,6 +35,7 @@ var (
 	enableAssignment = flag.Bool("assignment", false, "use partition assignment for subscribers")
 	publishBatchSize = flag.Int("publish_setting_batch", 100, "publish batch size")
 	enableLogging    = flag.Bool("logging", true, "log informational messages")
+	connectTimeout   = flag.Duration("connect_timeout", 60*time.Second, "timeout for connecting to the server")
 	cpuprofile       = flag.String("cpuprofile", "", "write cpu profile to `file`")
 	memprofile       = flag.String("memprofile", "", "write memory profile to `file`")
 )
@@ -118,18 +119,10 @@ func (th *TestHarness) init() {
 
 	th.PublishSettings = pscompat.DefaultPublishSettings
 	th.PublishSettings.CountThreshold = *publishBatchSize
-	th.PublishSettings.Timeout = 5 * time.Minute
+	th.PublishSettings.Timeout = *connectTimeout
 	th.ReceiveSettings = pscompat.DefaultReceiveSettings
-	th.ReceiveSettings.Timeout = 5 * time.Minute
+	th.ReceiveSettings.Timeout = *connectTimeout
 	th.EnableAssignment = *enableAssignment
-	/*
-		if *enableLogging {
-			onLog := func(msg string) {
-				log.Printf(msg)
-			}
-			th.PublishSettings.OnLog = onLog
-			th.ReceiveSettings.OnLog = onLog
-		}*/
 }
 
 func (th *TestHarness) StartPublisher() *pscompat.PublisherClient {
