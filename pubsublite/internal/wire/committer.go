@@ -131,6 +131,7 @@ func (c *committer) BlockingReset() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.acks.Release() // Discard outstanding acks
 	for !c.cursorTracker.UpToDate() && c.status < serviceTerminating {
 		c.unsafeCommitOffsetToStream()
 		c.flushPending.Wait()

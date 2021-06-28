@@ -75,12 +75,10 @@ type assigner struct {
 }
 
 func newAssigner(ctx context.Context, assignmentClient *vkit.PartitionAssignmentClient, genUUID generateUUIDFunc, settings ReceiveSettings, subscriptionPath string, receiver partitionAssignmentReceiver) (*assigner, error) {
-
 	clientID, err := genUUID()
 	if err != nil {
 		return nil, fmt.Errorf("pubsublite: failed to generate client UUID: %v", err)
 	}
-	//log.Printf("pubsublite: %s: client ID for partition assignment: %s", subscriptionPath, clientID)
 
 	a := &assigner{
 		assignmentClient: assignmentClient,
@@ -141,31 +139,23 @@ func (a *assigner) onStreamStatusChange(status streamStatus) {
 }
 
 func (a *assigner) onResponse(response interface{}) {
+	assignment, _ := response.(*pb.PartitionAssignment)
+	err := a.receiveAssignment(newPartitionSet(assignment))
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
-
 	if a.status >= serviceTerminating {
 		return
 	}
-
-	assignment, _ := response.(*pb.PartitionAssignment)
-	if err := a.handleAssignment(assignment); err != nil {
+	if err != nil {
 		a.unsafeInitiateShutdown(serviceTerminated, err)
+		return
 	}
-}
-
-func (a *assigner) handleAssignment(assignment *pb.PartitionAssignment) error {
-	if err := a.receiveAssignment(newPartitionSet(assignment)); err != nil {
-		return err
-	}
-	//log.Printf("pubsublite: %s: subscriber updated partition assignments to %v", a.subscription, assignment.Partitions)
-
 	a.stream.Send(&pb.PartitionAssignmentRequest{
 		Request: &pb.PartitionAssignmentRequest_Ack{
 			Ack: &pb.PartitionAssignmentAck{},
 		},
 	})
-	return nil
 }
 
 func (a *assigner) unsafeInitiateShutdown(targetStatus serviceStatus, err error) {

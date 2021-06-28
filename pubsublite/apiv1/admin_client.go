@@ -23,16 +23,19 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/golang/protobuf/proto"
+	"cloud.google.com/go/longrunning"
+	lroauto "cloud.google.com/go/longrunning/autogen"
 	gax "github.com/googleapis/gax-go/v2"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/api/option/internaloption"
 	gtransport "google.golang.org/api/transport/grpc"
 	pubsublitepb "google.golang.org/genproto/googleapis/cloud/pubsublite/v1"
+	longrunningpb "google.golang.org/genproto/googleapis/longrunning"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/proto"
 )
 
 var newAdminClientHook clientHook
@@ -51,6 +54,13 @@ type AdminCallOptions struct {
 	ListSubscriptions      []gax.CallOption
 	UpdateSubscription     []gax.CallOption
 	DeleteSubscription     []gax.CallOption
+	SeekSubscription       []gax.CallOption
+	CreateReservation      []gax.CallOption
+	GetReservation         []gax.CallOption
+	ListReservations       []gax.CallOption
+	UpdateReservation      []gax.CallOption
+	DeleteReservation      []gax.CallOption
+	ListReservationTopics  []gax.CallOption
 }
 
 func defaultAdminGRPCClientOptions() []option.ClientOption {
@@ -247,6 +257,111 @@ func defaultAdminCallOptions() *AdminCallOptions {
 				})
 			}),
 		},
+		SeekSubscription: []gax.CallOption{
+			gax.WithRetry(func() gax.Retryer {
+				return gax.OnCodes([]codes.Code{
+					codes.DeadlineExceeded,
+					codes.Unavailable,
+					codes.Aborted,
+					codes.Internal,
+					codes.Unknown,
+				}, gax.Backoff{
+					Initial:    100 * time.Millisecond,
+					Max:        60000 * time.Millisecond,
+					Multiplier: 1.30,
+				})
+			}),
+		},
+		CreateReservation: []gax.CallOption{
+			gax.WithRetry(func() gax.Retryer {
+				return gax.OnCodes([]codes.Code{
+					codes.DeadlineExceeded,
+					codes.Unavailable,
+					codes.Aborted,
+					codes.Internal,
+					codes.Unknown,
+				}, gax.Backoff{
+					Initial:    100 * time.Millisecond,
+					Max:        60000 * time.Millisecond,
+					Multiplier: 1.30,
+				})
+			}),
+		},
+		GetReservation: []gax.CallOption{
+			gax.WithRetry(func() gax.Retryer {
+				return gax.OnCodes([]codes.Code{
+					codes.DeadlineExceeded,
+					codes.Unavailable,
+					codes.Aborted,
+					codes.Internal,
+					codes.Unknown,
+				}, gax.Backoff{
+					Initial:    100 * time.Millisecond,
+					Max:        60000 * time.Millisecond,
+					Multiplier: 1.30,
+				})
+			}),
+		},
+		ListReservations: []gax.CallOption{
+			gax.WithRetry(func() gax.Retryer {
+				return gax.OnCodes([]codes.Code{
+					codes.DeadlineExceeded,
+					codes.Unavailable,
+					codes.Aborted,
+					codes.Internal,
+					codes.Unknown,
+				}, gax.Backoff{
+					Initial:    100 * time.Millisecond,
+					Max:        60000 * time.Millisecond,
+					Multiplier: 1.30,
+				})
+			}),
+		},
+		UpdateReservation: []gax.CallOption{
+			gax.WithRetry(func() gax.Retryer {
+				return gax.OnCodes([]codes.Code{
+					codes.DeadlineExceeded,
+					codes.Unavailable,
+					codes.Aborted,
+					codes.Internal,
+					codes.Unknown,
+				}, gax.Backoff{
+					Initial:    100 * time.Millisecond,
+					Max:        60000 * time.Millisecond,
+					Multiplier: 1.30,
+				})
+			}),
+		},
+		DeleteReservation: []gax.CallOption{
+			gax.WithRetry(func() gax.Retryer {
+				return gax.OnCodes([]codes.Code{
+					codes.DeadlineExceeded,
+					codes.Unavailable,
+					codes.Aborted,
+					codes.Internal,
+					codes.Unknown,
+				}, gax.Backoff{
+					Initial:    100 * time.Millisecond,
+					Max:        60000 * time.Millisecond,
+					Multiplier: 1.30,
+				})
+			}),
+		},
+		ListReservationTopics: []gax.CallOption{
+			gax.WithRetry(func() gax.Retryer {
+				return gax.OnCodes([]codes.Code{
+					codes.DeadlineExceeded,
+					codes.Unavailable,
+					codes.Aborted,
+					codes.Internal,
+					codes.Unknown,
+				}, gax.Backoff{
+					Initial:    100 * time.Millisecond,
+					Max:        60000 * time.Millisecond,
+					Multiplier: 1.30,
+				})
+			}),
+		},
 	}
 }
 
@@ -267,6 +382,14 @@ type internalAdminClient interface {
 	ListSubscriptions(context.Context, *pubsublitepb.ListSubscriptionsRequest, ...gax.CallOption) *SubscriptionIterator
 	UpdateSubscription(context.Context, *pubsublitepb.UpdateSubscriptionRequest, ...gax.CallOption) (*pubsublitepb.Subscription, error)
 	DeleteSubscription(context.Context, *pubsublitepb.DeleteSubscriptionRequest, ...gax.CallOption) error
+	SeekSubscription(context.Context, *pubsublitepb.SeekSubscriptionRequest, ...gax.CallOption) (*SeekSubscriptionOperation, error)
+	SeekSubscriptionOperation(name string) *SeekSubscriptionOperation
+	CreateReservation(context.Context, *pubsublitepb.CreateReservationRequest, ...gax.CallOption) (*pubsublitepb.Reservation, error)
+	GetReservation(context.Context, *pubsublitepb.GetReservationRequest, ...gax.CallOption) (*pubsublitepb.Reservation, error)
+	ListReservations(context.Context, *pubsublitepb.ListReservationsRequest, ...gax.CallOption) *ReservationIterator
+	UpdateReservation(context.Context, *pubsublitepb.UpdateReservationRequest, ...gax.CallOption) (*pubsublitepb.Reservation, error)
+	DeleteReservation(context.Context, *pubsublitepb.DeleteReservationRequest, ...gax.CallOption) error
+	ListReservationTopics(context.Context, *pubsublitepb.ListReservationTopicsRequest, ...gax.CallOption) *StringIterator
 }
 
 // AdminClient is a client for interacting with Pub/Sub Lite API.
@@ -280,6 +403,11 @@ type AdminClient struct {
 
 	// The call options for this service.
 	CallOptions *AdminCallOptions
+
+	// LROClient is used internally to handle long-running operations.
+	// It is exposed so that its CallOptions can be modified if required.
+	// Users should not Close this client.
+	LROClient *lroauto.OperationsClient
 }
 
 // Wrapper methods routed to the internal client.
@@ -364,6 +492,67 @@ func (c *AdminClient) DeleteSubscription(ctx context.Context, req *pubsublitepb.
 	return c.internalClient.DeleteSubscription(ctx, req, opts...)
 }
 
+// SeekSubscription performs an out-of-band seek for a subscription to a specified target,
+// which may be timestamps or named positions within the message backlog.
+// Seek translates these targets to cursors for each partition and
+// orchestrates subscribers to start consuming messages from these seek
+// cursors.
+//
+// If an operation is returned, the seek has been registered and subscribers
+// will eventually receive messages from the seek cursors (i.e. eventual
+// consistency), as long as they are using a minimum supported client library
+// version and not a system that tracks cursors independently of Pub/Sub Lite
+// (e.g. Apache Beam, Dataflow, Spark). The seek operation will fail for
+// unsupported clients.
+//
+// If clients would like to know when subscribers react to the seek (or not),
+// they can poll the operation. The seek operation will succeed and complete
+// once subscribers are ready to receive messages from the seek cursors for
+// all partitions of the topic. This means that the seek operation will not
+// complete until all subscribers come online.
+//
+// If the previous seek operation has not yet completed, it will be aborted
+// and the new invocation of seek will supersede it.
+func (c *AdminClient) SeekSubscription(ctx context.Context, req *pubsublitepb.SeekSubscriptionRequest, opts ...gax.CallOption) (*SeekSubscriptionOperation, error) {
+	return c.internalClient.SeekSubscription(ctx, req, opts...)
+}
+
+// SeekSubscriptionOperation returns a new SeekSubscriptionOperation from a given name.
+// The name must be that of a previously created SeekSubscriptionOperation, possibly from a different process.
+func (c *AdminClient) SeekSubscriptionOperation(name string) *SeekSubscriptionOperation {
+	return c.internalClient.SeekSubscriptionOperation(name)
+}
+
+// CreateReservation creates a new reservation.
+func (c *AdminClient) CreateReservation(ctx context.Context, req *pubsublitepb.CreateReservationRequest, opts ...gax.CallOption) (*pubsublitepb.Reservation, error) {
+	return c.internalClient.CreateReservation(ctx, req, opts...)
+}
+
+// GetReservation returns the reservation configuration.
+func (c *AdminClient) GetReservation(ctx context.Context, req *pubsublitepb.GetReservationRequest, opts ...gax.CallOption) (*pubsublitepb.Reservation, error) {
+	return c.internalClient.GetReservation(ctx, req, opts...)
+}
+
+// ListReservations returns the list of reservations for the given project.
+func (c *AdminClient) ListReservations(ctx context.Context, req *pubsublitepb.ListReservationsRequest, opts ...gax.CallOption) *ReservationIterator {
+	return c.internalClient.ListReservations(ctx, req, opts...)
+}
+
+// UpdateReservation updates properties of the specified reservation.
+func (c *AdminClient) UpdateReservation(ctx context.Context, req *pubsublitepb.UpdateReservationRequest, opts ...gax.CallOption) (*pubsublitepb.Reservation, error) {
+	return c.internalClient.UpdateReservation(ctx, req, opts...)
+}
+
+// DeleteReservation deletes the specified reservation.
+func (c *AdminClient) DeleteReservation(ctx context.Context, req *pubsublitepb.DeleteReservationRequest, opts ...gax.CallOption) error {
+	return c.internalClient.DeleteReservation(ctx, req, opts...)
+}
+
+// ListReservationTopics lists the topics attached to the specified reservation.
+func (c *AdminClient) ListReservationTopics(ctx context.Context, req *pubsublitepb.ListReservationTopicsRequest, opts ...gax.CallOption) *StringIterator {
+	return c.internalClient.ListReservationTopics(ctx, req, opts...)
+}
+
 // adminGRPCClient is a client for interacting with Pub/Sub Lite API over gRPC transport.
 //
 // Methods, except Close, may be called concurrently. However, fields must not be modified concurrently with method calls.
@@ -379,6 +568,11 @@ type adminGRPCClient struct {
 
 	// The gRPC API client.
 	adminClient pubsublitepb.AdminServiceClient
+
+	// LROClient is used internally to handle long-running operations.
+	// It is exposed so that its CallOptions can be modified if required.
+	// Users should not Close this client.
+	LROClient **lroauto.OperationsClient
 
 	// The x-goog-* metadata to be sent with each request.
 	xGoogMetadata metadata.MD
@@ -420,6 +614,17 @@ func NewAdminClient(ctx context.Context, opts ...option.ClientOption) (*AdminCli
 
 	client.internalClient = c
 
+	client.LROClient, err = lroauto.NewOperationsClient(ctx, gtransport.WithConnPool(connPool))
+	if err != nil {
+		// This error "should not happen", since we are just reusing old connection pool
+		// and never actually need to dial.
+		// If this does happen, we could leak connp. However, we cannot close conn:
+		// If the user invoked the constructor with option.WithGRPCConn,
+		// we would close a connection that's still in use.
+		// TODO: investigate error conditions.
+		return nil, err
+	}
+	c.LROClient = &client.LROClient
 	return &client, nil
 }
 
@@ -744,6 +949,305 @@ func (c *adminGRPCClient) DeleteSubscription(ctx context.Context, req *pubsublit
 		return err
 	}, opts...)
 	return err
+}
+
+func (c *adminGRPCClient) SeekSubscription(ctx context.Context, req *pubsublitepb.SeekSubscriptionRequest, opts ...gax.CallOption) (*SeekSubscriptionOperation, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 600000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
+	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "name", url.QueryEscape(req.GetName())))
+	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
+	opts = append((*c.CallOptions).SeekSubscription[0:len((*c.CallOptions).SeekSubscription):len((*c.CallOptions).SeekSubscription)], opts...)
+	var resp *longrunningpb.Operation
+	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
+		var err error
+		resp, err = c.adminClient.SeekSubscription(ctx, req, settings.GRPC...)
+		return err
+	}, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &SeekSubscriptionOperation{
+		lro: longrunning.InternalNewOperation(*c.LROClient, resp),
+	}, nil
+}
+
+func (c *adminGRPCClient) CreateReservation(ctx context.Context, req *pubsublitepb.CreateReservationRequest, opts ...gax.CallOption) (*pubsublitepb.Reservation, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 600000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
+	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "parent", url.QueryEscape(req.GetParent())))
+	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
+	opts = append((*c.CallOptions).CreateReservation[0:len((*c.CallOptions).CreateReservation):len((*c.CallOptions).CreateReservation)], opts...)
+	var resp *pubsublitepb.Reservation
+	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
+		var err error
+		resp, err = c.adminClient.CreateReservation(ctx, req, settings.GRPC...)
+		return err
+	}, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *adminGRPCClient) GetReservation(ctx context.Context, req *pubsublitepb.GetReservationRequest, opts ...gax.CallOption) (*pubsublitepb.Reservation, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 600000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
+	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "name", url.QueryEscape(req.GetName())))
+	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
+	opts = append((*c.CallOptions).GetReservation[0:len((*c.CallOptions).GetReservation):len((*c.CallOptions).GetReservation)], opts...)
+	var resp *pubsublitepb.Reservation
+	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
+		var err error
+		resp, err = c.adminClient.GetReservation(ctx, req, settings.GRPC...)
+		return err
+	}, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *adminGRPCClient) ListReservations(ctx context.Context, req *pubsublitepb.ListReservationsRequest, opts ...gax.CallOption) *ReservationIterator {
+	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "parent", url.QueryEscape(req.GetParent())))
+	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
+	opts = append((*c.CallOptions).ListReservations[0:len((*c.CallOptions).ListReservations):len((*c.CallOptions).ListReservations)], opts...)
+	it := &ReservationIterator{}
+	req = proto.Clone(req).(*pubsublitepb.ListReservationsRequest)
+	it.InternalFetch = func(pageSize int, pageToken string) ([]*pubsublitepb.Reservation, string, error) {
+		var resp *pubsublitepb.ListReservationsResponse
+		req.PageToken = pageToken
+		if pageSize > math.MaxInt32 {
+			req.PageSize = math.MaxInt32
+		} else {
+			req.PageSize = int32(pageSize)
+		}
+		err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
+			var err error
+			resp, err = c.adminClient.ListReservations(ctx, req, settings.GRPC...)
+			return err
+		}, opts...)
+		if err != nil {
+			return nil, "", err
+		}
+
+		it.Response = resp
+		return resp.GetReservations(), resp.GetNextPageToken(), nil
+	}
+	fetch := func(pageSize int, pageToken string) (string, error) {
+		items, nextPageToken, err := it.InternalFetch(pageSize, pageToken)
+		if err != nil {
+			return "", err
+		}
+		it.items = append(it.items, items...)
+		return nextPageToken, nil
+	}
+	it.pageInfo, it.nextFunc = iterator.NewPageInfo(fetch, it.bufLen, it.takeBuf)
+	it.pageInfo.MaxSize = int(req.GetPageSize())
+	it.pageInfo.Token = req.GetPageToken()
+	return it
+}
+
+func (c *adminGRPCClient) UpdateReservation(ctx context.Context, req *pubsublitepb.UpdateReservationRequest, opts ...gax.CallOption) (*pubsublitepb.Reservation, error) {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 600000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
+	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "reservation.name", url.QueryEscape(req.GetReservation().GetName())))
+	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
+	opts = append((*c.CallOptions).UpdateReservation[0:len((*c.CallOptions).UpdateReservation):len((*c.CallOptions).UpdateReservation)], opts...)
+	var resp *pubsublitepb.Reservation
+	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
+		var err error
+		resp, err = c.adminClient.UpdateReservation(ctx, req, settings.GRPC...)
+		return err
+	}, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *adminGRPCClient) DeleteReservation(ctx context.Context, req *pubsublitepb.DeleteReservationRequest, opts ...gax.CallOption) error {
+	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
+		cctx, cancel := context.WithTimeout(ctx, 600000*time.Millisecond)
+		defer cancel()
+		ctx = cctx
+	}
+	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "name", url.QueryEscape(req.GetName())))
+	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
+	opts = append((*c.CallOptions).DeleteReservation[0:len((*c.CallOptions).DeleteReservation):len((*c.CallOptions).DeleteReservation)], opts...)
+	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
+		var err error
+		_, err = c.adminClient.DeleteReservation(ctx, req, settings.GRPC...)
+		return err
+	}, opts...)
+	return err
+}
+
+func (c *adminGRPCClient) ListReservationTopics(ctx context.Context, req *pubsublitepb.ListReservationTopicsRequest, opts ...gax.CallOption) *StringIterator {
+	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "name", url.QueryEscape(req.GetName())))
+	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
+	opts = append((*c.CallOptions).ListReservationTopics[0:len((*c.CallOptions).ListReservationTopics):len((*c.CallOptions).ListReservationTopics)], opts...)
+	it := &StringIterator{}
+	req = proto.Clone(req).(*pubsublitepb.ListReservationTopicsRequest)
+	it.InternalFetch = func(pageSize int, pageToken string) ([]string, string, error) {
+		var resp *pubsublitepb.ListReservationTopicsResponse
+		req.PageToken = pageToken
+		if pageSize > math.MaxInt32 {
+			req.PageSize = math.MaxInt32
+		} else {
+			req.PageSize = int32(pageSize)
+		}
+		err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
+			var err error
+			resp, err = c.adminClient.ListReservationTopics(ctx, req, settings.GRPC...)
+			return err
+		}, opts...)
+		if err != nil {
+			return nil, "", err
+		}
+
+		it.Response = resp
+		return resp.GetTopics(), resp.GetNextPageToken(), nil
+	}
+	fetch := func(pageSize int, pageToken string) (string, error) {
+		items, nextPageToken, err := it.InternalFetch(pageSize, pageToken)
+		if err != nil {
+			return "", err
+		}
+		it.items = append(it.items, items...)
+		return nextPageToken, nil
+	}
+	it.pageInfo, it.nextFunc = iterator.NewPageInfo(fetch, it.bufLen, it.takeBuf)
+	it.pageInfo.MaxSize = int(req.GetPageSize())
+	it.pageInfo.Token = req.GetPageToken()
+	return it
+}
+
+// SeekSubscriptionOperation manages a long-running operation from SeekSubscription.
+type SeekSubscriptionOperation struct {
+	lro *longrunning.Operation
+}
+
+// SeekSubscriptionOperation returns a new SeekSubscriptionOperation from a given name.
+// The name must be that of a previously created SeekSubscriptionOperation, possibly from a different process.
+func (c *adminGRPCClient) SeekSubscriptionOperation(name string) *SeekSubscriptionOperation {
+	return &SeekSubscriptionOperation{
+		lro: longrunning.InternalNewOperation(*c.LROClient, &longrunningpb.Operation{Name: name}),
+	}
+}
+
+// Wait blocks until the long-running operation is completed, returning the response and any errors encountered.
+//
+// See documentation of Poll for error-handling information.
+func (op *SeekSubscriptionOperation) Wait(ctx context.Context, opts ...gax.CallOption) (*pubsublitepb.SeekSubscriptionResponse, error) {
+	var resp pubsublitepb.SeekSubscriptionResponse
+	if err := op.lro.WaitWithInterval(ctx, &resp, time.Minute, opts...); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Poll fetches the latest state of the long-running operation.
+//
+// Poll also fetches the latest metadata, which can be retrieved by Metadata.
+//
+// If Poll fails, the error is returned and op is unmodified. If Poll succeeds and
+// the operation has completed with failure, the error is returned and op.Done will return true.
+// If Poll succeeds and the operation has completed successfully,
+// op.Done will return true, and the response of the operation is returned.
+// If Poll succeeds and the operation has not completed, the returned response and error are both nil.
+func (op *SeekSubscriptionOperation) Poll(ctx context.Context, opts ...gax.CallOption) (*pubsublitepb.SeekSubscriptionResponse, error) {
+	var resp pubsublitepb.SeekSubscriptionResponse
+	if err := op.lro.Poll(ctx, &resp, opts...); err != nil {
+		return nil, err
+	}
+	if !op.Done() {
+		return nil, nil
+	}
+	return &resp, nil
+}
+
+// Metadata returns metadata associated with the long-running operation.
+// Metadata itself does not contact the server, but Poll does.
+// To get the latest metadata, call this method after a successful call to Poll.
+// If the metadata is not available, the returned metadata and error are both nil.
+func (op *SeekSubscriptionOperation) Metadata() (*pubsublitepb.OperationMetadata, error) {
+	var meta pubsublitepb.OperationMetadata
+	if err := op.lro.Metadata(&meta); err == longrunning.ErrNoMetadata {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
+
+// Done reports whether the long-running operation has completed.
+func (op *SeekSubscriptionOperation) Done() bool {
+	return op.lro.Done()
+}
+
+// Name returns the name of the long-running operation.
+// The name is assigned by the server and is unique within the service from which the operation is created.
+func (op *SeekSubscriptionOperation) Name() string {
+	return op.lro.Name()
+}
+
+// ReservationIterator manages a stream of *pubsublitepb.Reservation.
+type ReservationIterator struct {
+	items    []*pubsublitepb.Reservation
+	pageInfo *iterator.PageInfo
+	nextFunc func() error
+
+	// Response is the raw response for the current page.
+	// It must be cast to the RPC response type.
+	// Calling Next() or InternalFetch() updates this value.
+	Response interface{}
+
+	// InternalFetch is for use by the Google Cloud Libraries only.
+	// It is not part of the stable interface of this package.
+	//
+	// InternalFetch returns results from a single call to the underlying RPC.
+	// The number of results is no greater than pageSize.
+	// If there are no more results, nextPageToken is empty and err is nil.
+	InternalFetch func(pageSize int, pageToken string) (results []*pubsublitepb.Reservation, nextPageToken string, err error)
+}
+
+// PageInfo supports pagination. See the google.golang.org/api/iterator package for details.
+func (it *ReservationIterator) PageInfo() *iterator.PageInfo {
+	return it.pageInfo
+}
+
+// Next returns the next result. Its second return value is iterator.Done if there are no more
+// results. Once Next returns Done, all subsequent calls will return Done.
+func (it *ReservationIterator) Next() (*pubsublitepb.Reservation, error) {
+	var item *pubsublitepb.Reservation
+	if err := it.nextFunc(); err != nil {
+		return item, err
+	}
+	item = it.items[0]
+	it.items = it.items[1:]
+	return item, nil
+}
+
+func (it *ReservationIterator) bufLen() int {
+	return len(it.items)
+}
+
+func (it *ReservationIterator) takeBuf() interface{} {
+	b := it.items
+	it.items = nil
+	return b
 }
 
 // StringIterator manages a stream of string.

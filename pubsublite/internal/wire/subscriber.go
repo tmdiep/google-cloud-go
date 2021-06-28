@@ -428,10 +428,9 @@ func (f *singlePartitionSubscriberFactory) New(partition int) *singlePartitionSu
 // partitions.
 type multiPartitionSubscriber struct {
 	// Immutable after creation.
-	clients     apiClients
 	subscribers []*singlePartitionSubscriber
 
-	compositeService
+	apiClientService
 }
 
 func (ms *multiPartitionSubscriber) LogState() {
@@ -442,7 +441,7 @@ func (ms *multiPartitionSubscriber) LogState() {
 
 func newMultiPartitionSubscriber(allClients apiClients, subFactory *singlePartitionSubscriberFactory) *multiPartitionSubscriber {
 	ms := &multiPartitionSubscriber{
-		clients: allClients,
+		apiClientService: apiClientService{clients: allClients},
 	}
 	ms.init()
 
@@ -465,18 +464,11 @@ func (ms *multiPartitionSubscriber) Terminate() {
 	}
 }
 
-func (ms *multiPartitionSubscriber) WaitStopped() error {
-	err := ms.compositeService.WaitStopped()
-	ms.clients.Close()
-	return err
-}
-
 // assigningSubscriber uses the Pub/Sub Lite partition assignment service to
 // listen to its assigned partition numbers and dynamically add/remove
 // singlePartitionSubscribers.
 type assigningSubscriber struct {
 	// Immutable after creation.
-	clients    apiClients
 	subFactory *singlePartitionSubscriberFactory
 	assigner   *assigner
 
@@ -484,7 +476,7 @@ type assigningSubscriber struct {
 	// Subscribers keyed by partition number. Updated as assignments change.
 	subscribers map[int]*singlePartitionSubscriber
 
-	compositeService
+	apiClientService
 }
 
 func (as *assigningSubscriber) LogState() {
@@ -495,9 +487,9 @@ func (as *assigningSubscriber) LogState() {
 
 func newAssigningSubscriber(allClients apiClients, assignmentClient *vkit.PartitionAssignmentClient, genUUID generateUUIDFunc, subFactory *singlePartitionSubscriberFactory) (*assigningSubscriber, error) {
 	as := &assigningSubscriber{
-		clients:     allClients,
-		subFactory:  subFactory,
-		subscribers: make(map[int]*singlePartitionSubscriber),
+		apiClientService: apiClientService{clients: allClients},
+		subFactory:       subFactory,
+		subscribers:      make(map[int]*singlePartitionSubscriber),
 	}
 	as.init()
 
@@ -511,6 +503,21 @@ func newAssigningSubscriber(allClients apiClients, assignmentClient *vkit.Partit
 }
 
 func (as *assigningSubscriber) handleAssignment(partitions partitionSet) error {
+	removedSubscribers, err := as.doHandleAssignment(partitions)
+	if err != nil {
+		return err
+	}
+
+	// Wait for removed subscribers to completely stop (which waits for commit
+	// acknowledgments from the server) before acking the assignment. This avoids
+	// commits racing with the new assigned client.
+	for _, subscriber := range removedSubscribers {
+		subscriber.WaitStopped()
+	}
+	return nil
+}
+
+func (as *assigningSubscriber) doHandleAssignment(partitions partitionSet) ([]*singlePartitionSubscriber, error) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 
@@ -520,18 +527,20 @@ func (as *assigningSubscriber) handleAssignment(partitions partitionSet) error {
 			subscriber := as.subFactory.New(partition)
 			if err := as.unsafeAddServices(subscriber); err != nil {
 				// Occurs when the assigningSubscriber is stopping/stopped.
-				return err
+				return nil, err
 			}
 			as.subscribers[partition] = subscriber
 		}
 	}
 
 	// Handle removed partitions.
+	var removedSubscribers []*singlePartitionSubscriber
 	for partition, subscriber := range as.subscribers {
 		if !partitions.Contains(partition) {
 			// Ignore unacked messages from this point on to avoid conflicting with
 			// the commits of the new subscriber that will be assigned this partition.
 			subscriber.Terminate()
+			removedSubscribers = append(removedSubscribers, subscriber)
 
 			as.unsafeRemoveService(subscriber)
 			// Safe to delete map entry during range loop:
@@ -539,7 +548,7 @@ func (as *assigningSubscriber) handleAssignment(partitions partitionSet) error {
 			delete(as.subscribers, partition)
 		}
 	}
-	return nil
+	return removedSubscribers, nil
 }
 
 // Terminate shuts down all singlePartitionSubscribers without waiting for
@@ -551,12 +560,6 @@ func (as *assigningSubscriber) Terminate() {
 	for _, sub := range as.subscribers {
 		sub.Terminate()
 	}
-}
-
-func (as *assigningSubscriber) WaitStopped() error {
-	err := as.compositeService.WaitStopped()
-	as.clients.Close()
-	return err
 }
 
 // Subscriber is the client interface exported from this package for receiving
@@ -578,15 +581,20 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 	if err := validateReceiveSettings(settings); err != nil {
 		return nil, err
 	}
+
+	var allClients apiClients
 	subClient, err := newSubscriberClient(ctx, region, opts...)
 	if err != nil {
 		return nil, err
 	}
+	allClients = append(allClients, subClient)
+
 	cursorClient, err := newCursorClient(ctx, region, opts...)
 	if err != nil {
+		allClients.Close()
 		return nil, err
 	}
-	allClients := apiClients{subClient, cursorClient}
+	allClients = append(allClients, cursorClient)
 
 	subFactory := &singlePartitionSubscriberFactory{
 		ctx:              ctx,
@@ -602,6 +610,7 @@ func NewSubscriber(ctx context.Context, settings ReceiveSettings, receiver Messa
 	}
 	partitionClient, err := newPartitionAssignmentClient(ctx, region, opts...)
 	if err != nil {
+		allClients.Close()
 		return nil, err
 	}
 	allClients = append(allClients, partitionClient)

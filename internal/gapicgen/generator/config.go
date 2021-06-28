@@ -1021,6 +1021,7 @@ var microgenGapicConfigs = []*microgenConfig{
 		gRPCServiceConfigPath: "google/cloud/recommendationengine/v1beta1/recommendationengine_grpc_service_config.json",
 		apiServiceConfigPath:  "google/cloud/recommendationengine/v1beta1/recommendationengine_v1beta1.yaml",
 		releaseLevel:          "beta",
+		stopGeneration:        true,
 	},
 	{
 		inputDirectoryPath:    "google/cloud/gkehub/v1beta1",
@@ -1133,6 +1134,40 @@ var microgenGapicConfigs = []*microgenConfig{
 		apiServiceConfigPath:  "google/cloud/tpu/v1/tpu_v1.yaml",
 		// GA after 2021/07/02
 		releaseLevel: "beta",
+	},
+	{
+		inputDirectoryPath:    "google/cloud/apigeeconnect/v1",
+		pkg:                   "apigeeconnect",
+		importPath:            "cloud.google.com/go/apigeeconnect/apiv1",
+		gRPCServiceConfigPath: "google/cloud/apigeeconnect/v1/connection_grpc_service_config.json",
+		apiServiceConfigPath:  "google/cloud/apigeeconnect/v1/apigeeconnect_v1.yaml",
+		// GA after 2021/07/03
+		releaseLevel: "beta",
+	},
+	{
+		inputDirectoryPath:    "google/cloud/lifesciences/v2beta",
+		pkg:                   "lifesciences",
+		importPath:            "cloud.google.com/go/lifesciences/apiv2beta",
+		gRPCServiceConfigPath: "google/cloud/lifesciences/v2beta/lifesciences_grpc_service_config.json",
+		apiServiceConfigPath:  "google/cloud/lifesciences/v2beta/lifesciences_v2beta.yaml",
+		releaseLevel:          "beta",
+	},
+	{
+		inputDirectoryPath:    "google/cloud/aiplatform/v1",
+		pkg:                   "aiplatform",
+		importPath:            "cloud.google.com/go/aiplatform/apiv1",
+		gRPCServiceConfigPath: "google/cloud/aiplatform/v1/aiplatform_grpc_service_config.json",
+		apiServiceConfigPath:  "google/cloud/aiplatform/v1/aiplatform_v1.yaml",
+		// GA after 2021/07/03
+		releaseLevel: "beta",
+	},
+	{
+		inputDirectoryPath:    "google/cloud/gkeconnect/gateway/v1beta1",
+		pkg:                   "gateway",
+		importPath:            "cloud.google.com/go/gkeconnect/gateway/apiv1beta1",
+		gRPCServiceConfigPath: "google/cloud/gkeconnect/gateway/v1beta1/connectgw_grpc_service_config.json",
+		apiServiceConfigPath:  "google/cloud/gkeconnect/gateway/v1beta1/connectgateway_v1beta1.yaml",
+		releaseLevel:          "beta",
 	},
 
 	// Non-Cloud APIs
