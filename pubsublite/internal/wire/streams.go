@@ -111,7 +111,8 @@ type retryableStream struct {
 	initReq        interface{}
 
 	// Guards access to fields below.
-	mu sync.Mutex
+	mu      sync.Mutex
+	debugMu sync.Mutex
 
 	// The current connected stream.
 	stream grpc.ClientStream
@@ -120,12 +121,13 @@ type retryableStream struct {
 	status            streamStatus
 	finalErr          error
 	lastRecvErr       error
+	lastListenTime    time.Time
 	lastRecvTime      time.Time
 	lastSendErr       error
 	lastSendTime      time.Time
 	lastReconnectTime time.Time
 	lastNewStreamTime time.Time
-	initStatus        string
+	lastAction        string
 }
 
 func (rs *retryableStream) LogState() {
@@ -134,14 +136,21 @@ func (rs *retryableStream) LogState() {
 	if now.Sub(rs.lastReconnectTime) > 6*time.Minute {
 		warning = "[OVERDUE] "
 	}
-	log.Printf(" %slastInitStatus=%s | lastReconnect=%v,lastNewStream=%v | lastRecv=%v,err=%v | lastSend=%v,err=%v",
-		warning, rs.initStatus,
+	log.Printf(" %slastAction=%s | lastReconnect=%v,lastNewStream=%v | lastListen=%v,lastRecv=%v,err=%v | lastSend=%v,err=%v",
+		warning, rs.lastAction,
 		now.Sub(rs.lastReconnectTime),
 		now.Sub(rs.lastNewStreamTime),
+		now.Sub(rs.lastListenTime),
 		now.Sub(rs.lastRecvTime),
 		rs.lastRecvErr,
 		now.Sub(rs.lastSendTime),
 		rs.lastSendErr)
+}
+
+func (rs *retryableStream) updateLastAction(text string) {
+	rs.debugMu.Lock()
+	rs.lastAction = text
+	rs.debugMu.Unlock()
 }
 
 // newRetryableStream creates a new retryable stream wrapper. `timeout` is the
@@ -190,7 +199,7 @@ func (rs *retryableStream) Send(request interface{}) (sent bool) {
 		err := rs.stream.SendMsg(request)
 		rs.lastSendTime = time.Now()
 		rs.lastSendErr = err
-		rs.initStatus = "sent msg"
+		rs.updateLastAction("sent msg")
 		// Note: if SendMsg returns an error, the stream is aborted.
 		switch {
 		case err == nil:
@@ -324,7 +333,7 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, err err
 	r := newStreamRetryer(rs.connectTimeout)
 	attempt := 0
 	rs.lastReconnectTime = time.Now()
-	rs.initStatus = "begin initNewStream"
+	rs.updateLastAction("begin initNewStream")
 
 	for {
 		attempt++
@@ -338,16 +347,16 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, err err
 			defer it.Stop()
 
 			rs.lastNewStreamTime = time.Now()
-			rs.initStatus = "before newStream"
+			rs.updateLastAction("before newStream")
 			newStream, err = rs.handler.newStream(cctx)
-			rs.initStatus = "stream created"
+			rs.updateLastAction("new stream created")
 			if err = it.ResolveError(err); err != nil {
 				return r.RetryRecv(err)
 			}
 
 			initReq, needsResponse := rs.handler.initialRequest()
 			err = it.ResolveError(newStream.SendMsg(initReq))
-			rs.initStatus = "sent initial request"
+			rs.updateLastAction("sent initial request")
 			rs.initReq = initReq
 			rs.lastSendTime = time.Now()
 			rs.lastSendErr = err
@@ -356,10 +365,10 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, err err
 			}
 
 			if needsResponse {
-				rs.initStatus = "receiving initial response"
+				rs.updateLastAction("receiving initial response")
 				response := reflect.New(rs.responseType).Interface()
 				err = it.ResolveError(newStream.RecvMsg(response))
-				rs.initStatus = "received initial response"
+				rs.updateLastAction("received initial response")
 				rs.lastRecvTime = time.Now()
 				rs.lastRecvErr = err
 				if err != nil {
@@ -370,7 +379,7 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, err err
 				}
 
 				err = rs.handler.validateInitialResponse(response)
-				rs.initStatus = "validated initial response"
+				rs.updateLastAction("validated initial response")
 				if err != nil {
 					// An unexpected initial response from the server is a permanent error.
 					cancelFunc()
@@ -385,7 +394,7 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, err err
 			}
 
 			// We have a valid connection and should break from the outer loop.
-			rs.initStatus = "init success"
+			rs.updateLastAction("init success")
 			return 0, false
 		}()
 
@@ -426,10 +435,12 @@ func (rs *retryableStream) initNewStream() (newStream grpc.ClientStream, err err
 func (rs *retryableStream) listen(recvStream grpc.ClientStream) {
 	for {
 		response := reflect.New(rs.responseType).Interface()
+		rs.updateLastAction("listening for msg")
+		rs.lastListenTime = time.Now()
 		err := recvStream.RecvMsg(response)
 		rs.lastRecvTime = time.Now()
 		rs.lastRecvErr = err
-		rs.initStatus = "recv msg"
+		rs.updateLastAction("received msg")
 
 		// If the current stream has changed while listening, any errors or messages
 		// received now are obsolete. Discard and end the goroutine. Assume the

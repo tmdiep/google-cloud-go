@@ -58,6 +58,7 @@ var (
 	messagePadding = flag.Int("padding_bytes", 0, "the number of bytes to pad per partition (divided by message count)")
 	sleepPeriod    = flag.Duration("sleep", time.Minute, "the duration to sleep between cycles")
 	waitTimeout    = flag.Duration("timeout", 5*time.Minute, "timeout for receiving all messages per cycle")
+	publishTimeout = flag.Duration("publish_timeout", time.Minute, "timeout for waiting for publish result")
 	verbose        = flag.Bool("verbose", true, "whether to log verbose messages")
 	duplicates     = flag.Bool("duplicates", false, "whether to detect duplicates")
 )
@@ -175,6 +176,17 @@ func main() {
 		{10 * time.Minute, 0},
 	}
 
+	dumpState := func() {
+		log.Println("BEGIN DUMP STATE")
+		log.Println("PUBLISHER:")
+		publisher.LogState()
+		for _, sub := range subscribers {
+			log.Printf("SUBSCRIBER(%s):", sub.Subscription.String())
+			sub.Sub.LogState()
+		}
+		log.Println("END DUMP STATE")
+	}
+
 	for {
 		cycleCount++
 		cycleStart := time.Now()
@@ -183,7 +195,7 @@ func main() {
 
 		for partition := 0; partition < harness.TopicPartitionCount; partition++ {
 			for i := 0; i < *messageCount; i++ {
-				data := orderingSender.Next(msgPrefix)
+				data := orderingSender.Next(fmt.Sprintf("%s/%d", msgPrefix, cycleCount))
 				trackedMsgs = append(trackedMsgs, data)
 				msg := &pubsub.Message{Data: []byte(data)}
 				if padding > 0 {
@@ -207,11 +219,12 @@ func main() {
 			msg := tp // Ensure msg is bound to loop element.
 			result := publisher.Publish(ctx, msg)
 			g.Go(func() error {
-				cctx, cancel := context.WithTimeout(ctx, *waitTimeout)
+				cctx, cancel := context.WithTimeout(ctx, *publishTimeout)
 				id, err := result.Get(cctx)
 				cancel()
 				if err != nil {
-					log.Fatalf("Publish failed: %v. Publisher error: %v", err, publisher.Error())
+					dumpState()
+					log.Fatalf("Publish failed for %q: %v. Publisher error: %v", string(msg.Data), err, publisher.Error())
 				}
 				if *verbose && err == nil {
 					log.Printf("Published: (id=%s) %s", id, string(msg.Data))
@@ -226,10 +239,7 @@ func main() {
 		// Wait for all subscribers to receive all messages for the cycle.
 		for _, sub := range subscribers {
 			if msgs, err := sub.Wait(); err != nil {
-				log.Println("BEGIN DUMP STATE")
-				publisher.LogState()
-				sub.Sub.LogState()
-				log.Println("END DUMP STATE")
+				dumpState()
 
 				mu.Lock()
 				log.Println("BEGIN OUTSTANDING MESSAGES")
