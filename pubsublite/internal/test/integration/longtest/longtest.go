@@ -43,6 +43,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"cloud.google.com/go/pubsub"
@@ -175,6 +176,7 @@ func main() {
 		{5 * time.Minute, 0},
 		{10 * time.Minute, 0},
 	}
+	var totalPublishTimeoutCount int32
 
 	dumpState := func() {
 		log.Println("BEGIN DUMP STATE")
@@ -192,6 +194,8 @@ func main() {
 		cycleStart := time.Now()
 		var toPublish []*pubsub.Message
 		var trackedMsgs []string
+		var publishSucceeded int32
+		var publishTimedOut int32
 
 		for partition := 0; partition < harness.TopicPartitionCount; partition++ {
 			for i := 0; i < *messageCount; i++ {
@@ -223,9 +227,13 @@ func main() {
 				id, err := result.Get(cctx)
 				cancel()
 				if err != nil {
-					dumpState()
-					log.Fatalf("Publish failed for %q: %v. Publisher error: %v", string(msg.Data), err, publisher.Error())
+					if err == context.DeadlineExceeded {
+						atomic.AddInt32(&publishTimedOut, 1)
+					}
+					log.Printf("Publish failed for %q: %v. Publisher error: %v", string(msg.Data), err, publisher.Error())
+					return err
 				}
+				atomic.AddInt32(&publishSucceeded, 1)
 				if *verbose && err == nil {
 					log.Printf("Published: (id=%s) %s", id, string(msg.Data))
 				}
@@ -235,6 +243,8 @@ func main() {
 				return err
 			})
 		}
+
+		//log.Printf("Cycle %d: Published messages", cycleCount)
 
 		// Wait for all subscribers to receive all messages for the cycle.
 		for _, sub := range subscribers {
@@ -249,6 +259,8 @@ func main() {
 				log.Println("END OUTSTANDING MESSAGES")
 				mu.Unlock()
 
+				log.Printf("%d of %d messages successfully published. Timeouts (>%v): %d",
+					atomic.LoadInt32(&publishSucceeded), len(toPublish), *publishTimeout, atomic.LoadInt32(&publishTimedOut))
 				log.Fatalf("%s: failed waiting for messages: %v", sub.Subscription, err)
 			}
 
@@ -262,7 +274,12 @@ func main() {
 
 		// Ensure all publish results succeeded.
 		if err := g.Wait(); err != nil {
-			log.Fatalf("Publish failed: %v", err)
+			if publishTimedOut > 0 {
+				totalPublishTimeoutCount += 1
+			} else {
+				dumpState()
+				log.Fatalf("Publish failed: %v", err)
+			}
 		}
 
 		now := time.Now()
@@ -278,8 +295,13 @@ func main() {
 				counterPrefix = "! "
 			}
 		}
-		log.Printf("*** Cycle elapsed: %v, total elapsed: %v, total messages: %d ****",
-			cycleElapsed, now.Sub(start), orderingSender.TotalMsgCount)
+		if cycleElapsed > 30*time.Second {
+			dumpState()
+			log.Printf("%d of %d messages successfully published. Timeouts (>%v): %d",
+				atomic.LoadInt32(&publishSucceeded), len(toPublish), *publishTimeout, atomic.LoadInt32(&publishTimedOut))
+		}
+		log.Printf("*** Cycle elapsed: %v, total elapsed: %v, total messages: %d, publish timeouts: %d ****",
+			cycleElapsed, now.Sub(start), orderingSender.TotalMsgCount, totalPublishTimeoutCount)
 		log.Printf("    %scycles=%d, %s", counterPrefix, cycleCount, strings.Join(statuses, ", "))
 
 		harness.WriteMemProfile()
