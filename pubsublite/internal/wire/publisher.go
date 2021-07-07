@@ -180,11 +180,14 @@ func (pp *singlePartitionPublisher) onStreamStatusChange(status streamStatus) {
 		// To ensure messages are sent in order, we should resend in-flight batches
 		// to the stream immediately after reconnecting, before any new batches.
 		batches := pp.batcher.InFlightBatches()
+		var msgCount int
 		for _, batch := range batches {
+			msgCount += len(batch.msgHolders)
 			if !pp.stream.Send(batch.ToPublishRequest()) {
 				return
 			}
 		}
+		log.Printf("publisher(%s): resending %d messages in %d batches", pp.topic.String(), msgCount, len(batches))
 		pp.enableSendToStream = true
 
 	case streamTerminated:

@@ -78,7 +78,12 @@ type publishMessageBatcher struct {
 }
 
 func (b *publishMessageBatcher) LogState() {
-	log.Printf("  publishMessageBatcher: publishQueue.len=%d, minExpectedNextOffset=%v, availableBufferBytes=%d", b.publishQueue.Len(), b.minExpectedNextOffset, b.availableBufferBytes)
+	var msgCount int
+	for elem := b.publishQueue.Front(); elem != nil; elem = elem.Next() {
+		batch := elem.Value.(*publishBatch)
+		msgCount += len(batch.msgHolders)
+	}
+	log.Printf("  publishMessageBatcher: publishQueue.len=%d, publishQueue.msgs=%d, minExpectedNextOffset=%v, availableBufferBytes=%d", b.publishQueue.Len(), msgCount, b.minExpectedNextOffset, b.availableBufferBytes)
 }
 
 func newPublishMessageBatcher(settings *PublishSettings, partition int, onNewBatch func(*publishBatch)) *publishMessageBatcher {
