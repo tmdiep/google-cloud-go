@@ -187,7 +187,9 @@ func (pp *singlePartitionPublisher) onStreamStatusChange(status streamStatus) {
 				return
 			}
 		}
-		log.Printf("publisher(%s): resending %d messages in %d batches", pp.topic.String(), msgCount, len(batches))
+		if msgCount > 0 {
+			log.Printf("publisher(%s): resending %d messages in %d batches", pp.topic.String(), msgCount, len(batches))
+		}
 		pp.enableSendToStream = true
 
 	case streamTerminated:

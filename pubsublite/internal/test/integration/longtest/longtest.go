@@ -166,16 +166,17 @@ func main() {
 	msgPrefix := fmt.Sprintf("longtest-%d", start.Unix())
 	orderingSender := test.NewOrderingSender()
 	padding := *messagePadding / *messageCount
-	counters := []*ElapsedCounter{
-		{2 * time.Second, 0},
-		{5 * time.Second, 0},
-		{10 * time.Second, 0},
-		{30 * time.Second, 0},
-		{time.Minute, 0},
-		{2 * time.Minute, 0},
-		{5 * time.Minute, 0},
-		{10 * time.Minute, 0},
-	}
+	latencies := integration.NewLatencyHistogram([]time.Duration{
+		1 * time.Second,
+		2 * time.Second,
+		5 * time.Second,
+		10 * time.Second,
+		30 * time.Second,
+		time.Minute,
+		2 * time.Minute,
+		5 * time.Minute,
+		10 * time.Minute,
+	})
 	var totalPublishTimeoutCount int32
 
 	dumpState := func() {
@@ -284,16 +285,8 @@ func main() {
 
 		now := time.Now()
 		cycleElapsed := now.Sub(cycleStart)
-		var statuses []string
-		counterPrefix := ""
-		for _, counter := range counters {
-			if cycleCount > 1 && cycleElapsed > counter.Threshold {
-				counter.Count++
-			}
-			statuses = append(statuses, fmt.Sprintf(">%v=%d", counter.Threshold, counter.Count))
-			if counter.Count > 0 {
-				counterPrefix = "! "
-			}
+		if cycleCount > 1 {
+			latencies.Add(cycleElapsed)
 		}
 		if cycleElapsed > 30*time.Second {
 			dumpState()
@@ -302,7 +295,7 @@ func main() {
 		}
 		log.Printf("*** Cycle elapsed: %v, total elapsed: %v, total messages: %d, publish timeouts: %d ****",
 			cycleElapsed, now.Sub(start), orderingSender.TotalMsgCount, totalPublishTimeoutCount)
-		log.Printf("    %scycles=%d, %s", counterPrefix, cycleCount, strings.Join(statuses, ", "))
+		log.Printf("    %s", latencies.Status("cycles"))
 
 		harness.WriteMemProfile()
 

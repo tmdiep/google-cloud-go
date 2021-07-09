@@ -41,6 +41,7 @@ var (
 )
 
 type TestHarness struct {
+	AdminClient         *pubsublite.AdminClient
 	PublishSettings     pscompat.PublishSettings
 	ReceiveSettings     pscompat.ReceiveSettings
 	EnableAssignment    bool
@@ -97,13 +98,13 @@ func (th *TestHarness) init() {
 		log.Fatal(err)
 	}
 	ctx := context.Background()
-	admin, err := pubsublite.NewAdminClient(ctx, th.region)
+	th.AdminClient, err = pubsublite.NewAdminClient(ctx, th.region)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	th.Topic = wire.TopicPath{Project: proj, Zone: *zone, TopicID: *topicID}
-	th.TopicPartitionCount, err = admin.TopicPartitionCount(ctx, th.Topic.String())
+	th.TopicPartitionCount, err = th.AdminClient.TopicPartitionCount(ctx, th.Topic.String())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -111,7 +112,7 @@ func (th *TestHarness) init() {
 
 	for _, subsID := range strings.Split(subsIDs, ",") {
 		subscription := wire.SubscriptionPath{Project: proj, Zone: *zone, SubscriptionID: subsID}
-		if _, err := admin.Subscription(ctx, subscription.String()); err != nil {
+		if _, err := th.AdminClient.Subscription(ctx, subscription.String()); err != nil {
 			log.Fatal(err)
 		}
 		th.Subscriptions = append(th.Subscriptions, subscription)
