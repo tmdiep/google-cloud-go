@@ -33,9 +33,9 @@ import (
 )
 
 var (
-	messageCount  = flag.Int("message_count", 2, "the number of messages to publish and receive per cycle, per partition")
-	sleepPeriod   = flag.Duration("sleep", 20*time.Second, "the duration to sleep between cycles")
-	seekPeriod    = flag.Duration("seek_period", 6*time.Minute, "the duration between seek cycles")
+	messageCount  = flag.Int("message_count", 5, "the number of messages to publish and receive per cycle, per partition")
+	sleepPeriod   = flag.Duration("sleep", 15*time.Second, "the duration to sleep between cycles")
+	seekPeriod    = flag.Duration("seek_period", 7*time.Minute, "the duration between seek cycles")
 	waitTimeout   = flag.Duration("timeout", 60*time.Second, "timeout for receiving all messages per cycle")
 	verbose       = flag.Bool("verbose", true, "whether to log verbose messages")
 	printInterval = flag.Int("print_interval", 10, "print status every n-th message sent/received")
