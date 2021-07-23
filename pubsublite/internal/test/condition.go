@@ -14,6 +14,7 @@
 package test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -47,6 +48,15 @@ func (c *Condition) WaitUntilDone(t *testing.T, duration time.Duration) {
 	case <-time.After(duration):
 		t.Errorf("Condition(%q): timed out after waiting %v", c.name, duration)
 	case <-c.done:
+	}
+}
+
+func (c *Condition) Wait(duration time.Duration) error {
+	select {
+	case <-time.After(duration):
+		return fmt.Errorf("Condition(%q): timed out after waiting %v", c.name, duration)
+	case <-c.done:
+		return nil
 	}
 }
 
