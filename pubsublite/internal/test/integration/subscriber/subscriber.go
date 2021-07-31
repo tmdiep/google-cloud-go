@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	"sync/atomic"
+	"time"
 
 	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/pubsublite/internal/test"
@@ -31,6 +32,7 @@ import (
 var (
 	printInterval = flag.Int("print_interval", 100, "print status every n-th message sent/received")
 	verbose       = flag.Bool("verbose", false, "whether to log verbose messages")
+	ackDelay      = flag.Duration("ack_delay", 0, "sleep before acking messages")
 )
 
 const maxPrintMsgLen = 70
@@ -74,7 +76,10 @@ func (s *subscriber) onReceive(ctx context.Context, msg *pubsub.Message) {
 	msg.Ack()
 	count := atomic.AddInt64(&s.receiveCount, 1)
 	if *verbose || count%int64(*printInterval) == 0 {
-		log.Printf("Received: key=%s, offset=%s, data=%s", msg.OrderingKey, msg.ID, truncateMsg(string(msg.Data)))
+		log.Printf("Received: offset=%s, data=%s, published=%v, count=%d", msg.ID, truncateMsg(string(msg.Data)), msg.PublishTime, count)
+	}
+	if *ackDelay > 0 {
+		time.Sleep(*ackDelay)
 	}
 	/*
 		// Ordering and duplicate validation.
