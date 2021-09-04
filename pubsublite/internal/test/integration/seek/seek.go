@@ -171,7 +171,7 @@ func seekToEnd(ctx context.Context, adminClient *pubsublite.AdminClient, sub *su
 	sub.StartReceive()
 
 	cctx, _ := context.WithTimeout(ctx, *opwaitTimeout)
-	if err := op.Wait(cctx); err != nil {
+	if _, err := op.Wait(cctx); err != nil {
 		log.Fatalf("Failed to wait for operation: %v", err)
 	}
 	seekLatencies.Add(time.Now().Sub(seekStartTime))
@@ -196,7 +196,7 @@ func seekToBeginning(ctx context.Context, adminClient *pubsublite.AdminClient, s
 	sub.Stop()
 
 	cctx, _ := context.WithTimeout(ctx, *opwaitTimeout)
-	if err := op.Wait(cctx); err != nil {
+	if _, err := op.Wait(cctx); err != nil {
 		log.Fatalf("Failed to wait for operation: %v", err)
 	}
 	seekLatencies.Add(time.Now().Sub(seekStartTime))
@@ -287,7 +287,7 @@ func main() {
 
 			// Operation should already be done.
 			cctx, _ := context.WithTimeout(ctx, 10*time.Second)
-			if err := op.Wait(cctx); err != nil {
+			if _, err := op.Wait(cctx); err != nil {
 				log.Fatalf("Waiting for seek operation returned err: %v", err)
 			}
 			if !op.Done() {
@@ -305,6 +305,7 @@ func main() {
 			sub.Stop()
 			seekToBeginning(ctx, harness.AdminClient, sub)
 
+			// This seek will be superseded by seek to end.
 			op, err = harness.AdminClient.SeekSubscription(ctx, sub.Subscription.String(), seekTarget)
 			if err != nil {
 				log.Fatalf("Aborted test: Failed to seek %s to time %v", sub.Subscription, pubTime)
@@ -315,7 +316,7 @@ func main() {
 			seekToEnd(ctx, harness.AdminClient, sub)
 
 			cctx, _ = context.WithTimeout(ctx, 10*time.Second)
-			if err := op.Wait(cctx); !test.ErrorHasCode(err, codes.Aborted) || !test.ErrorHasMsg(err, "Aborted due to a more recent seek operation") {
+			if _, err := op.Wait(cctx); !test.ErrorHasCode(err, codes.Aborted) || !test.ErrorHasMsg(err, "Aborted due to a more recent seek operation") {
 				log.Fatalf("Unexpected aborted seek err: %v", err)
 			} else {
 				log.Printf("Aborted seek err: %v", err)
