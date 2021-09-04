@@ -321,11 +321,6 @@ func (c *pipelineGRPCClient) Close() error {
 }
 
 func (c *pipelineGRPCClient) CreateTrainingPipeline(ctx context.Context, req *aiplatformpb.CreateTrainingPipelineRequest, opts ...gax.CallOption) (*aiplatformpb.TrainingPipeline, error) {
-	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
-		cctx, cancel := context.WithTimeout(ctx, 5000*time.Millisecond)
-		defer cancel()
-		ctx = cctx
-	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "parent", url.QueryEscape(req.GetParent())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
 	opts = append((*c.CallOptions).CreateTrainingPipeline[0:len((*c.CallOptions).CreateTrainingPipeline):len((*c.CallOptions).CreateTrainingPipeline)], opts...)
@@ -342,11 +337,6 @@ func (c *pipelineGRPCClient) CreateTrainingPipeline(ctx context.Context, req *ai
 }
 
 func (c *pipelineGRPCClient) GetTrainingPipeline(ctx context.Context, req *aiplatformpb.GetTrainingPipelineRequest, opts ...gax.CallOption) (*aiplatformpb.TrainingPipeline, error) {
-	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
-		cctx, cancel := context.WithTimeout(ctx, 5000*time.Millisecond)
-		defer cancel()
-		ctx = cctx
-	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "name", url.QueryEscape(req.GetName())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
 	opts = append((*c.CallOptions).GetTrainingPipeline[0:len((*c.CallOptions).GetTrainingPipeline):len((*c.CallOptions).GetTrainingPipeline)], opts...)
@@ -369,11 +359,13 @@ func (c *pipelineGRPCClient) ListTrainingPipelines(ctx context.Context, req *aip
 	it := &TrainingPipelineIterator{}
 	req = proto.Clone(req).(*aiplatformpb.ListTrainingPipelinesRequest)
 	it.InternalFetch = func(pageSize int, pageToken string) ([]*aiplatformpb.TrainingPipeline, string, error) {
-		var resp *aiplatformpb.ListTrainingPipelinesResponse
-		req.PageToken = pageToken
+		resp := &aiplatformpb.ListTrainingPipelinesResponse{}
+		if pageToken != "" {
+			req.PageToken = pageToken
+		}
 		if pageSize > math.MaxInt32 {
 			req.PageSize = math.MaxInt32
-		} else {
+		} else if pageSize != 0 {
 			req.PageSize = int32(pageSize)
 		}
 		err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
@@ -396,18 +388,15 @@ func (c *pipelineGRPCClient) ListTrainingPipelines(ctx context.Context, req *aip
 		it.items = append(it.items, items...)
 		return nextPageToken, nil
 	}
+
 	it.pageInfo, it.nextFunc = iterator.NewPageInfo(fetch, it.bufLen, it.takeBuf)
 	it.pageInfo.MaxSize = int(req.GetPageSize())
 	it.pageInfo.Token = req.GetPageToken()
+
 	return it
 }
 
 func (c *pipelineGRPCClient) DeleteTrainingPipeline(ctx context.Context, req *aiplatformpb.DeleteTrainingPipelineRequest, opts ...gax.CallOption) (*DeleteTrainingPipelineOperation, error) {
-	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
-		cctx, cancel := context.WithTimeout(ctx, 5000*time.Millisecond)
-		defer cancel()
-		ctx = cctx
-	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "name", url.QueryEscape(req.GetName())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
 	opts = append((*c.CallOptions).DeleteTrainingPipeline[0:len((*c.CallOptions).DeleteTrainingPipeline):len((*c.CallOptions).DeleteTrainingPipeline)], opts...)
@@ -426,11 +415,6 @@ func (c *pipelineGRPCClient) DeleteTrainingPipeline(ctx context.Context, req *ai
 }
 
 func (c *pipelineGRPCClient) CancelTrainingPipeline(ctx context.Context, req *aiplatformpb.CancelTrainingPipelineRequest, opts ...gax.CallOption) error {
-	if _, ok := ctx.Deadline(); !ok && !c.disableDeadlines {
-		cctx, cancel := context.WithTimeout(ctx, 5000*time.Millisecond)
-		defer cancel()
-		ctx = cctx
-	}
 	md := metadata.Pairs("x-goog-request-params", fmt.Sprintf("%s=%v", "name", url.QueryEscape(req.GetName())))
 	ctx = insertMetadata(ctx, c.xGoogMetadata, md)
 	opts = append((*c.CallOptions).CancelTrainingPipeline[0:len((*c.CallOptions).CancelTrainingPipeline):len((*c.CallOptions).CancelTrainingPipeline)], opts...)
@@ -481,11 +465,13 @@ func (c *pipelineGRPCClient) ListPipelineJobs(ctx context.Context, req *aiplatfo
 	it := &PipelineJobIterator{}
 	req = proto.Clone(req).(*aiplatformpb.ListPipelineJobsRequest)
 	it.InternalFetch = func(pageSize int, pageToken string) ([]*aiplatformpb.PipelineJob, string, error) {
-		var resp *aiplatformpb.ListPipelineJobsResponse
-		req.PageToken = pageToken
+		resp := &aiplatformpb.ListPipelineJobsResponse{}
+		if pageToken != "" {
+			req.PageToken = pageToken
+		}
 		if pageSize > math.MaxInt32 {
 			req.PageSize = math.MaxInt32
-		} else {
+		} else if pageSize != 0 {
 			req.PageSize = int32(pageSize)
 		}
 		err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
@@ -508,9 +494,11 @@ func (c *pipelineGRPCClient) ListPipelineJobs(ctx context.Context, req *aiplatfo
 		it.items = append(it.items, items...)
 		return nextPageToken, nil
 	}
+
 	it.pageInfo, it.nextFunc = iterator.NewPageInfo(fetch, it.bufLen, it.takeBuf)
 	it.pageInfo.MaxSize = int(req.GetPageSize())
 	it.pageInfo.Token = req.GetPageToken()
+
 	return it
 }
 

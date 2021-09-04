@@ -84,6 +84,11 @@ func TestCreateTopicWithConfig(t *testing.T) {
 			AllowedPersistenceRegions: []string{"us-east1"},
 		},
 		KMSKeyName: "projects/P/locations/L/keyRings/R/cryptoKeys/K",
+		SchemaSettings: &SchemaSettings{
+			Schema:   "projects/P/schemas/S",
+			Encoding: EncodingJSON,
+		},
+		RetentionDuration: 5 * time.Hour,
 	}
 
 	topic := mustCreateTopicWithConfig(t, c, id, &want)
