@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,6 +44,10 @@ var (
 )
 
 const maxPrintMsgLen = 70
+
+var msgPadding = []int{
+	1250000, 250000, 1000000, 750000, 1500000, 500000,
+}
 
 var seekLatencies = integration.NewLatencyHistogram([]time.Duration{
 	5 * time.Second,
@@ -113,7 +118,9 @@ func (s *subscriber) onReceive(ctx context.Context, msg *pubsub.Message) {
 	defer msg.Ack()
 
 	if !s.MsgTracker.Remove(string(msg.Data)) {
-		log.Fatalf("Unexpected message: offset=%s, data=%s", msg.ID, string(msg.Data))
+		// Messages can be republished.
+		log.Printf("Unexpected message: offset=%s, data=%s", msg.ID, string(msg.Data))
+		//log.Fatalf("Unexpected message: offset=%s, data=%s", msg.ID, string(msg.Data))
 	}
 
 	if s.EarliestPublishTime.IsZero() || msg.PublishTime.Before(s.EarliestPublishTime) {
@@ -231,7 +238,12 @@ func main() {
 			for i := 0; i < *messageCount; i++ {
 				data := orderingSender.Next(msgPrefix)
 				trackedMsgs = append(trackedMsgs, data)
-				toPublish = append(toPublish, &pubsub.Message{Data: []byte(data)})
+				toPublish = append(toPublish, &pubsub.Message{
+					Data: []byte(data),
+					Attributes: map[string]string{
+						"tag": strings.Repeat("*", msgPadding[i%len(msgPadding)]),
+					},
+				})
 				if *verbose {
 					log.Printf("Publishing: %s", data)
 				}
