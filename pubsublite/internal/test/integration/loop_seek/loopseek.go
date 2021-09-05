@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	sleepPeriod   = flag.Duration("sleep", 10*time.Second, "the duration to sleep between cycles")
+	sleepPeriod   = flag.Duration("sleep", 30*time.Second, "the duration to sleep between cycles")
 	opwaitTimeout = flag.Duration("operation_timeout", 2*time.Minute, "timeout for waiting for operation")
 	seekTime      = flag.String("publish_time", "2021-09-05T07:00:00Z", "seek to publish time")
 )

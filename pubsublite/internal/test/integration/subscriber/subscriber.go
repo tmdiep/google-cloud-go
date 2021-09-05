@@ -36,31 +36,39 @@ var (
 	receiveTimeout = flag.Duration("receive_timeout", 2*time.Minute, "fail if messages not received within this duration for a partition")
 )
 
+type partitionState struct {
+	count    int64
+	lastRecv time.Time
+}
+
 type receiveCounter struct {
-	count      int64
-	partitions map[int]time.Time
+	totalCount int64
+	partitions map[int]*partitionState
 	mu         sync.Mutex
 }
 
 func newReceiveCounter(numPartitions int) *receiveCounter {
 	c := &receiveCounter{
-		count:      0,
-		partitions: make(map[int]time.Time),
+		totalCount: 0,
+		partitions: make(map[int]*partitionState),
 	}
 	now := time.Now()
 	for i := 0; i < numPartitions; i++ {
-		c.partitions[i] = now
+		s := &partitionState{lastRecv: now}
+		c.partitions[i] = s
 	}
 	return c
 }
 
-func (r *receiveCounter) OnMsgReceived(p int) int64 {
+func (r *receiveCounter) OnMsgReceived(p int) (int64, int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.count++
-	r.partitions[p] = time.Now()
-	return r.count
+	r.totalCount++
+	s := r.partitions[p]
+	s.count++
+	s.lastRecv = time.Now()
+	return s.count, r.totalCount
 }
 
 func (r *receiveCounter) checkReceived() {
@@ -69,8 +77,8 @@ func (r *receiveCounter) checkReceived() {
 
 	now := time.Now()
 	timeout := false
-	for _, t := range r.partitions {
-		if now.Sub(t) > *receiveTimeout {
+	for _, s := range r.partitions {
+		if now.Sub(s.lastRecv) > *receiveTimeout {
 			timeout = true
 			break
 		}
@@ -85,21 +93,38 @@ func (r *receiveCounter) checkReceived() {
 	fmt.Printf("%s\n", buf)
 	fmt.Println("------------------------------------------------------------")
 
-	for p, t := range r.partitions {
-		elapsed := now.Sub(t)
+	r.printStatus(now)
+	log.Fatal("Timed out receiving messages")
+}
+
+func (r *receiveCounter) printStatus(now time.Time) {
+	for p, s := range r.partitions {
+		elapsed := now.Sub(s.lastRecv)
 		suffix := ""
 		if elapsed > *receiveTimeout {
 			suffix = " ***"
 		}
-		log.Printf("%d: %v%s", p, now.Sub(t), suffix)
+		log.Printf("[%d] %d, %v%s", p, s.count, elapsed, suffix)
 	}
-	log.Fatal("Timed out receiving messages")
+	log.Printf("Total messages received: %d", r.totalCount)
+}
+
+func (r *receiveCounter) PrintStatus() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.printStatus(time.Now())
 }
 
 func (r *receiveCounter) Poll() {
 	go func() {
+		lastPrint := time.Now()
 		for {
 			r.checkReceived()
+			now := time.Now()
+			if now.Sub(lastPrint) > 30*time.Second {
+				r.PrintStatus()
+				lastPrint = now
+			}
 			time.Sleep(10 * time.Second)
 		}
 	}()
@@ -146,9 +171,14 @@ func (s *subscriber) onReceive(ctx context.Context, msg *pubsub.Message) {
 	if err != nil {
 		log.Fatalf("Failed to parse metadata %q: %v", msg.ID, err)
 	}
-	count := s.counter.OnMsgReceived(m.Partition)
-	if *verbose || count%int64(*printInterval) == 0 {
-		log.Printf("Received: offset=%s, data=%s, published=%v, count=%d", msg.ID, truncateMsg(string(msg.Data)), msg.PublishTime, count)
+	pcount, _ := s.counter.OnMsgReceived(m.Partition)
+	if *verbose || pcount%int64(*printInterval) == 0 {
+		size := len(msg.Data)
+		for k, v := range msg.Attributes {
+			size += len(k)
+			size += len(v)
+		}
+		log.Printf("Received: id=%s, data=%s, size=%d, published=%v", msg.ID, truncateMsg(string(msg.Data)), size, msg.PublishTime)
 	}
 	if *ackDelay > 0 {
 		time.Sleep(*ackDelay)
