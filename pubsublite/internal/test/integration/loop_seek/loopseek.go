@@ -56,9 +56,13 @@ func main() {
 		if _, err := op.Wait(cctx); err != nil {
 			log.Fatalf("Waiting for seek operation %s returned err: %v", op.Name(), err)
 		}
+		m, err := op.Metadata()
+		if err != nil {
+			log.Fatalf("Failed to parse seek metadata: %v", err)
+		}
 
 		seekCount++
-		log.Printf("Seek %s completed (%d)", op.Name(), seekCount)
+		log.Printf("Seek completed in %v", m.EndTime.Sub(m.CreateTime))
 		time.Sleep(*sleepPeriod)
 	}
 }
