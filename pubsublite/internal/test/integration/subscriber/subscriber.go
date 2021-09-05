@@ -98,7 +98,7 @@ func (r *receiveCounter) checkReceived() {
 
 func (r *receiveCounter) Poll() {
 	go func() {
-		for true {
+		for {
 			r.checkReceived()
 			time.Sleep(10 * time.Second)
 		}
