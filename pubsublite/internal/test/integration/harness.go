@@ -22,23 +22,47 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/internal/testutil"
 	"cloud.google.com/go/pubsublite"
 	"cloud.google.com/go/pubsublite/internal/wire"
 	"cloud.google.com/go/pubsublite/pscompat"
+	"google.golang.org/api/option"
+
+	vkit "cloud.google.com/go/pubsublite/apiv1"
 )
 
 var (
 	project          = flag.String("project", "", "the project owning the topic/subscription resources")
-	zone             = flag.String("zone", "", "the cloud zone where the topic/subscription resources are located")
+	location         = flag.String("location", "", "the cloud location where the topic/subscription resources are located")
 	topicID          = flag.String("topic", "", "the topic to publish to")
 	subscriptionIDs  = flag.String("subscription", "", "comma separated subscriptions to receive from")
 	enableAssignment = flag.Bool("assignment", false, "use partition assignment for subscribers")
 	publishBatchSize = flag.Int("publish_setting_batch", 100, "publish batch size")
 	enableLogging    = flag.Bool("logging", true, "log informational messages")
+	autopush         = flag.Bool("autopush", false, "use autopush")
 	connectTimeout   = flag.Duration("connect_timeout", 60*time.Second, "timeout for connecting to the server")
 	cpuprofile       = flag.String("cpuprofile", "", "write cpu profile to `file`")
 	memprofile       = flag.String("memprofile", "", "write memory profile to `file`")
 )
+
+func withGRPCHeadersAssertion(opts ...option.ClientOption) []option.ClientOption {
+	grpcHeadersEnforcer := &testutil.HeadersEnforcer{
+		OnFailure: log.Printf,
+		Checkers: []*testutil.HeaderChecker{
+			testutil.XGoogClientHeaderChecker,
+		},
+	}
+	return append(grpcHeadersEnforcer.CallOptions(), opts...)
+}
+
+func clientOptions(opts ...option.ClientOption) []option.ClientOption {
+	ts := testutil.TokenSource(context.Background(), vkit.DefaultAuthScopes()...)
+	ret := withGRPCHeadersAssertion(option.WithTokenSource(ts))
+	if *autopush {
+		ret = append(ret, option.WithEndpoint("us-central1-autopush-pubsublite.sandbox.googleapis.com:443"))
+	}
+	return append(ret, opts...)
+}
 
 type TestHarness struct {
 	AdminClient         *pubsublite.AdminClient
@@ -81,8 +105,8 @@ func (th *TestHarness) init() {
 		log.Fatal("Must provide --project or set GOOGLE_CLOUD_PROJECT environment variable")
 	}
 
-	if *zone == "" {
-		log.Fatal("Must provide --zone of the topic & subscription resources")
+	if *location == "" {
+		log.Fatal("Must provide --location of the topic & subscription resources")
 	}
 	if *topicID == "" {
 		log.Fatal("Must set --topic to the topic ID")
@@ -93,17 +117,17 @@ func (th *TestHarness) init() {
 	}
 
 	var err error
-	th.region, err = wire.ZoneToRegion(*zone)
+	th.region, err = wire.LocationToRegion(*location)
 	if err != nil {
 		log.Fatal(err)
 	}
 	ctx := context.Background()
-	th.AdminClient, err = pubsublite.NewAdminClient(ctx, th.region)
+	th.AdminClient, err = pubsublite.NewAdminClient(ctx, th.region, clientOptions()...)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	th.Topic = wire.TopicPath{Project: proj, Zone: *zone, TopicID: *topicID}
+	th.Topic = wire.TopicPath{Project: proj, Location: *location, TopicID: *topicID}
 	th.TopicPartitionCount, err = th.AdminClient.TopicPartitionCount(ctx, th.Topic.String())
 	if err != nil {
 		log.Fatal(err)
@@ -111,7 +135,7 @@ func (th *TestHarness) init() {
 	log.Printf("Topic %s has %d partitions", th.Topic, th.TopicPartitionCount)
 
 	for _, subsID := range strings.Split(subsIDs, ",") {
-		subscription := wire.SubscriptionPath{Project: proj, Zone: *zone, SubscriptionID: subsID}
+		subscription := wire.SubscriptionPath{Project: proj, Location: *location, SubscriptionID: subsID}
 		if _, err := th.AdminClient.Subscription(ctx, subscription.String()); err != nil {
 			log.Fatal(err)
 		}
@@ -127,7 +151,7 @@ func (th *TestHarness) init() {
 }
 
 func (th *TestHarness) StartPublisher() *pscompat.PublisherClient {
-	publisher, err := pscompat.NewPublisherClientWithSettings(context.Background(), th.Topic.String(), th.PublishSettings)
+	publisher, err := pscompat.NewPublisherClientWithSettings(context.Background(), th.Topic.String(), th.PublishSettings, clientOptions()...)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -145,7 +169,7 @@ func (th *TestHarness) StartSubscriber(subscription wire.SubscriptionPath) *psco
 			settings.Partitions = append(settings.Partitions, p)
 		}
 	}
-	subscriber, err := pscompat.NewSubscriberClientWithSettings(context.Background(), subscription.String(), settings)
+	subscriber, err := pscompat.NewSubscriberClientWithSettings(context.Background(), subscription.String(), settings, clientOptions()...)
 	if err != nil {
 		log.Fatal(err)
 	}
