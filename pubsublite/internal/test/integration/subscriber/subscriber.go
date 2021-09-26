@@ -115,6 +115,7 @@ func (r *receiveCounter) PrintStatus() {
 	r.printStatus(time.Now())
 }
 
+// Poll checks whether any partition has stopped receiving messages.
 func (r *receiveCounter) Poll() {
 	go func() {
 		lastPrint := time.Now()

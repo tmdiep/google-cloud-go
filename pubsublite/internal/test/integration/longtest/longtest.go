@@ -47,6 +47,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsublite"
 	"cloud.google.com/go/pubsublite/internal/test"
 	"cloud.google.com/go/pubsublite/internal/test/integration"
 	"cloud.google.com/go/pubsublite/internal/wire"
@@ -55,23 +56,13 @@ import (
 )
 
 var (
-	messageCount   = flag.Int("message_count", 5, "the number of messages to publish and receive per cycle, per partition")
+	messageCount   = flag.Int("message_count", 10, "the number of messages to publish and receive per cycle, per partition")
 	messagePadding = flag.Int("padding_bytes", 0, "the number of bytes to pad per partition (divided by message count)")
-	sleepPeriod    = flag.Duration("sleep", time.Minute, "the duration to sleep between cycles")
-	waitTimeout    = flag.Duration("timeout", 5*time.Minute, "timeout for receiving all messages per cycle")
+	sleepPeriod    = flag.Duration("sleep", 15*time.Second, "the duration to sleep between cycles")
+	waitTimeout    = flag.Duration("timeout", 2*time.Minute, "timeout for receiving all messages per cycle")
 	publishTimeout = flag.Duration("publish_timeout", time.Minute, "timeout for waiting for publish result")
 	verbose        = flag.Bool("verbose", true, "whether to log verbose messages")
-	duplicates     = flag.Bool("duplicates", false, "whether to detect duplicates")
 )
-
-const maxPrintMsgLen = 70
-
-func truncateMsg(msg string) string {
-	if len(msg) > maxPrintMsgLen {
-		return fmt.Sprintf("%s...", msg[0:maxPrintMsgLen])
-	}
-	return msg
-}
 
 // subscriber contains a wire subscriber with message validators.
 type subscriber struct {
@@ -79,7 +70,6 @@ type subscriber struct {
 	Sub               *pscompat.SubscriberClient
 	MsgTracker        *test.MsgTracker
 	OrderingValidator *test.OrderingReceiver
-	DuplicateDetector *test.DuplicateMsgDetector
 }
 
 func newSubscriber(harness *integration.TestHarness, subscription wire.SubscriptionPath) *subscriber {
@@ -87,7 +77,6 @@ func newSubscriber(harness *integration.TestHarness, subscription wire.Subscript
 		Subscription:      subscription,
 		MsgTracker:        test.NewMsgTracker(),
 		OrderingValidator: test.NewOrderingReceiver(),
-		DuplicateDetector: test.NewDuplicateMsgDetector(),
 	}
 
 	sub := harness.StartSubscriber(subscription)
@@ -108,42 +97,25 @@ func (s *subscriber) onReceive(ctx context.Context, msg *pubsub.Message) {
 	msg.Ack()
 
 	data := string(msg.Data)
-	if !s.MsgTracker.Remove(data) {
-		// Ignore messages from a previous test run.
-		//if *verbose {
-		log.Printf("### Ignoring %s: %s", msg.ID, truncateMsg(data))
-		//}
-		return
-	}
-
 	metadata, err := pscompat.ParseMessageMetadata(msg.ID)
 	if err != nil {
 		log.Fatalf("Error parsing message metadata %q: %v", msg.ID, err)
 	}
-	if *verbose {
-		log.Printf("Received: (partition=%d, offset=%d) %s", metadata.Partition, metadata.Offset, data)
+
+	isExpected := s.MsgTracker.Remove(data)
+	if !isExpected {
+		log.Printf("Ignoring duplicate: (partition=%d, offset=%d, expected=%v) %s", metadata.Partition, metadata.Offset, isExpected, data)
+	} else if *verbose {
+		log.Printf("Received: (partition=%d, offset=%d, expected=%v) %s", metadata.Partition, metadata.Offset, isExpected, data)
 	}
 
-	// Ordering and duplicate validation.
-	if err := s.OrderingValidator.Receive(data, fmt.Sprintf("%d", metadata.Partition)); err != nil {
+	if err := s.OrderingValidator.Receive(data, fmt.Sprintf("%d", metadata.Partition), metadata.Offset, isExpected); err != nil {
 		log.Fatalf("Ordering failed: %s: %v", s.Subscription, err)
-	}
-	if *duplicates {
-		// Note: This causes OOMs when the test runs too long.
-		s.DuplicateDetector.Receive(data, metadata.Offset)
-		if s.DuplicateDetector.HasReceiveDuplicates() {
-			log.Fatalf("Detected duplicates: %s: %s", s.Subscription, s.DuplicateDetector.Status())
-		}
 	}
 }
 
 func (s *subscriber) Wait() ([]string, error) {
 	return s.MsgTracker.Wait(*waitTimeout)
-}
-
-type ElapsedCounter struct {
-	Threshold time.Duration
-	Count     int64
 }
 
 func main() {
@@ -155,6 +127,13 @@ func main() {
 	// Setup subscribers.
 	var subscribers []*subscriber
 	for _, subscription := range harness.Subscriptions {
+		op, err := harness.AdminClient.SeekSubscription(ctx, subscription.String(), pubsublite.End)
+		if err != nil {
+			log.Fatalf("Failed to seek %s to end", subscription)
+		} else {
+			log.Printf("Seek %s to end; operation %s", subscription, op.Name())
+		}
+
 		subscribers = append(subscribers, newSubscriber(harness, subscription))
 	}
 
@@ -245,8 +224,6 @@ func main() {
 			})
 		}
 
-		//log.Printf("Cycle %d: Published messages", cycleCount)
-
 		// Wait for all subscribers to receive all messages for the cycle.
 		for _, sub := range subscribers {
 			if msgs, err := sub.Wait(); err != nil {
@@ -264,13 +241,7 @@ func main() {
 					atomic.LoadInt32(&publishSucceeded), len(toPublish), *publishTimeout, atomic.LoadInt32(&publishTimedOut))
 				log.Fatalf("%s: failed waiting for messages: %v", sub.Subscription, err)
 			}
-
-			if *duplicates {
-				dup := sub.DuplicateDetector.Status()
-				if len(dup) > 0 {
-					log.Printf("%s: %s", sub.Subscription, dup)
-				}
-			}
+			log.Printf("Ordering state: " + sub.OrderingValidator.State())
 		}
 
 		// Ensure all publish results succeeded.
