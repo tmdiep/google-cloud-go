@@ -176,6 +176,14 @@ func (th *TestHarness) StartSubscriber(subscription wire.SubscriptionPath) *psco
 	return subscriber
 }
 
+func (th *TestHarness) TopicStatsClient() *vkit.TopicStatsClient {
+	client, err := vkit.NewTopicStatsClient(context.Background(), clientOptions()...)
+	if err != nil {
+		log.Fatalf("Failed to create topic stats client: %v", err)
+	}
+	return client
+}
+
 func (th *TestHarness) WriteMemProfile() {
 	if *memprofile != "" {
 		f, err := os.Create(*memprofile)

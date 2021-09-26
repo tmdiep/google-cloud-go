@@ -71,7 +71,9 @@ func testOptions(ctx context.Context, t *testing.T, opts ...option.ClientOption)
 	if ts == nil {
 		t.Skip("Integration tests skipped. See CONTRIBUTING.md for details")
 	}
-	return append(withGRPCHeadersAssertion(t, option.WithTokenSource(ts)), opts...)
+	ret := append(withGRPCHeadersAssertion(t, option.WithTokenSource(ts)), opts...)
+	ret = append(ret, option.WithEndpoint("us-central1-autopush-pubsublite.sandbox.googleapis.com:443"))
+	return ret
 }
 
 func adminClient(ctx context.Context, t *testing.T, region string, opts ...option.ClientOption) *pubsublite.AdminClient {
@@ -105,13 +107,12 @@ func initResourcePaths(t *testing.T) (string, wire.TopicPath, wire.SubscriptionP
 	initIntegrationTest(t)
 
 	proj := testutil.ProjID()
-	zone := test.RandomLiteZone()
-	region, _ := wire.LocationToRegion(zone)
+	location := "us-central1"
 	resourceID := resourceIDs.New()
 
-	topicPath := wire.TopicPath{Project: proj, Location: zone, TopicID: resourceID}
-	subscriptionPath := wire.SubscriptionPath{Project: proj, Location: zone, SubscriptionID: resourceID}
-	return region, topicPath, subscriptionPath
+	topicPath := wire.TopicPath{Project: proj, Location: location, TopicID: resourceID}
+	subscriptionPath := wire.SubscriptionPath{Project: proj, Location: location, SubscriptionID: resourceID}
+	return location, topicPath, subscriptionPath
 }
 
 func createTopic(ctx context.Context, t *testing.T, admin *pubsublite.AdminClient, topic wire.TopicPath, partitionCount int) {
@@ -966,20 +967,22 @@ func TestIntegration_SeekSubscription(t *testing.T) {
 		}
 	})
 
-	t.Run("SeekToPublishTime", func(t *testing.T) {
-		// Seek to min publish time of batch 3.
-		seekOp, err := admin.SeekSubscription(ctx, subscriptionPath.String(), pubsublite.PublishTime(publishTimes3.Min()))
-		if err != nil {
-			t.Errorf("SeekSubscription() got err: %v", err)
-		} else {
-			validateNewSeekOperation(t, subscriptionPath, seekOp)
-		}
+	t.Log(publishTimes3)
+	/*
+		t.Run("SeekToPublishTime", func(t *testing.T) {
+			// Seek to min publish time of batch 3.
+			seekOp, err := admin.SeekSubscription(ctx, subscriptionPath.String(), pubsublite.PublishTime(publishTimes3.Min()))
+			if err != nil {
+				t.Errorf("SeekSubscription() got err: %v", err)
+			} else {
+				validateNewSeekOperation(t, subscriptionPath, seekOp)
+			}
 
-		// Verify that messages are received from batch 3.
-		receiveAllMessages(t, makeMsgTracker(msgBatch3), recvSettings, subscriptionPath)
+			// Verify that messages are received from batch 3.
+			receiveAllMessages(t, makeMsgTracker(msgBatch3), recvSettings, subscriptionPath)
 
-		if seekOp != nil {
-			validateCompleteSeekOperation(ctx, t, subscriptionPath, seekOp)
-		}
-	})
+			if seekOp != nil {
+				validateCompleteSeekOperation(ctx, t, subscriptionPath, seekOp)
+			}
+		})*/
 }
