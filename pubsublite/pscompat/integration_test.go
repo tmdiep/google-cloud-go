@@ -103,19 +103,41 @@ func subscriberClient(ctx context.Context, t *testing.T, settings ReceiveSetting
 	return sub
 }
 
-func initResourcePaths(t *testing.T) (string, wire.TopicPath, wire.SubscriptionPath) {
+func initResourcePaths(t *testing.T) (string, wire.ReservationPath, wire.TopicPath, wire.SubscriptionPath) {
 	initIntegrationTest(t)
 
 	proj := testutil.ProjID()
 	location := "us-central1"
 	resourceID := resourceIDs.New()
 
+	reservationPath := wire.ReservationPath{Project: proj, Region: location, ReservationID: resourceID}
 	topicPath := wire.TopicPath{Project: proj, Location: location, TopicID: resourceID}
 	subscriptionPath := wire.SubscriptionPath{Project: proj, Location: location, SubscriptionID: resourceID}
-	return location, topicPath, subscriptionPath
+	return location, reservationPath, topicPath, subscriptionPath
 }
 
-func createTopic(ctx context.Context, t *testing.T, admin *pubsublite.AdminClient, topic wire.TopicPath, partitionCount int) {
+func createReservation(ctx context.Context, t *testing.T, admin *pubsublite.AdminClient, reservation wire.ReservationPath) {
+	reservationConfig := pubsublite.ReservationConfig{
+		Name:               reservation.String(),
+		ThroughputCapacity: 20,
+	}
+	_, err := admin.CreateReservation(ctx, reservationConfig)
+	if err != nil {
+		t.Fatalf("Failed to create reservation %s: %v", reservation, err)
+	} else {
+		t.Logf("Created reservation %s", reservation)
+	}
+}
+
+func cleanUpReservation(ctx context.Context, t *testing.T, admin *pubsublite.AdminClient, reservation wire.ReservationPath) {
+	if err := admin.DeleteReservation(ctx, reservation.String()); err != nil {
+		t.Errorf("Failed to delete reservation %s: %v", reservation, err)
+	} else {
+		t.Logf("Deleted reservation %s", reservation)
+	}
+}
+
+func createTopic(ctx context.Context, t *testing.T, admin *pubsublite.AdminClient, reservation wire.ReservationPath, topic wire.TopicPath, partitionCount int) {
 	topicConfig := pubsublite.TopicConfig{
 		Name:                       topic.String(),
 		PartitionCount:             partitionCount,
@@ -123,6 +145,7 @@ func createTopic(ctx context.Context, t *testing.T, admin *pubsublite.AdminClien
 		SubscribeCapacityMiBPerSec: 8,
 		PerPartitionBytes:          30 * gibi,
 		RetentionDuration:          24 * time.Hour,
+		ThroughputReservation:      reservation.String(),
 	}
 	_, err := admin.CreateTopic(ctx, topicConfig)
 	if err != nil {
@@ -302,7 +325,7 @@ func receiveAllMessages(t *testing.T, msgTracker *test.MsgTracker, settings Rece
 			t.Error(err)
 		} else {
 			orderingKey := fmt.Sprintf("%d", metadata.Partition)
-			if err := orderingValidator.Receive(data, orderingKey); err != nil {
+			if err := orderingValidator.Receive(data, orderingKey, metadata.Offset, true); err != nil {
 				t.Errorf("Received unordered message with id %s: %q", msg.ID, truncateMsg(data))
 			}
 		}
@@ -351,7 +374,7 @@ func receiveAndVerifyMessage(t *testing.T, want *pubsub.Message, settings Receiv
 }
 
 func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
-	region, topicPath, subscriptionPath := initResourcePaths(t)
+	region, reservationPath, topicPath, subscriptionPath := initResourcePaths(t)
 	ctx := context.Background()
 	const partitionCount = 1
 	recvSettings := DefaultReceiveSettings
@@ -359,7 +382,9 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 
 	admin := adminClient(ctx, t, region)
 	defer admin.Close()
-	createTopic(ctx, t, admin, topicPath, partitionCount)
+	createReservation(ctx, t, admin, reservationPath)
+	defer cleanUpReservation(ctx, t, admin, reservationPath)
+	createTopic(ctx, t, admin, reservationPath, topicPath, partitionCount)
 	defer cleanUpTopic(ctx, t, admin, topicPath)
 	createSubscription(ctx, t, admin, subscriptionPath, topicPath)
 	defer cleanUpSubscription(ctx, t, admin, subscriptionPath)
@@ -655,14 +680,16 @@ func TestIntegration_PublishSubscribeSinglePartition(t *testing.T) {
 
 func TestIntegration_PublishSubscribeMultiPartition(t *testing.T) {
 	const partitionCount = 3
-	region, topicPath, subscriptionPath := initResourcePaths(t)
+	region, reservationPath, topicPath, subscriptionPath := initResourcePaths(t)
 	ctx := context.Background()
 	recvSettings := DefaultReceiveSettings
 	recvSettings.Partitions = partitionNumbers(partitionCount)
 
 	admin := adminClient(ctx, t, region)
 	defer admin.Close()
-	createTopic(ctx, t, admin, topicPath, partitionCount)
+	createReservation(ctx, t, admin, reservationPath)
+	defer cleanUpReservation(ctx, t, admin, reservationPath)
+	createTopic(ctx, t, admin, reservationPath, topicPath, partitionCount)
 	defer cleanUpTopic(ctx, t, admin, topicPath)
 	createSubscription(ctx, t, admin, subscriptionPath, topicPath)
 	defer cleanUpSubscription(ctx, t, admin, subscriptionPath)
@@ -785,12 +812,14 @@ func TestIntegration_SubscribeFanOut(t *testing.T) {
 	const subscriberCount = 3
 	const partitionCount = 1
 	const messageCount = 100
-	region, topicPath, baseSubscriptionPath := initResourcePaths(t)
+	region, reservationPath, topicPath, baseSubscriptionPath := initResourcePaths(t)
 	ctx := context.Background()
 
 	admin := adminClient(ctx, t, region)
 	defer admin.Close()
-	createTopic(ctx, t, admin, topicPath, partitionCount)
+	createReservation(ctx, t, admin, reservationPath)
+	defer cleanUpReservation(ctx, t, admin, reservationPath)
+	createTopic(ctx, t, admin, reservationPath, topicPath, partitionCount)
 	defer cleanUpTopic(ctx, t, admin, topicPath)
 
 	var subscriptionPaths []wire.SubscriptionPath
@@ -868,14 +897,16 @@ func validateCompleteSeekOperation(ctx context.Context, t *testing.T, subscripti
 func TestIntegration_SeekSubscription(t *testing.T) {
 	const partitionCount = 4
 	const messageCount = 50 * partitionCount
-	region, topicPath, subscriptionPath := initResourcePaths(t)
+	region, reservationPath, topicPath, subscriptionPath := initResourcePaths(t)
 	ctx := context.Background()
 	recvSettings := DefaultReceiveSettings
 	recvSettings.Partitions = partitionNumbers(partitionCount)
 
 	admin := adminClient(ctx, t, region)
 	defer admin.Close()
-	createTopic(ctx, t, admin, topicPath, partitionCount)
+	createReservation(ctx, t, admin, reservationPath)
+	defer cleanUpReservation(ctx, t, admin, reservationPath)
+	createTopic(ctx, t, admin, reservationPath, topicPath, partitionCount)
 	defer cleanUpTopic(ctx, t, admin, topicPath)
 	createSubscription(ctx, t, admin, subscriptionPath, topicPath)
 	defer cleanUpSubscription(ctx, t, admin, subscriptionPath)
@@ -912,7 +943,7 @@ func TestIntegration_SeekSubscription(t *testing.T) {
 		}()
 
 		// Receive batch 1 once.
-		if err := msgTracker.Wait(defaultTestTimeout); err != nil {
+		if _, err := msgTracker.Wait(defaultTestTimeout); err != nil {
 			t.Fatal(err)
 		}
 		msgTracker.Add(msgBatch1...)
@@ -926,7 +957,7 @@ func TestIntegration_SeekSubscription(t *testing.T) {
 		}
 
 		// Verify that messages are received from the beginning of batch 1.
-		if err := msgTracker.Wait(defaultTestTimeout); err != nil {
+		if _, err := msgTracker.Wait(defaultTestTimeout); err != nil {
 			t.Fatal(err)
 		}
 		stopSubscriber()
@@ -967,22 +998,20 @@ func TestIntegration_SeekSubscription(t *testing.T) {
 		}
 	})
 
-	t.Log(publishTimes3)
-	/*
-		t.Run("SeekToPublishTime", func(t *testing.T) {
-			// Seek to min publish time of batch 3.
-			seekOp, err := admin.SeekSubscription(ctx, subscriptionPath.String(), pubsublite.PublishTime(publishTimes3.Min()))
-			if err != nil {
-				t.Errorf("SeekSubscription() got err: %v", err)
-			} else {
-				validateNewSeekOperation(t, subscriptionPath, seekOp)
-			}
+	t.Run("SeekToPublishTime", func(t *testing.T) {
+		// Seek to min publish time of batch 3.
+		seekOp, err := admin.SeekSubscription(ctx, subscriptionPath.String(), pubsublite.PublishTime(publishTimes3.Min()))
+		if err != nil {
+			t.Errorf("SeekSubscription() got err: %v", err)
+		} else {
+			validateNewSeekOperation(t, subscriptionPath, seekOp)
+		}
 
-			// Verify that messages are received from batch 3.
-			receiveAllMessages(t, makeMsgTracker(msgBatch3), recvSettings, subscriptionPath)
+		// Verify that messages are received from batch 3.
+		receiveAllMessages(t, makeMsgTracker(msgBatch3), recvSettings, subscriptionPath)
 
-			if seekOp != nil {
-				validateCompleteSeekOperation(ctx, t, subscriptionPath, seekOp)
-			}
-		})*/
+		if seekOp != nil {
+			validateCompleteSeekOperation(ctx, t, subscriptionPath, seekOp)
+		}
+	})
 }
