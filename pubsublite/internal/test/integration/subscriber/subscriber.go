@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsublite"
 	"cloud.google.com/go/pubsublite/internal/test/integration"
 	"cloud.google.com/go/pubsublite/internal/wire"
 	"cloud.google.com/go/pubsublite/pscompat"
@@ -30,10 +31,11 @@ import (
 )
 
 var (
-	printInterval  = flag.Int("print_interval", 100, "print status every n-th message sent/received")
-	verbose        = flag.Bool("verbose", false, "whether to log verbose messages")
-	ackDelay       = flag.Duration("ack_delay", 0, "sleep before acking messages")
-	receiveTimeout = flag.Duration("receive_timeout", 2*time.Minute, "fail if messages not received within this duration for a partition")
+	printInterval   = flag.Int("print_interval", 100, "print status every n-th message sent/received")
+	verbose         = flag.Bool("verbose", false, "whether to log verbose messages")
+	seekToBeginning = flag.Bool("seek_to_beginning", false, "seek to beginning")
+	ackDelay        = flag.Duration("ack_delay", 0, "sleep before acking messages")
+	receiveTimeout  = flag.Duration("receive_timeout", 2*time.Minute, "fail if messages not received within this duration for a partition")
 )
 
 type partitionState struct {
@@ -145,12 +147,15 @@ type subscriber struct {
 	Subscription wire.SubscriptionPath
 	Sub          *pscompat.SubscriberClient
 	counter      *receiveCounter
+	lastOffsets  map[int]int64
+	mu           sync.Mutex
 }
 
 func newSubscriber(ctx context.Context, harness *integration.TestHarness, subscription wire.SubscriptionPath, partitions int, group *errgroup.Group) *subscriber {
 	s := &subscriber{
 		Subscription: subscription,
 		counter:      newReceiveCounter(partitions),
+		lastOffsets:  make(map[int]int64),
 	}
 
 	sub := harness.StartSubscriber(subscription)
@@ -167,11 +172,15 @@ func newSubscriber(ctx context.Context, harness *integration.TestHarness, subscr
 }
 
 func (s *subscriber) onReceive(ctx context.Context, msg *pubsub.Message) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	msg.Ack()
 	m, err := pscompat.ParseMessageMetadata(msg.ID)
 	if err != nil {
 		log.Fatalf("Failed to parse metadata %q: %v", msg.ID, err)
 	}
+
 	pcount, _ := s.counter.OnMsgReceived(m.Partition)
 	if *verbose || pcount%int64(*printInterval) == 0 {
 		size := len(msg.Data)
@@ -181,18 +190,34 @@ func (s *subscriber) onReceive(ctx context.Context, msg *pubsub.Message) {
 		}
 		log.Printf("Received: id=%s, data=%s, size=%d, published=%v", msg.ID, truncateMsg(string(msg.Data)), size, msg.PublishTime)
 	}
+
+	if lastOffset, exists := s.lastOffsets[m.Partition]; exists {
+		if m.Offset <= lastOffset {
+			log.Fatalf("Invalid offset %d for partition %d, last offset = %d", m.Offset, m.Partition, lastOffset)
+		}
+	}
+	s.lastOffsets[m.Partition] = m.Offset
+
 	if *ackDelay > 0 {
 		time.Sleep(*ackDelay)
 	}
 }
 
 func main() {
+	ctx := context.Background()
 	harness := integration.NewTestHarness()
 
 	// Setup subscribers.
-	group, gctx := errgroup.WithContext(context.Background())
+	group, gctx := errgroup.WithContext(ctx)
 	var subscribers []*subscriber
 	for _, subscription := range harness.Subscriptions {
+		if *seekToBeginning {
+			seekOp, err := harness.AdminClient.SeekSubscription(ctx, subscription.String(), pubsublite.Beginning)
+			if err != nil {
+				log.Fatal("Failed to seek: %v", err)
+			}
+			log.Printf("Seek %s to beginning %s", subscription, seekOp.Name())
+		}
 		subscribers = append(subscribers, newSubscriber(gctx, harness, subscription, harness.TopicPartitionCount, group))
 	}
 	group.Wait()
