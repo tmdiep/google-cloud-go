@@ -17,7 +17,7 @@ topics are provisioned a publish and subscribe throughput, so this tests flow
 control.
 
 Example simple usage:
-  go run loadtest.go --project=<project> --zone=<zone> --topic=<topic id>
+  go run loadtest.go --project=<project> --location=<location> --topic=<topic id>
 */
 package main
 
@@ -37,10 +37,10 @@ import (
 )
 
 var (
-	messageCount       = flag.Int("message_count", 2000, "the number of messages to publish and receive")
-	messageSize        = flag.Int("message_size", 500000, "the size (bytes) of each message")
-	batchSize          = flag.Int("batch_size", 500, "the maximum number of messages per batch")
-	printInterval      = flag.Int("print_interval", 100, "print status every n-th message sent/received")
+	messageCount       = flag.Int("message_count", 10000, "the number of messages to publish and receive per partition")
+	messageSize        = flag.Int("message_size", 100000, "the size (bytes) of each message")
+	batchSize          = flag.Int("batch_size", 1000, "the maximum number of messages per batch per partition")
+	printInterval      = flag.Int("print_interval", 1000, "print status every n-th message sent/received")
 	maxReceiveWaitTime = flag.Duration("receive_wait", 30*time.Minute, "wait to receive all messages before terminating subscriber")
 
 	msgTagPrefix = fmt.Sprintf("loadtest-%d", time.Now().Unix())
@@ -85,8 +85,8 @@ func publishBatch(ctx context.Context, msgTracker *test.MsgTracker, publisher *p
 }
 
 func publishAll(ctx context.Context, harness *integration.TestHarness, msgTracker *test.MsgTracker) {
-	totalBytes := float64(*messageCount) * float64(*messageSize)
-	log.Printf("Transmitting %d messages, %d bytes per message, total %.2f MiB", *messageCount, *messageSize, totalBytes/float64(mibi))
+	totalBytes := float64(harness.TopicPartitionCount) * float64(*messageCount) * float64(*messageSize)
+	log.Printf("Transmitting %d messages, %d bytes per message, %d partitions, total %.2f MiB", *messageCount, *messageSize, harness.TopicPartitionCount, totalBytes/float64(mibi))
 
 	start := time.Now()
 	publisher := harness.StartPublisher()
@@ -94,10 +94,12 @@ func publishAll(ctx context.Context, harness *integration.TestHarness, msgTracke
 
 	start = time.Now()
 	var publishedCount int32
-	for messagesRemaining := *messageCount; messagesRemaining > 0; {
+	maxMessages := harness.TopicPartitionCount * *messageCount
+	totalBatchSize := harness.TopicPartitionCount * *batchSize
+	for messagesRemaining := maxMessages; messagesRemaining > 0; {
 		batchCount := messagesRemaining
-		if batchCount > *batchSize {
-			batchCount = *batchSize
+		if batchCount > totalBatchSize {
+			batchCount = totalBatchSize
 		}
 		messagesRemaining -= batchCount
 		publishBatch(ctx, msgTracker, publisher, batchCount, &publishedCount)
@@ -149,7 +151,7 @@ func receiveAll(ctx context.Context, harness *integration.TestHarness, msgTracke
 
 	msgTracker.Wait(*maxReceiveWaitTime)
 	duration := time.Since(start)
-	rate := float64(*messageCount) * float64(*messageSize) / duration.Seconds() / float64(mibi)
+	rate := float64(harness.TopicPartitionCount) * float64(*messageCount) * float64(*messageSize) / duration.Seconds() / float64(mibi)
 
 	stop()
 	log.Printf("**** Receive elapsed time: %v (%.2f MiB/s) ****", time.Since(start), rate)
