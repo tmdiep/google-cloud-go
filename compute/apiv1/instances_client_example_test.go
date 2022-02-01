@@ -1,4 +1,4 @@
-// Copyright 2021 Google LLC
+// Copyright 2022 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -447,6 +447,26 @@ func ExampleInstancesClient_Reset() {
 		// See https://pkg.go.dev/google.golang.org/genproto/googleapis/cloud/compute/v1#ResetInstanceRequest.
 	}
 	resp, err := c.Reset(ctx, req)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	// TODO: Use resp.
+	_ = resp
+}
+
+func ExampleInstancesClient_SendDiagnosticInterrupt() {
+	ctx := context.Background()
+	c, err := compute.NewInstancesRESTClient(ctx)
+	if err != nil {
+		// TODO: Handle error.
+	}
+	defer c.Close()
+
+	req := &computepb.SendDiagnosticInterruptInstanceRequest{
+		// TODO: Fill request struct fields.
+		// See https://pkg.go.dev/google.golang.org/genproto/googleapis/cloud/compute/v1#SendDiagnosticInterruptInstanceRequest.
+	}
+	resp, err := c.SendDiagnosticInterrupt(ctx, req)
 	if err != nil {
 		// TODO: Handle error.
 	}

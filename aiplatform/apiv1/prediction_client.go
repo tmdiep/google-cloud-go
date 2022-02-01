@@ -1,4 +1,4 @@
-// Copyright 2021 Google LLC
+// Copyright 2022 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -48,7 +48,6 @@ func defaultPredictionGRPCClientOptions() []option.ClientOption {
 		internaloption.WithDefaultAudience("https://aiplatform.googleapis.com/"),
 		internaloption.WithDefaultScopes(DefaultAuthScopes()...),
 		internaloption.EnableJwtWithScope(),
-		option.WithGRPCDialOption(grpc.WithDisableServiceConfig()),
 		option.WithGRPCDialOption(grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(math.MaxInt32))),
 	}
@@ -111,7 +110,15 @@ func (c *PredictionClient) Predict(ctx context.Context, req *aiplatformpb.Predic
 	return c.internalClient.Predict(ctx, req, opts...)
 }
 
-// RawPredict perform an online prediction with arbitrary http payload.
+// RawPredict perform an online prediction with an arbitrary HTTP payload.
+//
+// The response includes the following HTTP headers:
+//
+//   X-Vertex-AI-Endpoint-Id: ID of the Endpoint that served this
+//   prediction.
+//
+//   X-Vertex-AI-Deployed-Model-Id: ID of the Endpoint’s DeployedModel
+//   that served this prediction.
 func (c *PredictionClient) RawPredict(ctx context.Context, req *aiplatformpb.RawPredictRequest, opts ...gax.CallOption) (*httpbodypb.HttpBody, error) {
 	return c.internalClient.RawPredict(ctx, req, opts...)
 }

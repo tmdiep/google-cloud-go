@@ -1,5 +1,19 @@
 # Changes
 
+### [1.0.2](https://www.github.com/googleapis/google-cloud-go/compare/asset/v1.0.1...asset/v1.0.2) (2022-01-14)
+
+
+### Bug Fixes
+
+* **asset:** add service_yaml to php_gapic_library targets ([3bbe8c0](https://www.github.com/googleapis/google-cloud-go/commit/3bbe8c0c558c06ef5865bb79eb228b6da667ddb3))
+
+### [1.0.1](https://www.github.com/googleapis/google-cloud-go/compare/asset/v1.0.0...asset/v1.0.1) (2021-09-24)
+
+
+### Bug Fixes
+
+* **asset:** depend on the existing access_context_manager and os_config clients rather than copying their classes into the asset client ([bddab08](https://www.github.com/googleapis/google-cloud-go/commit/bddab08dfd0b9a0a79b113a46a0dd84dba1f3d3b))
+
 ## 1.0.0
 
 Stabilize GA surface.

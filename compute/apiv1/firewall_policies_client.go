@@ -1,4 +1,4 @@
-// Copyright 2021 Google LLC
+// Copyright 2022 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -166,7 +166,7 @@ func (c *FirewallPoliciesClient) Insert(ctx context.Context, req *computepb.Inse
 	return c.internalClient.Insert(ctx, req, opts...)
 }
 
-// List lists all the policies that have been configured for the specified project.
+// List lists all the policies that have been configured for the specified folder or organization.
 func (c *FirewallPoliciesClient) List(ctx context.Context, req *computepb.ListFirewallPoliciesRequest, opts ...gax.CallOption) *FirewallPolicyIterator {
 	return c.internalClient.List(ctx, req, opts...)
 }
@@ -681,9 +681,7 @@ func (c *firewallPoliciesRESTClient) Insert(ctx context.Context, req *computepb.
 	baseUrl.Path += fmt.Sprintf("/compute/v1/locations/global/firewallPolicies")
 
 	params := url.Values{}
-	if req != nil && req.ParentId != nil {
-		params.Add("parentId", fmt.Sprintf("%v", req.GetParentId()))
-	}
+	params.Add("parentId", fmt.Sprintf("%v", req.GetParentId()))
 	if req != nil && req.RequestId != nil {
 		params.Add("requestId", fmt.Sprintf("%v", req.GetRequestId()))
 	}
@@ -726,7 +724,7 @@ func (c *firewallPoliciesRESTClient) Insert(ctx context.Context, req *computepb.
 	return op, err
 }
 
-// List lists all the policies that have been configured for the specified project.
+// List lists all the policies that have been configured for the specified folder or organization.
 func (c *firewallPoliciesRESTClient) List(ctx context.Context, req *computepb.ListFirewallPoliciesRequest, opts ...gax.CallOption) *FirewallPolicyIterator {
 	it := &FirewallPolicyIterator{}
 	req = proto.Clone(req).(*computepb.ListFirewallPoliciesRequest)
@@ -866,9 +864,7 @@ func (c *firewallPoliciesRESTClient) Move(ctx context.Context, req *computepb.Mo
 	baseUrl.Path += fmt.Sprintf("/compute/v1/locations/global/firewallPolicies/%v/move", req.GetFirewallPolicy())
 
 	params := url.Values{}
-	if req != nil && req.ParentId != nil {
-		params.Add("parentId", fmt.Sprintf("%v", req.GetParentId()))
-	}
+	params.Add("parentId", fmt.Sprintf("%v", req.GetParentId()))
 	if req != nil && req.RequestId != nil {
 		params.Add("requestId", fmt.Sprintf("%v", req.GetRequestId()))
 	}

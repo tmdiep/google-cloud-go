@@ -18,6 +18,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/googleapis/gax-go/v2"
 	storagepb "google.golang.org/genproto/googleapis/cloud/bigquery/storage/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -55,7 +56,7 @@ func TestManagedStream_OpenWithRetry(t *testing.T) {
 	for _, tc := range testCases {
 		ms := &ManagedStream{
 			ctx: context.Background(),
-			open: func(s string) (storagepb.BigQueryWrite_AppendRowsClient, error) {
+			open: func(s string, opts ...gax.CallOption) (storagepb.BigQueryWrite_AppendRowsClient, error) {
 				if len(tc.errors) == 0 {
 					panic("out of errors")
 				}
@@ -107,7 +108,7 @@ func TestManagedStream_FirstAppendBehavior(t *testing.T) {
 
 	ms := &ManagedStream{
 		ctx: ctx,
-		open: func(s string) (storagepb.BigQueryWrite_AppendRowsClient, error) {
+		open: func(s string, opts ...gax.CallOption) (storagepb.BigQueryWrite_AppendRowsClient, error) {
 			testARC.openCount = testARC.openCount + 1
 			return testARC, nil
 		},
@@ -126,7 +127,7 @@ func TestManagedStream_FirstAppendBehavior(t *testing.T) {
 	wantReqs := 3
 
 	for i := 0; i < wantReqs; i++ {
-		_, err := ms.AppendRows(ctx, fakeData, NoStreamOffset)
+		_, err := ms.AppendRows(ctx, fakeData, WithOffset(int64(i)))
 		if err != nil {
 			t.Errorf("AppendRows; %v", err)
 		}
@@ -143,6 +144,14 @@ func TestManagedStream_FirstAppendBehavior(t *testing.T) {
 	for k, v := range testARC.requests {
 		if v == nil {
 			t.Errorf("request %d was nil", k)
+		}
+		if v.GetOffset() == nil {
+			t.Errorf("request %d had no offset", k)
+		} else {
+			gotOffset := v.GetOffset().GetValue()
+			if gotOffset != int64(k) {
+				t.Errorf("request %d wanted offset %d, got %d", k, k, gotOffset)
+			}
 		}
 		if k == 0 {
 			if v.GetTraceId() == "" {
