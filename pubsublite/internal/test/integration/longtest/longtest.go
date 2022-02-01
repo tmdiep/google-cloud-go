@@ -56,12 +56,12 @@ import (
 )
 
 var (
-	messageCount   = flag.Int("message_count", 10, "the number of messages to publish and receive per cycle, per partition")
+	messageCount   = flag.Int("message_count", 100, "the number of messages to publish and receive per cycle, per partition")
 	messagePadding = flag.Int("padding_bytes", 0, "the number of bytes to pad per partition (divided by message count)")
-	sleepPeriod    = flag.Duration("sleep", 15*time.Second, "the duration to sleep between cycles")
-	waitTimeout    = flag.Duration("timeout", 2*time.Minute, "timeout for receiving all messages per cycle")
-	publishTimeout = flag.Duration("publish_timeout", time.Minute, "timeout for waiting for publish result")
-	verbose        = flag.Bool("verbose", true, "whether to log verbose messages")
+	sleepPeriod    = flag.Duration("sleep", 5*time.Second, "the duration to sleep between cycles")
+	waitTimeout    = flag.Duration("timeout", 3*time.Minute, "timeout for receiving all messages per cycle")
+	publishTimeout = flag.Duration("publish_timeout", 3*time.Minute, "timeout for waiting for publish result")
+	verbose        = flag.Bool("verbose", false, "whether to log verbose messages")
 )
 
 // subscriber contains a wire subscriber with message validators.
