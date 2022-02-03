@@ -164,8 +164,9 @@ func (rs *retryableStream) updateLastAction(text string) {
 // stream will be terminated. Streams are reconnected if idle for `idleTimeout`.
 // `responseType` is the type of the response proto received on the stream.
 func newRetryableStream(ctx context.Context, handler streamHandler, connectTimeout, idleTimeout time.Duration, responseType reflect.Type) *retryableStream {
+	// Retry initialization before the reconnection timeout.
+	initTimeout := minDuration(connectTimeout/2, defaultStreamInitTimeout)
 	initReq, _ := handler.initialRequest()
-	initTimeout := minDuration(connectTimeout, defaultStreamInitTimeout)
 	rs := &retryableStream{
 		ctx:            ctx,
 		handler:        handler,
