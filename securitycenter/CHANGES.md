@@ -1,5 +1,26 @@
 # Changes
 
+## [1.5.0](https://github.com/googleapis/google-cloud-go/compare/securitycenter/v1.4.0...securitycenter/v1.5.0) (2022-03-14)
+
+
+### Features
+
+* **securitycenter:** Add BigQuery export APIs that help you enable writing new/updated findings from  Security Command Center to a BigQuery table in near-real time. You can then integrate the data into existing workflows and create custom analyses. You can enable this feature at the organization, folder, and project levels to export findings based on your requirements ([35d591a](https://github.com/googleapis/google-cloud-go/commit/35d591adf1f98e5707ffe7a7bf5c48a5cc4ae8d4))
+
+## [1.4.0](https://github.com/googleapis/google-cloud-go/compare/securitycenter/v1.3.0...securitycenter/v1.4.0) (2022-02-23)
+
+
+### Features
+
+* **securitycenter:** set versionClient to module version ([55f0d92](https://github.com/googleapis/google-cloud-go/commit/55f0d92bf112f14b024b4ab0076c9875a17423c9))
+
+## [1.3.0](https://github.com/googleapis/google-cloud-go/compare/securitycenter/v1.2.0...securitycenter/v1.3.0) (2022-02-14)
+
+
+### Features
+
+* **securitycenter:** add file for tracking version ([17b36ea](https://github.com/googleapis/google-cloud-go/commit/17b36ead42a96b1a01105122074e65164357519e))
+
 ## [1.2.0](https://www.github.com/googleapis/google-cloud-go/compare/securitycenter/v1.1.0...securitycenter/v1.2.0) (2022-01-04)
 
 
